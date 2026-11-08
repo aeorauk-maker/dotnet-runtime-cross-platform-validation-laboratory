@@ -1,0 +1,30 @@
+name: Windows .NET baseline
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/windows-dotnet-baseline.yml
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Record runner and installed .NET
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output "Runner=$env:RUNNER_OS ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          dotnet --info
+      - name: Build and execute clean .NET 10 console baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $project = Join-Path $env:RUNNER_TEMP 'dotnet-baseline'
+          dotnet new console --framework net10.0 --output $project --no-restore
+          dotnet restore $project
+          dotnet run --project $project --no-restore
