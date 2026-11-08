@@ -1,2 +1,3 @@
-# exploit-pocs
-Proof-of-concept exploits and reproducible security research.
+# .NET Runtime Cross-Platform Validation Laboratory
+
+Reproducible Windows and .NET platform validation workflows.
