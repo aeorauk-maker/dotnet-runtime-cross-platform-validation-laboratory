@@ -28,3 +28,11 @@ jobs:
           dotnet new console --framework net10.0 --output $project --no-restore
           dotnet restore $project
           dotnet run --project $project --no-restore
+      - name: Remove this job's temporary project
+        if: always()
+        shell: pwsh
+        run: |
+          $project = Join-Path $env:RUNNER_TEMP 'dotnet-baseline'
+          if (Test-Path -LiteralPath $project) {
+            Remove-Item -LiteralPath $project -Recurse -Force
+          }
