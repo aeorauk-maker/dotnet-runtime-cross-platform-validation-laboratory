@@ -20,7 +20,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:ESC01_KEY)) { throw 'Lab key absent' }
-          $wire = [Convert]::FromBase64String(([IO.File]::ReadAllText('.github/esc01_input.b64')).Trim())
+          $wire = [Convert]::FromBase64String(([IO.File]::ReadAllText('.github/esc01_input_v2.b64')).Trim())
           $nonce = $wire[0..11]
           $tag = $wire[($wire.Length-16)..($wire.Length-1)]
           $cipher = $wire[12..($wire.Length-17)]
