@@ -55,7 +55,9 @@ jobs:
             Remove-Item -LiteralPath $script,$log -Force -ErrorAction SilentlyContinue
             [Array]::Clear($key,0,$key.Length)
           }
+          exit 0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: esc01-result-${{ github.run_id }}
           path: esc01_result.bin
