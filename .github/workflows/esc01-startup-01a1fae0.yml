@@ -1,0 +1,16 @@
+name: esc01-startup-01a1fae0
+on:
+  push:
+    branches:
+      - esc01-nuget-01a1fae0
+jobs:
+  startup:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm Windows job startup
+        shell: pwsh
+        run: |
+          Write-Output 'ESC01_WINDOWS_JOB_STARTED'
+          Write-Output ('SDK=' + (& dotnet --version))
