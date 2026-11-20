@@ -1,0 +1,51 @@
+name: ESC09 isolated Windows validation
+
+on:
+  push:
+    branches: [esc09-vf01-01a1fae0]
+    paths:
+      - .github/workflows/esc09-vf01-windows.yml
+      - esc09-vf01-payload.b64
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Run encrypted inert conformance pair
+        shell: pwsh
+        env:
+          ESC09_KEY: ${{ secrets.ESC09_VF01_KEY_20261120 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrEmpty($env:ESC09_KEY)) { throw 'Validation input unavailable' }
+          $raw = [Convert]::FromBase64String((Get-Content esc09-vf01-payload.b64 -Raw).Trim())
+          $nonce = [byte[]]$raw[0..11]
+          $tag = [byte[]]$raw[($raw.Length - 16)..($raw.Length - 1)]
+          $cipher = [byte[]]$raw[12..($raw.Length - 17)]
+          $plain = [byte[]]::new($cipher.Length)
+          $key = [Convert]::FromBase64String($env:ESC09_KEY)
+          $aes = [System.Security.Cryptography.AesGcm]::new($key, 16)
+          try { $aes.Decrypt($nonce, $cipher, $tag, $plain) }
+          finally { $aes.Dispose() }
+          $lab = Join-Path $env:RUNNER_TEMP 'esc09-vf01'
+          New-Item -ItemType Directory -Path $lab -Force | Out-Null
+          $archive = Join-Path $lab 'input.zip'
+          [IO.File]::WriteAllBytes($archive, $plain)
+          Expand-Archive -LiteralPath $archive -DestinationPath $lab -Force
+          $sdk = dotnet --version
+          if ($sdk -ne '11.0.100') { throw 'Unexpected SDK version' }
+          $runtimes = dotnet --list-runtimes
+          if (-not ($runtimes | Select-String 'Microsoft.AspNetCore.App 11.0.0')) { throw 'ASP.NET Core 11.0.0 unavailable' }
+          if (-not ($runtimes | Select-String 'Microsoft.NETCore.App 11.0.0')) { throw '.NETCore.App 11.0.0 unavailable' }
+          dotnet build (Join-Path $lab 'VF01.csproj') --nologo -v:q *> $null
+          if ($LASTEXITCODE -ne 0) { throw 'Validation build failed' }
+          dotnet (Join-Path $lab 'bin/Debug/net11.0/VF01.dll') --verify
+          if ($LASTEXITCODE -ne 0) { throw 'Validation pair failed' }
