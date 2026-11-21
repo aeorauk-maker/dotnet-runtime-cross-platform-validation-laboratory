@@ -1,0 +1,30 @@
+name: Hunter 94ce27c5 Windows baseline
+run-name: Hunter 94ce27c5 Windows baseline
+
+on:
+  push:
+    branches:
+      - hunter-20261121-94ce27c5
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Report runner and installed .NET
+        shell: pwsh
+        run: |
+          Write-Output "RUNNER_IMAGE=$env:ImageOS/$env:ImageVersion"
+          Write-Output "PROCESS_ARCH=$env:PROCESSOR_ARCHITECTURE"
+          dotnet --info
+          dotnet --list-runtimes
+          $dotnetPath = (Get-Command dotnet).Source
+          Write-Output "DOTNET_HOST_SHA256=$((Get-FileHash $dotnetPath -Algorithm SHA256).Hash)"
+      - name: Check runner arithmetic
+        shell: pwsh
+        run: |
+          if ((21 * 2) -ne 42) { exit 1 }
+          Write-Output "Neutral runner check passed"
