@@ -1,0 +1,22 @@
+name: Hunter 01 Apple workload smoke
+on:
+  workflow_dispatch:
+jobs:
+  apple-workload:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Check supported Apple build path
+        shell: bash
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          xcodebuild -version
+          dotnet --version
+          df -h .
+          dotnet workload install macos --version 11.0.100.1
+          dotnet new macos -n AppleBaseline -o "$RUNNER_TEMP/AppleBaseline" --no-restore
+          dotnet msbuild "$RUNNER_TEMP/AppleBaseline/AppleBaseline.csproj" -getItem:ProjectCapability
+          dotnet build "$RUNNER_TEMP/AppleBaseline/AppleBaseline.csproj" -f net11.0-macos -v:minimal
