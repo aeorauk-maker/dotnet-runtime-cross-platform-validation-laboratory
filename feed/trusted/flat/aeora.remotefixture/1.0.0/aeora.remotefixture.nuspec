@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>Aeora.RemoteFixture</id>
+    <version>1.0.0</version>
+    <authors>Aeora owned lab</authors>
+    <description>Inert remote feed fixture</description>
+    <repository type="git" />
+    <dependencies>
+      <group targetFramework="net11.0" />
+    </dependencies>
+  </metadata>
+</package>
