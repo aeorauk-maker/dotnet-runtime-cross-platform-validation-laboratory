@@ -1,0 +1,88 @@
+name: esc01-owned-latest-vs-validation
+on:
+  push:
+    branches:
+      - esc01-packet-20261121-7f29
+    paths:
+      - .github/workflows/esc01-latest-vs-validation.yml
+      - .github/esc01_packet_input.b64
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: 11.0.100
+      - name: Update owned runner to current Visual Studio Stable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = (& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1)
+          if (-not $vsPath) { throw 'Visual Studio Enterprise with MSBuild absent' }
+          $devenv = Join-Path $vsPath 'Common7\IDE\devenv.exe'
+          $before = (Get-Item -LiteralPath $devenv).VersionInfo.ProductVersion
+          $freeGb = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
+          Write-Output "VS_BEFORE=$before FREE_GB=$freeGb"
+          if ($freeGb -lt 7) { throw 'Insufficient disk for a controlled Visual Studio servicing update' }
+          $setup = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\setup.exe'
+          if (-not (Test-Path -LiteralPath $setup)) { throw 'Official Visual Studio setup.exe absent' }
+          $p = Start-Process -FilePath $setup -ArgumentList @('update','--installPath',('"' + $vsPath + '"'),'--quiet','--norestart') -Wait -PassThru
+          Write-Output "VS_UPDATE_EXIT=$($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "Visual Studio servicing update failed with exit $($p.ExitCode)" }
+          $after = (Get-Item -LiteralPath $devenv).VersionInfo.ProductVersion
+          Write-Output "VS_AFTER=$after DEVENV_SHA256=$((Get-FileHash -LiteralPath $devenv -Algorithm SHA256).Hash.ToLowerInvariant())"
+          if ($after -ne '18.12.12412.261') { throw "Expected current Stable 18.12.1 build 12412.261, observed $after" }
+      - name: Run encrypted owned lab on serviced Visual Studio
+        shell: pwsh
+        env:
+          ESC01_KEY: ${{ secrets.ESC01_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:ESC01_KEY)) { throw 'Lab key absent' }
+          $wire = [Convert]::FromBase64String(([IO.File]::ReadAllText('.github/esc01_packet_input.b64')).Trim())
+          $nonce = $wire[0..11]
+          $tag = $wire[($wire.Length-16)..($wire.Length-1)]
+          $cipher = $wire[12..($wire.Length-17)]
+          $plain = [byte[]]::new($cipher.Length)
+          $key = [Convert]::FromHexString($env:ESC01_KEY)
+          $aad = [Text.Encoding]::UTF8.GetBytes('ESC01-NUDELTA-20261120')
+          $aes = [Security.Cryptography.AesGcm]::new($key,16)
+          try { $aes.Decrypt($nonce,$cipher,$tag,$plain,$aad) }
+          finally { $aes.Dispose() }
+          $script = Join-Path $env:RUNNER_TEMP 'esc01-current-vs-run.ps1'
+          $log = Join-Path $env:RUNNER_TEMP 'esc01-current-vs-run.log'
+          $output = Join-Path $env:GITHUB_WORKSPACE 'esc01_current_vs_result.bin'
+          [IO.File]::WriteAllBytes($script,$plain)
+          [Array]::Clear($plain,0,$plain.Length)
+          try {
+            & pwsh -NoProfile -File $script *>&1 | Out-File -LiteralPath $log -Encoding utf8
+            $code = $LASTEXITCODE
+            $result = [Text.Encoding]::UTF8.GetBytes("EXIT=$code`n" + [IO.File]::ReadAllText($log))
+            $resultNonce = [Security.Cryptography.RandomNumberGenerator]::GetBytes(12)
+            $resultCipher = [byte[]]::new($result.Length)
+            $resultTag = [byte[]]::new(16)
+            $aes = [Security.Cryptography.AesGcm]::new($key,16)
+            try { $aes.Encrypt($resultNonce,$result,$resultCipher,$resultTag,$aad) }
+            finally { $aes.Dispose() }
+            $sealed = [byte[]]::new(12 + $resultCipher.Length + 16)
+            [Array]::Copy($resultNonce,0,$sealed,0,12)
+            [Array]::Copy($resultCipher,0,$sealed,12,$resultCipher.Length)
+            [Array]::Copy($resultTag,0,$sealed,12 + $resultCipher.Length,16)
+            [IO.File]::WriteAllBytes($output,$sealed)
+            Write-Output 'ESC01_CURRENT_VS_ENCRYPTED_RESULT_READY'
+          } finally {
+            Remove-Item -LiteralPath $script,$log -Force -ErrorAction SilentlyContinue
+            [Array]::Clear($key,0,$key.Length)
+          }
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: esc01-current-vs-result-${{ github.run_id }}
+          path: esc01_current_vs_result.bin
+          retention-days: 1
