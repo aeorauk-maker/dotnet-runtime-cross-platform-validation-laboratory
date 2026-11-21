@@ -1,0 +1,47 @@
+name: Hunter NCSI collector syntax and telemetry check
+
+on:
+  push:
+    branches: [hunter-20261121-canary-rce-inventory]
+    paths:
+      - .github/workflows/collect-ncsi-wpad.ps1
+      - .github/workflows/hunter-20261121-ncsi-collector-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  collector-check:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and run inert collector
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = (Resolve-Path '.github/workflows/collect-ncsi-wpad.ps1').Path
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.ToString() }
+            throw "Collector parse errors: $($parseErrors.Count)"
+          }
+          Write-Output 'Collector parser: PASS'
+          $out = Join-Path $env:RUNNER_TEMP 'ncsi-collector'
+          & $script -OutputDirectory $out -Seconds 10
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "Collector exit: $LASTEXITCODE" }
+          foreach ($name in 'baseline.json','trace-start.txt','trace-stop.txt','window.txt') {
+            $path = Join-Path $out $name
+            if (-not (Test-Path $path)) { throw "Missing collector output: $name" }
+            Write-Output "$name bytes=$((Get-Item $path).Length)"
+          }
+          $baseline = Get-Content (Join-Path $out 'baseline.json') -Raw | ConvertFrom-Json
+          Write-Output "Runner build=$($baseline.Build.CurrentBuildNumber).$($baseline.Build.UBR)"
+          Write-Output "Receiver files=$($baseline.Files.Count)"
+          if (Test-Path (Join-Path $out 'collector-errors.txt')) {
+            Write-Output 'Collector reported nonfatal instrumentation errors:'
+            Get-Content (Join-Path $out 'collector-errors.txt')
+          }
+          Write-Output 'Collector runtime: PASS (standard Windows runner only)'
