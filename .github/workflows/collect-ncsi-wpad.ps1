@@ -84,20 +84,20 @@ Write-Output 'COLLECTOR_STAGE=TYPE_COMPILED'
 
 $baseline = [ordered]@{
     UtcStart = $runStart
-    Build = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object CurrentBuildNumber, UBR, BuildLabEx)
-    OS = (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture)
-    WinHttpProxy = (netsh winhttp show proxy | Out-String)
-    WinHttpAdvancedProxy = (netsh winhttp show advproxy | Out-String)
-    IpConfig = (ipconfig /all | Out-String)
-    NCSI = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet' -ErrorAction SilentlyContinue)
-    AutoproxyService = (Get-CimInstance Win32_Service -Filter "Name='WinHttpAutoProxySvc'" | Select-Object Name, State, StartMode, ProcessId, PathName)
-    Files = @(foreach ($name in 'ncsi.dll','winhttp.dll','jsproxy.dll','pacjsworker.exe') {
+    Build = $(Write-Host 'COLLECTOR_BASELINE=BUILD'; Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object CurrentBuildNumber, UBR, BuildLabEx)
+    OS = $(Write-Host 'COLLECTOR_BASELINE=OS'; Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture)
+    WinHttpProxy = $(Write-Host 'COLLECTOR_BASELINE=WINHTTP_PROXY'; netsh winhttp show proxy | Out-String)
+    WinHttpAdvancedProxy = $(Write-Host 'COLLECTOR_BASELINE=WINHTTP_ADVPROXY'; netsh winhttp show advproxy | Out-String)
+    IpConfig = $(Write-Host 'COLLECTOR_BASELINE=IPCONFIG'; ipconfig /all | Out-String)
+    NCSI = $(Write-Host 'COLLECTOR_BASELINE=NCSI'; Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet' -ErrorAction SilentlyContinue)
+    AutoproxyService = $(Write-Host 'COLLECTOR_BASELINE=AUTOPROXY_SERVICE'; Get-CimInstance Win32_Service -Filter "Name='WinHttpAutoProxySvc'" | Select-Object Name, State, StartMode, ProcessId, PathName)
+    Files = $(Write-Host 'COLLECTOR_BASELINE=FILES'; @(foreach ($name in 'ncsi.dll','winhttp.dll','jsproxy.dll','pacjsworker.exe') {
         $file = Join-Path $env:windir "System32\$name"
         if (Test-Path $file) {
             $item = Get-Item $file
             [ordered]@{Path=$file;Version=$item.VersionInfo.FileVersion;SHA256=(Get-FileHash -Algorithm SHA256 $file).Hash}
         }
-    })
+    }))
 }
 $baseline | ConvertTo-Json -Depth 7 | Out-File (Join-Path $OutputDirectory 'baseline.json') -Encoding utf8
 Write-Output 'COLLECTOR_STAGE=BASELINE_WRITTEN'
