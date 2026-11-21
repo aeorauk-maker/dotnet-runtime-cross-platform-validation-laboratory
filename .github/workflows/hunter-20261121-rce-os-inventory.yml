@@ -1,5 +1,8 @@
 name: Windows OS component inventory
 on:
+  push:
+    branches:
+      - hunter-20261121-canary-rce-inventory
   workflow_dispatch:
 permissions:
   contents: read
