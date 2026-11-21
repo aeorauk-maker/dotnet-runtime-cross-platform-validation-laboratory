@@ -13,7 +13,7 @@ $prefix = Join-Path $OutputDirectory 'internetclient'
 $processLog = Join-Path $OutputDirectory 'processes.jsonl'
 $errors = Join-Path $OutputDirectory 'collector-errors.txt'
 
-@'
+$tokenTypeSource = @'
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -78,7 +78,8 @@ public static class LabTokenReader {
         } finally { CloseHandle(process); }
     }
 }
-'@ | Add-Type -ErrorAction Stop
+'@
+Add-Type -TypeDefinition $tokenTypeSource -ErrorAction Stop
 
 $baseline = [ordered]@{
     UtcStart = $runStart
