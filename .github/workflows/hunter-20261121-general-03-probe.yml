@@ -1,6 +1,9 @@
 name: Hunter 20261121 General 03 Runner Probe
 run-name: hunter-20261121-general-03-probe-${{ github.run_id }}
 on:
+  push:
+    branches:
+      - hunter-20261121-general-03-2e32689a
   workflow_dispatch:
 permissions:
   contents: read
