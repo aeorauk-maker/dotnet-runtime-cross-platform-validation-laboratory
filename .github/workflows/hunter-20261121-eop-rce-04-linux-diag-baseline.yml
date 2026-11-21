@@ -1,5 +1,8 @@
 name: hunter-20261121-eop-rce-04 Linux diagnostic baseline
 on:
+  push:
+    branches: [hunter-20261121-eop-rce-04]
+    paths: [.github/workflows/hunter-20261121-eop-rce-04-linux-diag-baseline.yml]
   workflow_dispatch:
 permissions:
   contents: read
