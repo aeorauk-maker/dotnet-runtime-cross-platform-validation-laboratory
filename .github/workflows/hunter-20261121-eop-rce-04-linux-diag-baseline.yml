@@ -1,0 +1,38 @@
+name: hunter-20261121-eop-rce-04 Linux diagnostic baseline
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  socket-permissions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check installed SDK
+        run: dotnet --version
+      - name: Inspect owned process endpoint mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet new console --framework net10.0 -o probe
+          cat > probe/Program.cs <<'EOF'
+          using System;
+          using System.Threading;
+          Console.WriteLine("ready");
+          Thread.Sleep(30000);
+          EOF
+          dotnet build probe -c Release --no-restore
+          dotnet probe/bin/Release/net10.0/probe.dll &
+          target_pid=$!
+          trap 'kill "$target_pid" 2>/dev/null || true' EXIT
+          diag_dir="${TMPDIR:-/tmp}"
+          for i in {1..20}; do
+            for socket_path in "$diag_dir"/dotnet-diagnostic-"$target_pid"-*-socket; do
+              if [ -S "$socket_path" ]; then
+                stat -c 'endpoint mode=%a owner=%u group=%g' "$socket_path"
+                exit 0
+              fi
+            done
+            sleep 1
+          done
+          echo 'endpoint absent' >&2
+          exit 1
