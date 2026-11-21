@@ -1,0 +1,15 @@
+name: Hunter 20261121 General 03 Runner Probe
+run-name: hunter-20261121-general-03-probe-${{ github.run_id }}
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows_runner:
+    runs-on: windows-latest
+    steps:
+      - name: Show runner and installed .NET
+        shell: pwsh
+        run: |
+          Write-Output ("runner=" + $env:RUNNER_OS)
+          dotnet --info
