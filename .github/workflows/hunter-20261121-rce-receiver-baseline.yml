@@ -1,0 +1,40 @@
+name: Hunter 20261121 receiver baseline
+on:
+  push:
+    branches: [hunter-20261121-canary-rce-inventory]
+    paths: [.github/workflows/hunter-20261121-rce-receiver-baseline.yml]
+  workflow_dispatch:
+jobs:
+  receiver-baseline:
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - name: Read only Windows receiver inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Output '=== OS ==='
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object EditionID,CurrentBuildNumber,UBR,BuildLabEx | Format-List
+          Write-Output '=== Network profile ==='
+          Get-NetConnectionProfile | Select-Object InterfaceAlias,NetworkCategory,IPv4Connectivity,IPv6Connectivity | Format-Table -AutoSize
+          Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction | Format-Table -AutoSize
+          Write-Output '=== Receiver services ==='
+          Get-CimInstance Win32_Service | Where-Object Name -in @('WdNisSvc','WinDefend','CDPSvc','DoSvc','Dnscache','WinHttpAutoProxySvc') | Select-Object Name,State,StartMode,ProcessId,StartName | Format-Table -AutoSize
+          Get-CimInstance Win32_SystemDriver | Where-Object Name -in @('WdNisDrv','Tcpip','NetIO') | Select-Object Name,State,StartMode | Format-Table -AutoSize
+          Write-Output '=== Candidate listeners ==='
+          Get-NetTCPConnection -State Listen | Where-Object LocalPort -in @(135,445,7680) | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize
+          Get-NetUDPEndpoint | Where-Object LocalPort -in @(5050,5355,7680) | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize
+          Write-Output '=== Active candidate firewall rules ==='
+          Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True | Where-Object { $_.DisplayName -match 'Connected Devices|Delivery Optimization|Defender|Network Inspection' -or $_.Name -match 'CDPSvc|DeliveryOptimization|WdNis' } | Select-Object Name,DisplayName,Profile,Action | Format-Table -Wrap
+          Write-Output '=== Defender ==='
+          Get-MpComputerStatus | Select-Object AMServiceVersion,AMEngineVersion,AntivirusSignatureVersion,NISEngineVersion,NISSignatureVersion,RealTimeProtectionEnabled | Format-List
+          Write-Output '=== WinHTTP proxy ==='
+          netsh winhttp show proxy
+          Write-Output '=== Defender WFP summary ==='
+          $statePath = Join-Path $env:RUNNER_TEMP 'hunter-wfp-state.xml'
+          netsh wfp show state "file=$statePath" | Out-Null
+          if (Test-Path $statePath) {
+            Write-Output "WFP state bytes: $((Get-Item $statePath).Length)"
+            Select-String -Path $statePath -Pattern 'windefend_stream|windefend_datagram|WdNis|Network Inspection' -Context 3,3 | Select-Object -First 20 | ForEach-Object { $_.ToString() }
+          }
