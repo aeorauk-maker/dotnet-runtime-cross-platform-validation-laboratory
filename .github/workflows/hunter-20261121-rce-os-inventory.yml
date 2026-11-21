@@ -26,3 +26,14 @@ jobs:
           } else { Write-Output 'OpenSSHServerBinary=absent' }
           Get-Service sshd -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType | Format-List
           Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction SilentlyContinue | Select-Object Name,State | Format-List
+      - name: Record network-facing Windows receivers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-NetTCPConnection -State Listen | Where-Object { $_.LocalAddress -in @('0.0.0.0','::') } | Sort-Object LocalPort | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize
+          Get-Service -Name LanmanServer,TermService,WinRM,Spooler,sshd -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType | Format-Table -AutoSize
+          $srv = Join-Path $env:WINDIR 'System32\drivers\srv2.sys'
+          if (Test-Path $srv) {
+            (Get-Item $srv).VersionInfo | Select-Object FileVersion,ProductVersion | Format-List
+            Get-FileHash $srv -Algorithm SHA256 | Format-List
+          }
