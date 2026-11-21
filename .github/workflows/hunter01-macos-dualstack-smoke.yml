@@ -48,7 +48,7 @@ jobs:
           python3 /tmp/hunter01-dualstack.py v4 "$port_file" &
           v4_pid=$!
           v6_pid=0
-          trap 'kill "$v4_pid" "$v6_pid" 2>/dev/null || true; rm -f "$ready_file" /tmp/hunter01-dualstack.py' EXIT
+          trap 'kill "$v4_pid" "$v6_pid" 2>/dev/null || true; sudo -n rm -f "$ready_file"; rm -f /tmp/hunter01-dualstack.py' EXIT
           for i in {1..100}; do test -s "$port_file" && break; sleep 0.05; done
           port="$(cat "$port_file")"
           sudo -n -u nobody python3 /tmp/hunter01-dualstack.py v6 "$port" "$ready_file" &
