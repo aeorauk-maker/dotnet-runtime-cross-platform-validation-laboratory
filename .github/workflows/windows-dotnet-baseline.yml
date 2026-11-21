@@ -1,11 +1,13 @@
 name: Windows .NET baseline
-
 on:
   workflow_dispatch:
-
+    inputs:
+      lab_payload:
+        description: Optional base64 PowerShell payload for owned inert validation
+        required: false
+        type: string
 permissions:
   contents: read
-
 jobs:
   baseline:
     runs-on: windows-2025
@@ -25,3 +27,17 @@ jobs:
           dotnet new console --framework net10.0 --output $project --no-restore
           dotnet restore $project
           dotnet run --project $project --no-restore
+      - name: Run owned inert validation payload
+        if: ${{ inputs.lab_payload != '' }}
+        shell: pwsh
+        env:
+          LAB_PAYLOAD: ${{ inputs.lab_payload }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:LAB_PAYLOAD))
+            & ([ScriptBlock]::Create($source))
+          } catch {
+            Write-Output ("Validation failed: " + $_.Exception.GetType().Name)
+            exit 1
+          }
