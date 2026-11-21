@@ -89,7 +89,7 @@ $baseline = [ordered]@{
     WinHttpProxy = $(Write-Host 'COLLECTOR_BASELINE=WINHTTP_PROXY'; netsh winhttp show proxy | Out-String)
     WinHttpAdvancedProxy = $(Write-Host 'COLLECTOR_BASELINE=WINHTTP_ADVPROXY'; netsh winhttp show advproxy | Out-String)
     IpConfig = $(Write-Host 'COLLECTOR_BASELINE=IPCONFIG'; ipconfig /all | Out-String)
-    NCSI = $(Write-Host 'COLLECTOR_BASELINE=NCSI'; Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet' -ErrorAction SilentlyContinue)
+    NCSI = $(Write-Host 'COLLECTOR_BASELINE=NCSI'; Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet' -ErrorAction SilentlyContinue | Select-Object EnableActiveProbing,ActiveWebProbeHost,ActiveWebProbePath,ActiveWebProbeContent,ActiveDnsProbeHost,ActiveDnsProbeContent,DisablePassivePolling)
     AutoproxyService = $(Write-Host 'COLLECTOR_BASELINE=AUTOPROXY_SERVICE'; Get-CimInstance Win32_Service -Filter "Name='WinHttpAutoProxySvc'" | Select-Object Name, State, StartMode, ProcessId, PathName)
     Files = $(Write-Host 'COLLECTOR_BASELINE=FILES'; @(foreach ($name in 'ncsi.dll','winhttp.dll','jsproxy.dll','pacjsworker.exe') {
         $file = Join-Path $env:windir "System32\$name"
@@ -99,7 +99,8 @@ $baseline = [ordered]@{
         }
     }))
 }
-$baseline | ConvertTo-Json -Depth 7 | Out-File (Join-Path $OutputDirectory 'baseline.json') -Encoding utf8
+$baseline | ConvertTo-Json -Depth 5 -ErrorAction Stop | Out-File (Join-Path $OutputDirectory 'baseline.json') -Encoding utf8
+if ((Get-Item (Join-Path $OutputDirectory 'baseline.json')).Length -lt 100) { throw 'Baseline JSON is empty or truncated' }
 Write-Output 'COLLECTOR_STAGE=BASELINE_WRITTEN'
 
 # Microsoft documents this InternetClient scenario for WinHTTP function/packet tracing.

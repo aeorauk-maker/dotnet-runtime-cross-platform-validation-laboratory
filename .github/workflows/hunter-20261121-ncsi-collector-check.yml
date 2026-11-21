@@ -35,13 +35,22 @@ jobs:
           foreach ($name in 'baseline.json','trace-start.txt','trace-stop.txt','window.txt') {
             $path = Join-Path $out $name
             if (-not (Test-Path $path)) { throw "Missing collector output: $name" }
-            Write-Output "$name bytes=$((Get-Item $path).Length)"
+            $length = (Get-Item $path).Length
+            Write-Output "$name bytes=$length"
+            if ($length -lt 20) { throw "Empty or truncated collector output: $name" }
           }
-          $baseline = Get-Content (Join-Path $out 'baseline.json') -Raw | ConvertFrom-Json
+          $baseline = Get-Content (Join-Path $out 'baseline.json') -Raw | ConvertFrom-Json -ErrorAction Stop
+          if (-not $baseline.Build.CurrentBuildNumber -or -not $baseline.OS.Version) { throw 'Missing OS/build identity' }
+          $receiverFiles = @($baseline.Files | Where-Object { $_.SHA256 -match '^[0-9A-Fa-f]{64}$' })
+          if ($receiverFiles.Count -lt 2) { throw 'Missing receiver file hashes' }
           Write-Output "Runner build=$($baseline.Build.CurrentBuildNumber).$($baseline.Build.UBR)"
-          Write-Output "Receiver files=$($baseline.Files.Count)"
+          Write-Output "Receiver files with SHA-256=$($receiverFiles.Count)"
+          $selfToken = [LabTokenReader]::Describe($PID)
+          Write-Output "Token query for collector process=$selfToken"
+          if ($selfToken -match 'query-error|open-.*-error') { Write-Warning 'At least one token information class was unavailable; preserve the explicit code and use an independent token witness on Canary.' }
           if (Test-Path (Join-Path $out 'collector-errors.txt')) {
-            Write-Output 'Collector reported nonfatal instrumentation errors:'
-            Get-Content (Join-Path $out 'collector-errors.txt')
+            $collectorErrors = @(Get-Content (Join-Path $out 'collector-errors.txt'))
+            $collectorErrors | ForEach-Object { Write-Output "Collector error: $_" }
+            if ($collectorErrors.Count -gt 0) { throw 'Collector instrumentation error' }
           }
           Write-Output 'Collector runtime: PASS (standard Windows runner only)'
