@@ -1,0 +1,25 @@
+name: Windows OS component inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Record build and OpenSSH provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output "Runner=$env:RUNNER_OS ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          Get-ComputerInfo -Property WindowsVersion,WindowsBuildLabEx,OsBuildNumber | Format-List
+          $exe = Join-Path $env:WINDIR 'System32\OpenSSH\sshd.exe'
+          if (Test-Path $exe) {
+            $item = Get-Item $exe
+            Write-Output "OpenSSHPath=$exe"
+            $item.VersionInfo | Select-Object FileVersion,ProductVersion,OriginalFilename | Format-List
+            Get-FileHash $exe -Algorithm SHA256 | Format-List
+          } else { Write-Output 'OpenSSHServerBinary=absent' }
+          Get-Service sshd -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType | Format-List
+          Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction SilentlyContinue | Select-Object Name,State | Format-List
