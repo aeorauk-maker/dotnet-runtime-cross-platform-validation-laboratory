@@ -55,4 +55,8 @@ jobs:
           v6_pid=$!
           for i in {1..100}; do test -s "$ready_file" && break; sleep 0.05; done
           test -s "$ready_file"
+          visible="$(sudo -n -u nobody /usr/sbin/netstat -an -p tcp | grep -F "127.0.0.1.$port" || true)"
+          printf "nobody_netstat_seen=%s\n" "$visible"
+          test -n "$visible"
+          if sudo -n -u nobody /usr/sbin/lsof -nP -i4TCP -sTCP:LISTEN 2>/dev/null | grep -F "127.0.0.1:$port"; then echo nobody_lsof_visible; else echo nobody_lsof_hidden; fi
           python3 /tmp/hunter01-dualstack.py client "$port"
