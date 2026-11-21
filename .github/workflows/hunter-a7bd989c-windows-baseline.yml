@@ -1,0 +1,19 @@
+name: Hunter a7bd989c Windows baseline
+run-name: Hunter a7bd989c Windows baseline
+on:
+  push:
+    branches:
+      - hunter-20261121-a7bd989c
+permissions:
+  contents: read
+jobs:
+  runner_baseline:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Record Windows runner and SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Output "Runner=$env:RUNNER_OS ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          dotnet --info
