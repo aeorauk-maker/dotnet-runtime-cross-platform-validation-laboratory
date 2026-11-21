@@ -1,0 +1,19 @@
+name: hunter01-owned-windows-smoke
+run-name: hunter01-windows-smoke-${{ github.run_id }}
+on:
+  push:
+    branches:
+      - hunter-20261121-eop-rce-01
+permissions:
+  contents: read
+jobs:
+  runner:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check runner and installed SDK
+        shell: pwsh
+        run: |
+          Write-Output "HUNTER01_RUNNER_START"
+          dotnet --info
+          Write-Output "HUNTER01_RUNNER_DONE"
