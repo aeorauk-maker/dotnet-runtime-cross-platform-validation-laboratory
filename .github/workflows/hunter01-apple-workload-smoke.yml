@@ -2,6 +2,7 @@ name: Hunter 01 Apple workload smoke
 on:
   push:
     branches: [hunter-20261121-eop-rce-01]
+    paths: ['.github/workflows/hunter01-apple-workload-smoke.yml']
   workflow_dispatch:
 jobs:
   apple-workload:
@@ -19,6 +20,6 @@ jobs:
           dotnet --version
           df -h .
           dotnet workload install macos --version 11.0.100.1
-          dotnet new macos -n AppleBaseline -o "$RUNNER_TEMP/AppleBaseline" --no-restore
+          dotnet new macos -n AppleBaseline -o "$RUNNER_TEMP/AppleBaseline"
           dotnet msbuild "$RUNNER_TEMP/AppleBaseline/AppleBaseline.csproj" -getItem:ProjectCapability
           dotnet build "$RUNNER_TEMP/AppleBaseline/AppleBaseline.csproj" -f net11.0-macos -v:minimal
