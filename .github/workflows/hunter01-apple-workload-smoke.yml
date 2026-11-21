@@ -1,5 +1,7 @@
 name: Hunter 01 Apple workload smoke
 on:
+  push:
+    branches: [hunter-20261121-eop-rce-01]
   workflow_dispatch:
 jobs:
   apple-workload:
