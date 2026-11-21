@@ -80,6 +80,7 @@ public static class LabTokenReader {
 }
 '@
 Add-Type -TypeDefinition $tokenTypeSource -ErrorAction Stop
+Write-Output 'COLLECTOR_STAGE=TYPE_COMPILED'
 
 $baseline = [ordered]@{
     UtcStart = $runStart
@@ -99,12 +100,14 @@ $baseline = [ordered]@{
     })
 }
 $baseline | ConvertTo-Json -Depth 7 | Out-File (Join-Path $OutputDirectory 'baseline.json') -Encoding utf8
+Write-Output 'COLLECTOR_STAGE=BASELINE_WRITTEN'
 
 # Microsoft documents this InternetClient scenario for WinHTTP function/packet tracing.
 # Diagnostic ETW may alter timing; any final terminal must reproduce on stock settings.
 & netsh trace start scenario=InternetClient capture=yes report=no persistent=no maxsize=512 tracefile="$prefix.etl" 2>&1 |
     Out-File (Join-Path $OutputDirectory 'trace-start.txt') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { "netsh trace start exit=$LASTEXITCODE" | Out-File $errors -Append }
+Write-Output 'COLLECTOR_STAGE=TRACE_START_RETURNED'
 
 $seen = @{}
 $end = (Get-Date).AddSeconds($Seconds)
@@ -136,6 +139,7 @@ try {
     }
 } finally {
     & netsh trace stop 2>&1 | Out-File (Join-Path $OutputDirectory 'trace-stop.txt') -Encoding utf8
+    Write-Output 'COLLECTOR_STAGE=TRACE_STOP_RETURNED'
     Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-NCSI/Operational';StartTime=[datetime]::Parse($runStart)} -ErrorAction SilentlyContinue |
         Select-Object TimeCreated, Id, ProviderName, Message |
         ConvertTo-Json -Depth 4 | Out-File (Join-Path $OutputDirectory 'ncsi-operational.json') -Encoding utf8
