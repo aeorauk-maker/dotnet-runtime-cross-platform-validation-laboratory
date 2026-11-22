@@ -61,6 +61,8 @@ jobs:
           sleep 2
           printf '%s\n' 'InertUserOnly7A9E' | kinit user@ESC7A9E.TEST
           klist
+          klist -k -e /tmp/esc-service.keytab
+          KRB5_TRACE=/dev/stderr kvno HTTP/localhost@ESC7A9E.TEST
       - name: Run generic channel-binding compatibility cases
         shell: bash
         env:
@@ -104,8 +106,8 @@ jobs:
                   serverBinding?.SetCertHash(new byte[32]);
                   using var client = new NegotiateAuthentication(new NegotiateAuthenticationClientOptions
                   {
-                      Package = "Kerberos", Credential = new NetworkCredential("user", "InertUserOnly7A9E", "ESC7A9E.TEST"),
-                      TargetName = "HTTP/localhost", Binding = clientBinding
+                      Package = "Kerberos", Credential = CredentialCache.DefaultNetworkCredentials,
+                      TargetName = "HTTP/localhost@ESC7A9E.TEST", Binding = clientBinding
                   });
                   using var server = new NegotiateAuthentication(new NegotiateAuthenticationServerOptions
                   {
