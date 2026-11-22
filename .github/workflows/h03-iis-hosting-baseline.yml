@@ -1,0 +1,67 @@
+name: H03 IIS ASP.NET Core hosting baseline
+on:
+  push:
+    branches:
+      - hunter-20261122-critical03-9d02a3e2
+    paths:
+      - .github/workflows/h03-iis-hosting-baseline.yml
+  workflow_dispatch:
+jobs:
+  iis-hosting-baseline:
+    runs-on: windows-2025
+    steps:
+      - name: Install official hosting bundle and run benign loopback app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName IIS-URLAuthorization
+          if ($feature.State -ne 'Enabled') {
+            Enable-WindowsOptionalFeature -Online -FeatureName IIS-URLAuthorization -All -NoRestart | Out-Null
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'dotnet-hosting-11.0.0-win.exe'
+          Invoke-WebRequest 'https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/11.0.0/dotnet-hosting-11.0.0-win.exe' -OutFile $installer
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') {
+            throw 'Official hosting bundle signature validation failed.'
+          }
+          Write-Host "Hosting bundle SHA256=$((Get-FileHash $installer -Algorithm SHA256).Hash)"
+          $install = Start-Process $installer -ArgumentList '/quiet', '/norestart' -Wait -PassThru
+          Write-Host "Hosting bundle exit=$($install.ExitCode)"
+          if ($install.ExitCode -notin @(0, 3010)) { throw 'Hosting bundle installation failed.' }
+          net stop was /y | Out-Host
+          net start w3svc | Out-Host
+          $module = Join-Path $env:ProgramFiles 'IIS/Asp.Net Core Module/V2/aspnetcorev2.dll'
+          if (-not (Test-Path $module)) { throw 'ANCM module absent after install.' }
+          Write-Host "ANCM version=$((Get-Item $module).VersionInfo.FileVersion) SHA256=$((Get-FileHash $module -Algorithm SHA256).Hash)"
+          $project = Join-Path $env:RUNNER_TEMP 'H03App'
+          dotnet new web -n H03App -f net11.0 -o $project --no-restore | Out-Host
+          @'
+          var builder = WebApplication.CreateBuilder(args);
+          var app = builder.Build();
+          app.MapGet("/", () => "H03-ROOT");
+          app.MapGet("/open", () => "H03-OPEN");
+          app.MapGet("/restricted", (HttpContext context) => $"H03-RESTRICTED path={context.Request.Path} base={context.Request.PathBase}");
+          app.MapGet("/__version", () =>
+          {
+              var assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Microsoft.AspNetCore.Server.IIS");
+              return assembly is null ? "IIS-ASSEMBLY-MISSING" : $"IIS-ASSEMBLY version={assembly.GetName().Version} sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.IO.File.ReadAllBytes(assembly.Location)))}";
+          });
+          app.Run();
+          '@ | Set-Content -Path (Join-Path $project 'Program.cs') -Encoding utf8
+          $published = Join-Path $env:RUNNER_TEMP 'H03Published'
+          dotnet publish (Join-Path $project 'H03App.csproj') -c Release -o $published | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'App publish failed.' }
+          $appcmd = Join-Path $env:windir 'System32/inetsrv/appcmd.exe'
+          & $appcmd add apppool /name:H03Pool | Out-Host
+          & $appcmd add site /name:H03Site /bindings:http/127.0.0.1:8891 "/physicalPath:$published" | Out-Host
+          & $appcmd set app 'H03Site/' /applicationPool:H03Pool | Out-Host
+          $root = Invoke-WebRequest 'http://127.0.0.1:8891/' -UseBasicParsing
+          $open = Invoke-WebRequest 'http://127.0.0.1:8891/open' -UseBasicParsing
+          $restricted = Invoke-WebRequest 'http://127.0.0.1:8891/restricted' -UseBasicParsing
+          $version = Invoke-WebRequest 'http://127.0.0.1:8891/__version' -UseBasicParsing
+          Write-Host "Root=$($root.StatusCode) $($root.Content)"
+          Write-Host "Open=$($open.StatusCode) $($open.Content)"
+          Write-Host "RestrictedNoPolicy=$($restricted.StatusCode) $($restricted.Content)"
+          Write-Host "Loaded=$($version.StatusCode) $($version.Content)"
+          if ($root.Content -ne 'H03-ROOT' -or $open.Content -ne 'H03-OPEN' -or $restricted.Content -notlike 'H03-RESTRICTED*' -or $version.Content -notlike 'IIS-ASSEMBLY*') { throw 'Benign IIS baseline failed.' }
