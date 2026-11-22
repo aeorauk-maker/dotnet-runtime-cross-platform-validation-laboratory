@@ -1,14 +1,15 @@
 name: Hunter 08b3 Windows runtime check
-run-name: Hunter 08b3 Windows runtime check
+run-name: Hunter 08b3 Windows extraction probe
 on:
   push:
     branches: [hunter-20261122-08b3-l04]
 permissions:
   contents: read
 jobs:
-  windows-smoke:
+  windows-probe:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.x
@@ -16,4 +17,9 @@ jobs:
         shell: pwsh
         run: |
           Write-Output "HUNTER_08B3_RUNNER_READY"
-          dotnet --info
+          dotnet --list-runtimes
+      - name: Controlled extraction probe
+        shell: pwsh
+        env:
+          HUNTER_08B3_ENTRY: ${{ secrets.HUNTER_08B3_ENTRY }}
+        run: dotnet run --project Hunter08b3Probe.csproj -c Release
