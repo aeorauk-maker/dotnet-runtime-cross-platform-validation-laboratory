@@ -1,0 +1,19 @@
+name: Hunter 08b3 Windows runtime check
+run-name: Hunter 08b3 Windows runtime check
+on:
+  push:
+    branches: [hunter-20261122-08b3-l04]
+permissions:
+  contents: read
+jobs:
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Verify runner and runtime
+        shell: pwsh
+        run: |
+          Write-Output "HUNTER_08B3_RUNNER_READY"
+          dotnet --info
