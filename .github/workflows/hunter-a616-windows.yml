@@ -1,0 +1,15 @@
+name: Hunter a616 Windows runner smoke
+on:
+  push:
+    branches: [hunter-20261122-a616-smoke]
+  workflow_dispatch:
+jobs:
+  windows-startup:
+    runs-on: windows-latest
+    steps:
+      - name: Show platform and installed dotnet
+        shell: pwsh
+        run: |
+          Write-Output "HUNTER_A616_WINDOWS_STARTUP"
+          [System.Environment]::OSVersion.VersionString
+          dotnet --info
