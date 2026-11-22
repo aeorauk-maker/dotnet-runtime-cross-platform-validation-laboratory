@@ -1,0 +1,18 @@
+name: Hunter 22 4009 Windows runner check
+run-name: hunter22-4009-windows-smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: windows-2025
+    steps:
+      - name: Check owned runner and installed .NET
+        shell: pwsh
+        run: |
+          Write-Output 'HUNTER22-4009-START'
+          Write-Output "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          dotnet --version
+          dotnet --list-runtimes
+          Write-Output 'HUNTER22-4009-END'
