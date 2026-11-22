@@ -1,0 +1,27 @@
+name: ESC 93C1 Windows OTS capability
+on:
+  workflow_dispatch:
+jobs:
+  ots-capability:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Inspect supported SDK and session capability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output 'ESC93C1_CAPABILITY_START'
+          whoami /user
+          whoami /groups
+          dotnet --list-sdks
+          dotnet --info
+          $dotnet = (Get-Command dotnet).Source
+          Get-Item $dotnet | Select-Object FullName,Length,VersionInfo
+          Get-FileHash $dotnet -Algorithm SHA256 | Select-Object Path,Hash
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA,ConsentPromptBehaviorUser,PromptOnSecureDesktop | Select-Object EnableLUA,ConsentPromptBehaviorUser,PromptOnSecureDesktop
+          (Get-Process explorer -ErrorAction SilentlyContinue | Measure-Object).Count | ForEach-Object { Write-Output "EXPLORER_COUNT=$_" }
+          query session 2>&1 | ForEach-Object { Write-Output $_ }
+          Write-Output 'ESC93C1_CAPABILITY_END'
