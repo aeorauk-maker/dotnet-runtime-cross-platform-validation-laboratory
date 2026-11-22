@@ -1,0 +1,23 @@
+name: Hunter a616 L48 Linux policy gate
+on:
+  workflow_dispatch:
+  push:
+    branches: [hunter-20261122-a616-smoke]
+    paths: [.github/workflows/hunter-a616-l48-linux.yml]
+permissions:
+  contents: read
+jobs:
+  l48-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run private inert probe
+        shell: bash
+        env:
+          PROBE_B64: ${{ secrets.A616_L48_PROBE_B64 }}
+        run: |
+          test -n "$PROBE_B64"
+          printf "%s" "$PROBE_B64" | base64 -d | bash
