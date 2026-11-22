@@ -1,0 +1,117 @@
+name: Hunter 22 4009 Windows identity isolation
+run-name: hunter22-4009-identity-isolation
+on:
+  push:
+    branches: [hunter-20261122-4009-identity]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  identity:
+    runs-on: windows-2025
+    steps:
+      - name: Check separate Windows identities on supported runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $a = 'hunterA4009'
+          $b = 'hunterB4009'
+          $pwA = [guid]::NewGuid().ToString('N') + 'aA1!'
+          $pwB = [guid]::NewGuid().ToString('N') + 'bB1!'
+          & net.exe user $a $pwA /add | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'A account setup failed' }
+          & net.exe user $b $pwB /add | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'B account setup failed' }
+          $file = Join-Path $env:RUNNER_TEMP 'hunter22-4009-a-only.txt'
+          Set-Content -LiteralPath $file -Value 'BASE' -NoNewline
+          & icacls.exe $file '/inheritance:r' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'ACL inheritance setup failed' }
+          & icacls.exe $file '/grant:r' "$($env:COMPUTERNAME)\$($a):(M)" 'SYSTEM:(F)' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'ACL grant setup failed' }
+          $env:HUNTER_A = $a
+          $env:HUNTER_B = $b
+          $env:HUNTER_A_PASSWORD = $pwA
+          $env:HUNTER_B_PASSWORD = $pwB
+          $env:HUNTER_FILE = $file
+          dotnet new console -f net11.0 -o "$env:RUNNER_TEMP\IdentityCheck4009" --no-restore | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Project setup failed' }
+          @'
+          using System;
+          using System.IO;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+          using System.Security.Principal;
+          using System.Threading.Tasks;
+          using Microsoft.Win32.SafeHandles;
+
+          internal static class Program
+          {
+              [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              private static extern bool LogonUser(string username, string domain, string password,
+                  int logonType, int logonProvider, out SafeAccessTokenHandle token);
+
+              private static SafeAccessTokenHandle GetToken(string name, string password)
+              {
+                  if (!LogonUser(name, ".", password, 2, 0, out var token))
+                      throw new Win32Exception(Marshal.GetLastWin32Error());
+                  return token;
+              }
+
+              private static bool TryWrite(string file)
+              {
+                  try { File.AppendAllText(file, "X"); return true; }
+                  catch (UnauthorizedAccessException) { return false; }
+              }
+
+              private static void Need(bool condition, string label)
+              {
+                  if (!condition) throw new InvalidOperationException(label);
+              }
+
+              private static async Task Main()
+              {
+                  var a = Environment.GetEnvironmentVariable("HUNTER_A")!;
+                  var b = Environment.GetEnvironmentVariable("HUNTER_B")!;
+                  var file = Environment.GetEnvironmentVariable("HUNTER_FILE")!;
+                  using var tokenA = GetToken(a, Environment.GetEnvironmentVariable("HUNTER_A_PASSWORD")!);
+                  using var tokenB = GetToken(b, Environment.GetEnvironmentVariable("HUNTER_B_PASSWORD")!);
+                  var nameA = Environment.MachineName + "\\" + a;
+                  var nameB = Environment.MachineName + "\\" + b;
+                  Console.WriteLine("RUNTIME=" + RuntimeInformation.FrameworkDescription);
+                  Console.WriteLine("IDENTITY_ASSEMBLY=" + typeof(WindowsIdentity).Assembly.Location);
+                  Console.WriteLine("CORELIB_ASSEMBLY=" + typeof(object).Assembly.Location);
+                  Need(WindowsIdentity.RunImpersonated(tokenA, () => TryWrite(file)), "valid A baseline denied");
+                  Need(!WindowsIdentity.RunImpersonated(tokenB, () => TryWrite(file)), "denied B baseline allowed");
+                  Need(!TryWrite(file), "process baseline unexpectedly allowed");
+                  Console.WriteLine("BASELINES=PASS");
+                  for (var repeat = 0; repeat < 2; repeat++)
+                  {
+                      var aTask = WindowsIdentity.RunImpersonatedAsync(tokenA, async () =>
+                      {
+                          for (var i = 0; i < 1000; i++)
+                          {
+                              await Task.Yield();
+                              if ((i & 7) == 0) await Task.Delay(1);
+                              Need(string.Equals(WindowsIdentity.GetCurrent().Name, nameA, StringComparison.OrdinalIgnoreCase), "A identity mismatch");
+                          }
+                      });
+                      var bTask = WindowsIdentity.RunImpersonatedAsync(tokenB, async () =>
+                      {
+                          for (var i = 0; i < 1000; i++)
+                          {
+                              await Task.Yield();
+                              if ((i & 7) == 0) await Task.Delay(1);
+                              Need(string.Equals(WindowsIdentity.GetCurrent().Name, nameB, StringComparison.OrdinalIgnoreCase), "B identity mismatch");
+                              Need(!TryWrite(file), "B acquired A file rights");
+                          }
+                      });
+                      await Task.WhenAll(aTask, bTask);
+                      Need(!TryWrite(file), "post-run process baseline unexpectedly allowed");
+                      Console.WriteLine("REPEAT=" + repeat + " PASS");
+                  }
+                  Console.WriteLine("HUNTER22-4009-IDENTITY-ISOLATION-PASS");
+              }
+          }
+          '@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\IdentityCheck4009\Program.cs" -Encoding utf8
+          dotnet run --project "$env:RUNNER_TEMP\IdentityCheck4009\IdentityCheck4009.csproj" -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Identity isolation control failed' }
