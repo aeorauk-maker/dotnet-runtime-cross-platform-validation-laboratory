@@ -16,8 +16,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $a = 'hunterA4009'
           $b = 'hunterB4009'
-          $pwA = [guid]::NewGuid().ToString('N') + 'aA1!'
-          $pwB = [guid]::NewGuid().ToString('N') + 'bB1!'
+          $pwA = [guid]::NewGuid().ToString('N').Substring(0, 8) + 'aA1!'
+          $pwB = [guid]::NewGuid().ToString('N').Substring(0, 8) + 'bB1!'
           & net.exe user $a $pwA /add | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'A account setup failed' }
           & net.exe user $b $pwB /add | Out-Null
