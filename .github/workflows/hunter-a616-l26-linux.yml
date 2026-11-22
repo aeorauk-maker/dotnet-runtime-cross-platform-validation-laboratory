@@ -1,0 +1,22 @@
+name: Hunter a616 Linux runtime boundary probe
+on:
+  push:
+    branches: [hunter-20261122-a616-smoke]
+    paths: [.github/workflows/hunter-a616-l26-linux.yml]
+permissions:
+  contents: read
+jobs:
+  l26-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.x'
+      - name: Run private inert boundary probe
+        shell: bash
+        env:
+          A616_PROBE_B64: ${{ secrets.A616_L26_PROBE_B64 }}
+        run: |
+          test -n "$A616_PROBE_B64"
+          printf '%s' "$A616_PROBE_B64" | base64 -d > "$RUNNER_TEMP/a616-l26.sh"
+          bash "$RUNNER_TEMP/a616-l26.sh"
