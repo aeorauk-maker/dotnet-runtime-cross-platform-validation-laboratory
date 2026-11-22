@@ -1,0 +1,47 @@
+name: Hunter 08b3 L21 Windows path control
+run-name: Hunter 08b3 L21 Windows path control
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  path-control:
+    runs-on: windows-latest
+    steps:
+      - name: Check directory rename with held log
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP ('h08b3-l21-' + $env:GITHUB_RUN_ID)
+          $client = Join-Path $root 'client'
+          $outside = Join-Path $root 'outside'
+          $old = Join-Path $root 'client-old'
+          New-Item -ItemType Directory -Force -Path $client, $outside | Out-Null
+          $held = Join-Path $client 'held.log'
+          $stream = [System.IO.File]::Open($held, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+          $renamed = $false
+          $renameError = 'none'
+          $redirected = $false
+          try {
+            try {
+              [System.IO.Directory]::Move($client, $old)
+              $renamed = $true
+            } catch {
+              $renameError = $_.Exception.GetType().Name
+            }
+            if ($renamed) {
+              New-Item -ItemType Junction -Path $client -Target $outside | Out-Null
+              [System.IO.File]::WriteAllText((Join-Path $client 'probe.txt'), 'safe')
+              $redirected = Test-Path (Join-Path $outside 'probe.txt')
+            }
+            Write-Host "held_rename=$renamed held_error=$renameError redirected=$redirected"
+          } finally {
+            $stream.Dispose()
+          }
+          if (-not $renamed) {
+            [System.IO.Directory]::Move($client, $old)
+            New-Item -ItemType Junction -Path $client -Target $outside | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $client 'probe.txt'), 'safe')
+            $redirected = Test-Path (Join-Path $outside 'probe.txt')
+            Write-Host "closed_rename_redirected=$redirected"
+          }
