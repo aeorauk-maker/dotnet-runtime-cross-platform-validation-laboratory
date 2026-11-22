@@ -1,0 +1,44 @@
+name: Hunter 4009 Windows Installer log check
+run-name: Hunter 4009 benign MSI logging probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [hunter-20261122-4009-smoke]
+    paths: ['.github/workflows/hunter22-4009-msi-logcheck.yml']
+jobs:
+  log-check:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check official runtime and benign MSI log behavior
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "IDENTITY=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          Write-Host "SDK=$(dotnet --version)"
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeMsiProbe {
+            [DllImport("msi.dll", CharSet=CharSet.Unicode, EntryPoint="MsiEnableLogW")]
+            public static extern uint EnableLog(uint mode, string path, uint attributes);
+            [DllImport("msi.dll", CharSet=CharSet.Unicode, EntryPoint="MsiConfigureProductW")]
+            public static extern uint ConfigureProduct(string product, int level, int state);
+          }
+          '@
+          $cases = @(
+            @{ Name='valid-shape'; Code='{11111111-2222-3333-4444-555555555555}' },
+            @{ Name='invalid-shape'; Code='HUNTER22BENIGNMARKER' }
+          )
+          foreach ($case in $cases) {
+            $path = Join-Path $env:RUNNER_TEMP ("hunter22-4009-" + $case.Name + ".log")
+            [IO.File]::WriteAllText($path, '')
+            $enable = [NativeMsiProbe]::EnableLog(0x1fff, $path, 0)
+            $result = [NativeMsiProbe]::ConfigureProduct($case.Code, 0, 2)
+            $body = [IO.File]::ReadAllText($path)
+            $containsCode = $body.Contains($case.Code)
+            Write-Host "CASE=$($case.Name) ENABLE=$enable RESULT=$result BYTES=$([Text.Encoding]::UTF8.GetByteCount($body)) CODE_IN_LOG=$containsCode"
+            $hash = (Get-FileHash -Algorithm SHA256 $path).Hash
+            Write-Host "CASE=$($case.Name) SHA256=$hash"
+          }
+          Write-Host 'HUNTER22_LOGCHECK_END'
