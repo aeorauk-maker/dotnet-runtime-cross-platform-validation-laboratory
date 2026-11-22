@@ -1,0 +1,20 @@
+name: Hunter 3CC2 Windows runner smoke
+run-name: Hunter 3CC2 20261122 ${{ github.run_id }}
+on:
+  push:
+    branches:
+      - hunter-20261122-3cc2-smoke
+permissions:
+  contents: read
+jobs:
+  startup:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Report runner baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Output "Runner=$env:RUNNER_OS ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          whoami
+          dotnet --info
