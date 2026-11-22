@@ -73,3 +73,36 @@ jobs:
           Write-Host "RestrictedNoPolicy=$($restricted.StatusCode) $($restricted.Content)"
           Write-Host "Loaded=$($version.StatusCode) $($version.Content)"
           if ($root.Content -ne 'H03-ROOT' -or $open.Content -ne 'H03-OPEN' -or $restricted.Content -notlike 'H03-RESTRICTED*' -or $version.Content -notlike 'IIS-ASSEMBLY*') { throw 'Benign IIS baseline failed.' }
+          $winAuth = Get-WindowsOptionalFeature -Online -FeatureName IIS-WindowsAuthentication
+          if ($winAuth.State -ne 'Enabled') {
+            Enable-WindowsOptionalFeature -Online -FeatureName IIS-WindowsAuthentication -All -NoRestart | Out-Null
+            net stop was /y | Out-Host
+            net start w3svc | Out-Host
+          }
+          & $appcmd set config 'H03Site/restricted' /section:system.webServer/security/authentication/anonymousAuthentication /enabled:false /commit:apphost | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to disable anonymous authentication on restricted path.' }
+          & $appcmd set config 'H03Site/restricted' /section:system.webServer/security/authentication/windowsAuthentication /enabled:true /commit:apphost | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Windows authentication on restricted path.' }
+          [xml]$config = Get-Content (Join-Path $published 'web.config')
+          $location = $config.CreateElement('location')
+          $location.SetAttribute('path', 'restricted')
+          $webServer = $config.CreateElement('system.webServer')
+          $security = $config.CreateElement('security')
+          $authorization = $config.CreateElement('authorization')
+          $authorization.AppendChild($config.CreateElement('clear')) | Out-Null
+          $allow = $config.CreateElement('add')
+          $allow.SetAttribute('accessType', 'Allow')
+          $allow.SetAttribute('roles', 'Administrators')
+          $authorization.AppendChild($allow) | Out-Null
+          $security.AppendChild($authorization) | Out-Null
+          $webServer.AppendChild($security) | Out-Null
+          $location.AppendChild($webServer) | Out-Null
+          $config.DocumentElement.AppendChild($location) | Out-Null
+          $config.Save((Join-Path $published 'web.config'))
+          $denied = Invoke-WebRequest 'http://127.0.0.1:8891/restricted' -UseBasicParsing -SkipHttpErrorCheck
+          $valid = Invoke-WebRequest 'http://127.0.0.1:8891/restricted' -UseBasicParsing -UseDefaultCredentials -SkipHttpErrorCheck
+          $openAfterPolicy = Invoke-WebRequest 'http://127.0.0.1:8891/open' -UseBasicParsing -SkipHttpErrorCheck
+          Write-Host "DeniedDirect=$($denied.StatusCode)"
+          Write-Host "ValidWindowsAdmin=$($valid.StatusCode) $($valid.Content)"
+          Write-Host "OpenAfterPolicy=$($openAfterPolicy.StatusCode) $($openAfterPolicy.Content)"
+          if ($denied.StatusCode -notin @(401, 403) -or $valid.StatusCode -ne 200 -or $valid.Content -notlike 'H03-RESTRICTED*' -or $openAfterPolicy.Content -ne 'H03-OPEN') { throw 'Native IIS authorization baselines failed.' }
