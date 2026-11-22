@@ -1,0 +1,135 @@
+name: hunter22-4009-kerberos-capability
+on:
+  push:
+    branches:
+      - hunter-20261122-4009-kerberos
+    paths:
+      - .github/workflows/hunter22-4009-kerberos-capability.yml
+  workflow_dispatch:
+
+jobs:
+  linux-kerberos-capability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Install official .NET 11 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Set up an inert local Kerberos realm
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq krb5-kdc krb5-user
+          sudo tee /etc/krb5.conf >/dev/null <<'CONF'
+          [libdefaults]
+            default_realm = H22LAB.TEST
+            dns_lookup_realm = false
+            dns_lookup_kdc = false
+            rdns = false
+            dns_canonicalize_hostname = false
+          [realms]
+            H22LAB.TEST = {
+              kdc = 127.0.0.1
+              admin_server = 127.0.0.1
+            }
+          [domain_realm]
+            .h22lab.test = H22LAB.TEST
+            h22lab.test = H22LAB.TEST
+          CONF
+          sudo mkdir -p /etc/krb5kdc
+          sudo tee /etc/krb5kdc/kdc.conf >/dev/null <<'CONF'
+          [kdcdefaults]
+            kdc_ports = 88
+          [realms]
+            H22LAB.TEST = {
+              database_name = /var/lib/krb5kdc/principal
+              key_stash_file = /etc/krb5kdc/stash
+              acl_file = /etc/krb5kdc/kadm5.acl
+              max_life = 10h 0m 0s
+              max_renewable_life = 7d 0h 0m 0s
+              supported_enctypes = aes256-cts-hmac-sha1-96:normal aes128-cts-hmac-sha1-96:normal
+            }
+          CONF
+          sudo kdb5_util -r H22LAB.TEST create -s -P 'InertMasterOnly4271'
+          sudo kadmin.local -r H22LAB.TEST -q 'addprinc -pw InertUserOnly4271 user@H22LAB.TEST'
+          sudo kadmin.local -r H22LAB.TEST -q 'addprinc -randkey HTTP/localhost@H22LAB.TEST'
+          sudo kadmin.local -r H22LAB.TEST -q 'ktadd -k /tmp/h22-service.keytab HTTP/localhost@H22LAB.TEST'
+          sudo chmod 644 /tmp/h22-service.keytab
+          sudo krb5kdc -n >/tmp/h22-kdc.log 2>&1 &
+          sleep 2
+          printf '%s\n' 'InertUserOnly4271' | kinit user@H22LAB.TEST
+          klist
+      - name: Run generic channel-binding compatibility cases
+        shell: bash
+        env:
+          KRB5_KTNAME: /tmp/h22-service.keytab
+        run: |
+          set -euo pipefail
+          dotnet --info | sed -n '1,26p'
+          mkdir -p /tmp/h22-probe
+          cd /tmp/h22-probe
+          cat > Probe.csproj <<'CSPROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net11.0</TargetFramework>
+              <Nullable>enable</Nullable>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+            </PropertyGroup>
+          </Project>
+          CSPROJ
+          curl -fsSL https://raw.githubusercontent.com/dotnet/runtime/v11.0.0/src/libraries/System.Net.Security/src/System/Net/Security/Pal.Managed/SafeChannelBindingHandle.cs -o SafeChannelBindingHandle.cs
+          curl -fsSL https://raw.githubusercontent.com/dotnet/runtime/v11.0.0/src/libraries/Common/src/System/Net/Security/Unix/SecChannelBindings.cs -o SecChannelBindings.cs
+          cat > Program.cs <<'CS'
+          using System.Net;
+          using System.Net.Security;
+          using System.Security.Authentication.ExtendedProtection;
+          
+          foreach (var test in new[]
+          {
+              (Name: "matched", ClientBinding: true, ServerBinding: true, Strict: false),
+              (Name: "missing-default", ClientBinding: false, ServerBinding: true, Strict: false),
+              (Name: "missing-strict", ClientBinding: false, ServerBinding: true, Strict: true),
+              (Name: "both-unbound", ClientBinding: false, ServerBinding: false, Strict: false)
+          })
+          {
+              try
+              {
+                  using var clientBinding = test.ClientBinding ? new SafeChannelBindingHandle(ChannelBindingKind.Endpoint) : null;
+                  using var serverBinding = test.ServerBinding ? new SafeChannelBindingHandle(ChannelBindingKind.Endpoint) : null;
+                  clientBinding?.SetCertHash(new byte[32]);
+                  serverBinding?.SetCertHash(new byte[32]);
+                  using var client = new NegotiateAuthentication(new NegotiateAuthenticationClientOptions
+                  {
+                      Package = "Kerberos", Credential = new NetworkCredential("user", "InertUserOnly4271", "H22LAB.TEST"),
+                      TargetName = "HTTP/localhost", Binding = clientBinding
+                  });
+                  using var server = new NegotiateAuthentication(new NegotiateAuthenticationServerOptions
+                  {
+                      Package = "Kerberos", Binding = serverBinding,
+                      Policy = test.Strict ? new ExtendedProtectionPolicy(PolicyEnforcement.Always) : null
+                  });
+                  byte[] incoming = [];
+                  for (var turn = 0; turn < 8; turn++)
+                  {
+                      var outgoing = client.GetOutgoingBlob(incoming, out var clientStatus);
+                      Console.WriteLine($"{test.Name} turn={turn} client={clientStatus} bytes={outgoing?.Length ?? 0}");
+                      if (outgoing is null || clientStatus is not (NegotiateAuthenticationStatusCode.Completed or NegotiateAuthenticationStatusCode.ContinueNeeded)) break;
+                      var response = server.GetOutgoingBlob(outgoing, out var serverStatus);
+                      Console.WriteLine($"{test.Name} turn={turn} server={serverStatus} bytes={response?.Length ?? 0} authenticated={server.IsAuthenticated}");
+                      if (serverStatus is not (NegotiateAuthenticationStatusCode.Completed or NegotiateAuthenticationStatusCode.ContinueNeeded)) break;
+                      if (server.IsAuthenticated && client.IsAuthenticated) break;
+                      incoming = response ?? [];
+                  }
+                  Console.WriteLine($"{test.Name} final serverAuthenticated={server.IsAuthenticated} clientAuthenticated={client.IsAuthenticated} serverIdentity={(server.IsAuthenticated ? server.RemoteIdentity?.Name : "<none>")}");
+              }
+              catch (Exception e)
+              {
+                  Console.WriteLine($"{test.Name} exception={e.GetType().Name} message={e.Message}");
+              }
+          }
+          CS
+          dotnet run --project Probe.csproj
