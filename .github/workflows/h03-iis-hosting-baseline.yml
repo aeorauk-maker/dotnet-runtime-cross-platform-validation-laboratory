@@ -54,9 +54,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'App publish failed.' }
           $appcmd = Join-Path $env:windir 'System32/inetsrv/appcmd.exe'
           & $appcmd add apppool /name:H03Pool | Out-Host
-          & $appcmd add site /name:H03Site /bindings:http/127.0.0.1:8891 "/physicalPath:$published" | Out-Host
+          & $appcmd add site /name:H03Site /bindings:http/127.0.0.1:8891: "/physicalPath:$published" | Out-Host
           & $appcmd set app 'H03Site/' /applicationPool:H03Pool | Out-Host
-          $root = Invoke-WebRequest 'http://127.0.0.1:8891/' -UseBasicParsing
+          $siteState = & $appcmd list site H03Site /text:state
+          Write-Host "SiteState=$siteState"
+          if ($siteState -ne 'Started') { & $appcmd start site H03Site | Out-Host }
+          $root = $null
+          for ($attempt = 0; $attempt -lt 10; $attempt++) {
+            try { $root = Invoke-WebRequest 'http://127.0.0.1:8891/' -UseBasicParsing; break }
+            catch { Start-Sleep -Seconds 1 }
+          }
+          if ($null -eq $root) { & $appcmd list site H03Site /text:* | Out-Host; throw 'IIS loopback listener failed to start.' }
           $open = Invoke-WebRequest 'http://127.0.0.1:8891/open' -UseBasicParsing
           $restricted = Invoke-WebRequest 'http://127.0.0.1:8891/restricted' -UseBasicParsing
           $version = Invoke-WebRequest 'http://127.0.0.1:8891/__version' -UseBasicParsing
