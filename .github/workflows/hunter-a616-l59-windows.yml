@@ -1,0 +1,35 @@
+name: hunter-a616-l59-windows
+on:
+  push:
+    branches:
+      - hunter-20261122-a616-smoke
+    paths:
+      - .github/workflows/hunter-a616-l59-windows.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  l59-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Record supported runtime
+        shell: pwsh
+        run: dotnet --info
+      - name: Run private inert probe
+        shell: pwsh
+        env:
+          PROBE_GZB64: ${{ secrets.A616_L59_PROBE_GZB64 }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:PROBE_GZB64)) { throw 'Probe missing' }
+          $bytes = [Convert]::FromBase64String($env:PROBE_GZB64)
+          $inputStream = [IO.MemoryStream]::new($bytes)
+          $gzip = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+          $reader = [IO.StreamReader]::new($gzip, [Text.Encoding]::UTF8)
+          $script = $reader.ReadToEnd()
+          $reader.Dispose()
+          $path = Join-Path $env:RUNNER_TEMP 'a616-l59-probe.ps1'
+          [IO.File]::WriteAllText($path, $script)
+          & $path
