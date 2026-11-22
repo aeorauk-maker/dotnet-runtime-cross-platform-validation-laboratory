@@ -38,6 +38,8 @@ jobs:
             $body = [IO.File]::ReadAllText($path)
             $containsCode = $body.Contains($case.Code)
             Write-Host "CASE=$($case.Name) ENABLE=$enable RESULT=$result BYTES=$([Text.Encoding]::UTF8.GetByteCount($body)) CODE_IN_LOG=$containsCode"
+            $locationLines = $body -split [Environment]::NewLine | Where-Object { $_ -like '*MsiLogFileLocation*' } | Select-Object -First 2
+            foreach ($line in $locationLines) { Write-Host "LOCATION_LINE=$line" }
             $hash = (Get-FileHash -Algorithm SHA256 $path).Hash
             Write-Host "CASE=$($case.Name) SHA256=$hash"
           }
