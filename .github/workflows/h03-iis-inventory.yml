@@ -1,0 +1,27 @@
+name: H03 IIS capability inventory
+on:
+  push:
+    branches:
+      - hunter-20261122-critical03-9d02a3e2
+    paths:
+      - .github/workflows/h03-iis-inventory.yml
+  workflow_dispatch:
+jobs:
+  iis-inventory:
+    runs-on: windows-2025
+    steps:
+      - name: Inspect Windows IIS and hosting capability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          Write-Host "Dotnet SDK:"
+          dotnet --version
+          Write-Host "IIS service:"
+          Get-Service W3SVC -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType | Format-List
+          Write-Host "IIS optional features:"
+          dism /Online /Get-Features /Format:Table | Select-String "IIS-WebServerRole|IIS-WebServer|IIS-URLAuthorization|IIS-ASP"
+          Write-Host "Hosting module paths:"
+          @("$env:ProgramFiles\IIS\Asp.Net Core Module\V2\aspnetcorev2.dll", "$env:windir\System32\inetsrv\aspnetcorev2.dll", "$env:windir\System32\inetsrv\appcmd.exe") | ForEach-Object { Write-Host "$_ exists=$(Test-Path $_)" }
+          Write-Host "Privileges:"
+          whoami /groups | Select-String "S-1-5-32-544|S-1-5-18"
