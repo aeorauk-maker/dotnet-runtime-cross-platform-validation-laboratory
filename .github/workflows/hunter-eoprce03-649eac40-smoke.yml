@@ -1,0 +1,21 @@
+name: H03 Windows runner smoke 649eac40
+run-name: H03 Windows smoke 649eac40
+on:
+  push:
+    branches: [hunter-20261122-eoprce03-649eac40]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect SDK and identity
+        shell: pwsh
+        run: |
+          Write-Output "H03_SMOKE_START"
+          whoami
+          dotnet --list-sdks
+          dotnet --list-runtimes
+          Write-Output "H03_SMOKE_END"
