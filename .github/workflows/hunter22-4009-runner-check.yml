@@ -1,6 +1,8 @@
 name: Hunter 22 4009 Windows runner check
 run-name: hunter22-4009-windows-smoke
 on:
+  push:
+    branches: [hunter-20261122-4009-smoke]
   workflow_dispatch:
 permissions:
   contents: read
