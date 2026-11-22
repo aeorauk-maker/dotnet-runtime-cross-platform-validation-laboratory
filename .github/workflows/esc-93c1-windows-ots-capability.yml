@@ -1,5 +1,7 @@
 name: ESC 93C1 Windows OTS capability
 on:
+  push:
+    branches: [esc-20261122-93c1-ots-capability]
   workflow_dispatch:
 jobs:
   ots-capability:
