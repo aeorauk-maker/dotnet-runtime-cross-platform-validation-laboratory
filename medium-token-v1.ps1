@@ -2,8 +2,8 @@
 # This checks token creation and an inert downward pipe connection only.
 $ErrorActionPreference = 'Stop'
 
-$childPath = Join-Path $env:RUNNER_TEMP 'mic-child.ps1'
-$resultPath = Join-Path $env:PUBLIC ('bdf34b0c-medium-result-' + [guid]::NewGuid().ToString('N') + '.txt')
+$childPath = Join-Path 'C:\Windows\Temp' ('bdf34b0c-mic-child-' + [guid]::NewGuid().ToString('N') + '.ps1')
+$resultPath = Join-Path 'C:\Windows\Temp' ('bdf34b0c-medium-result-' + [guid]::NewGuid().ToString('N') + '.txt')
 $sentinelPath = Join-Path $env:RUNNER_TEMP 'mic-high-sentinel.txt'
 $pipeName = 'mic-probe-' + [guid]::NewGuid().ToString('N')
 
@@ -91,6 +91,8 @@ public static class MicNative {
         out ProcessInfo process);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetExitCodeProcess(IntPtr handle, out uint exitCode);
     [DllImport("kernel32.dll")]
     public static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")]
@@ -139,9 +141,16 @@ try {
         0, [IntPtr]::Zero, $env:RUNNER_TEMP, [ref]$startup, [ref]$proc)) {
         throw "CreateProcessWithTokenW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
+    Write-Host "child_pid=$($proc.dwProcessId) child_path=$childPath result_path=$resultPath"
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while (-not (Test-Path -LiteralPath $resultPath)) {
-        if ([DateTime]::UtcNow -gt $deadline) { throw 'Medium child did not create its result file' }
+        $state = [MicNative]::WaitForSingleObject($proc.hProcess, 0)
+        if ($state -eq 0) {
+            $exitCode = [uint32]0
+            [void][MicNative]::GetExitCodeProcess($proc.hProcess, [ref]$exitCode)
+            throw "Medium child exited before result: exit=$exitCode"
+        }
+        if ([DateTime]::UtcNow -gt $deadline) { throw "Medium child did not create its result file: process_state=$state" }
         Start-Sleep -Milliseconds 100
     }
     $client = [System.IO.Pipes.NamedPipeClientStream]::new(
