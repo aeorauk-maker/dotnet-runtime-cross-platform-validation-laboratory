@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 
@@ -8,34 +7,15 @@ internal static class Program
     private const uint TokenAllAccess = 0xF01FF;
     private const uint DisableMaxPrivilege = 1;
     private const uint Integrity = 0x20;
-    private const uint WaitTimeout = 258;
+    private const uint GenericReadWrite = 0xC0000000;
+    private static readonly IntPtr InvalidHandle = new(-1);
 
     private static int Main(string[] args)
     {
-        if (args.Length != 3 || (args[0] != "parent" && args[0] != "child"))
+        if (args.Length != 3 || args[0] != "parent")
         {
-            Console.Error.WriteLine("usage: parent|child PIPE_NAME RESULT_PATH");
+            Console.Error.WriteLine("usage: parent PIPE_NAME UNUSED_RESULT_PATH");
             return 2;
-        }
-
-        if (args[0] == "child")
-        {
-            File.WriteAllText(args[2], "CHILD_STARTED=YES\n");
-            File.AppendAllText(args[2], $"CHILD_SID={WindowsIdentity.GetCurrent().User?.Value}\n" +
-                                        $"CHILD_ADMIN={new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)}\n" +
-                                        $"CHILD_IL={CurrentIntegrity()}\n");
-            try
-            {
-                File.AppendAllText(args[2], "CHILD_CONNECT_ATTEMPT=YES\n");
-                using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut);
-                pipe.Connect(3000);
-                File.AppendAllText(args[2], "CHILD_CONNECT=SUCCESS\n");
-            }
-            catch (Exception ex)
-            {
-                File.AppendAllText(args[2], $"CHILD_CONNECT={ex.GetType().Name}: {ex.Message}\n");
-            }
-            return 0;
         }
 
         Console.WriteLine($"PARENT_SID={WindowsIdentity.GetCurrent().User?.Value}");
@@ -62,37 +42,21 @@ internal static class Program
             if (!SetTokenInformation(restricted, 25, labelBuffer, labelSize + mediumSidSize))
                 Throw("SetTokenInformation(TokenIntegrityLevel)");
 
-            var dotnet = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
-            var dll = typeof(Program).Assembly.Location;
-            var command = $"\"{dotnet}\" \"{dll}\" child \"{args[1]}\" \"{args[2]}\"";
-            var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>() };
-            if (!CreateProcessWithTokenW(restricted, 0, dotnet, command, 0x08000000, IntPtr.Zero, Path.GetDirectoryName(dll), ref startup, out var process))
-                Throw("CreateProcessWithTokenW");
+            var pipePath = @"\\.\pipe\" + args[1];
+            if (!ImpersonateLoggedOnUser(restricted)) Throw("ImpersonateLoggedOnUser");
             try
             {
-                Console.WriteLine($"CHILD_PID={process.ProcessId}");
-                var wait = WaitForSingleObject(process.Process, 30000);
-                Console.WriteLine($"CHILD_WAIT={wait}");
-                if (wait == WaitTimeout)
-                {
-                    Console.WriteLine("CHILD_TIMEOUT=YES");
-                    if (File.Exists(args[2])) Console.Write(File.ReadAllText(args[2]));
-                    TerminateProcess(process.Process, 3);
-                    return 3;
-                }
-                if (!File.Exists(args[2]))
-                {
-                    Console.WriteLine("CHILD_RESULT=MISSING");
-                    return 4;
-                }
-                Console.Write(File.ReadAllText(args[2]));
-                return 0;
+                Console.WriteLine($"MEDIUM_SID={WindowsIdentity.GetCurrent().User?.Value}");
+                Console.WriteLine($"MEDIUM_ADMIN={new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)}");
+                Console.WriteLine($"MEDIUM_IL={CurrentIntegrity(thread: true)}");
+                TryPipe(pipePath, "MEDIUM");
             }
             finally
             {
-                CloseHandle(process.Thread);
-                CloseHandle(process.Process);
+                if (!RevertToSelf()) Throw("RevertToSelf");
             }
+            TryPipe(pipePath, "HIGH");
+            return 0;
         }
         finally
         {
@@ -105,9 +69,28 @@ internal static class Program
         }
     }
 
-    private static string CurrentIntegrity()
+    private static void TryPipe(string path, string label)
     {
+        var handle = CreateFile(path, GenericReadWrite, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        var error = Marshal.GetLastWin32Error();
+        Console.WriteLine($"{label}_PIPE_OPEN={(handle != InvalidHandle ? "SUCCESS" : "DENIED_OR_UNAVAILABLE")}");
+        Console.WriteLine($"{label}_PIPE_WIN32={error}");
+        if (handle != InvalidHandle) CloseHandle(handle);
+    }
+
+    private static string CurrentIntegrity(bool thread = false)
+    {
+        if (thread)
+        {
+            if (!OpenThreadToken(GetCurrentThread(), 0x0008, out var threadToken, true)) Throw("OpenThreadToken(query)");
+            return IntegrityOf(threadToken);
+        }
         if (!OpenProcessToken(GetCurrentProcess(), 0x0008, out var token)) Throw("OpenProcessToken(query)");
+        return IntegrityOf(token);
+    }
+
+    private static string IntegrityOf(IntPtr token)
+    {
         try
         {
             GetTokenInformation(token, 25, IntPtr.Zero, 0, out var length);
@@ -129,27 +112,19 @@ internal static class Program
 
     [StructLayout(LayoutKind.Sequential)] private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] private struct TokenMandatoryLabel { public SidAndAttributes Label; }
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] private struct StartupInfo
-    {
-        public int Size; public string? Reserved; public string? Desktop; public string? Title;
-        public int X; public int Y; public int XSize; public int YSize; public int XCountChars; public int YCountChars;
-        public int FillAttribute; public int Flags; public short ShowWindow; public short Reserved2;
-        public IntPtr Reserved3; public IntPtr StandardInput; public IntPtr StandardOutput; public IntPtr StandardError;
-    }
-    [StructLayout(LayoutKind.Sequential)] private struct ProcessInformation
-    { public IntPtr Process; public IntPtr Thread; public int ProcessId; public int ThreadId; }
-
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentThread();
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr handle);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenThreadToken(IntPtr thread, uint access, out IntPtr token, bool openAsSelf);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool ImpersonateLoggedOnUser(IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool RevertToSelf();
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictSidCount, IntPtr sidsToRestrict, out IntPtr restricted);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SetTokenInformation(IntPtr token, int infoClass, IntPtr info, int infoLength);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int infoLength, out int returnLength);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool ConvertStringSidToSid(string text, out IntPtr sid);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern uint GetLengthSid(IntPtr sid);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr text);
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool CreateProcessWithTokenW(IntPtr token, int logonFlags, string app, string command, int creationFlags, IntPtr environment, string? currentDirectory, ref StartupInfo startup, out ProcessInformation process);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
 }
