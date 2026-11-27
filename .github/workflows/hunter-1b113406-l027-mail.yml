@@ -88,6 +88,10 @@ jobs:
               Write-Output ('ReceiverCount=' + $receivers.Count)
               Write-Output ('VictimReceiverPresent=' + [bool](@($receivers | Where-Object { $_ -match ('victim@' + $domain) }).Count))
               Write-Output ('ObserverReceiverPresent=' + [bool](@($receivers | Where-Object { $_ -match ('observer@' + $domain) }).Count))
+              Write-Output ('GeneratedObserverToken=' + (Get-Content $generated[0].FullName -Raw).Contains('observer@' + $domain))
+              Write-Output ('DropObserverAnywhere=' + $raw.Contains('observer@' + $domain))
+              Write-Output ('NonVictimReceiverCount=' + @($receivers | Where-Object { $_ -notmatch ('victim@' + $domain) }).Count)
+              Write-Output ('UniqueReceiverCount=' + @($receivers | Select-Object -Unique).Count)
               Write-Output ('SentinelPresent=' + $raw.Contains('INERT-G07-SENTINEL'))
             }
             Write-Output ('PickupCount=' + @(Get-ChildItem $pickup -File).Count)
