@@ -11,13 +11,19 @@ permissions: {}
 
 jobs:
   resolver:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - name: Resolve and connect loopback spellings
         shell: bash
         run: |
-          python3 - <<'PY'
+          python - <<'PY'
           import json
           import socket
 
