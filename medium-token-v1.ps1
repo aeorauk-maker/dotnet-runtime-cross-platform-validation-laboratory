@@ -140,7 +140,6 @@ public static class MicNative {
                 using (NamedPipeClientStream client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.CurrentUserOnly)) {
                     client.Connect(3000);
                     client.WriteByte(42);
-                    client.Flush();
                     pipe = "connected";
                 }
             } catch (Exception e) { pipe = e.GetType().Name + ":" + e.HResult.ToString("X8"); }
@@ -203,7 +202,6 @@ try {
             $highClient.Connect(3000)
             Write-Host 'stage=high_client_connected'
             $highClient.WriteByte(7)
-            $highClient.Flush()
             $highWait.GetAwaiter().GetResult()
             if ($highServer.ReadByte() -ne 7) { throw 'High pipe baseline byte mismatch' }
             Write-Host 'high_to_high=connected'
