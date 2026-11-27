@@ -1,0 +1,21 @@
+name: Hunter d370ff75 L40 TLS policy validation
+
+on:
+  push:
+    branches:
+      - hunter-d370ff75-l40-client-policy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-tls-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run owned loopback TLS fixture
+        run: dotnet run --project L40.csproj --configuration Release
