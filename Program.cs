@@ -41,6 +41,7 @@ internal static class Program
             Marshal.StructureToPtr(new TokenMandatoryLabel { Label = new SidAndAttributes { Sid = copiedSid, Attributes = Integrity } }, labelBuffer, false);
             if (!SetTokenInformation(restricted, 25, labelBuffer, labelSize + mediumSidSize))
                 Throw("SetTokenInformation(TokenIntegrityLevel)");
+            Console.WriteLine($"RESTRICTED_TOKEN_IL={IntegrityOf(restricted)}");
 
             var pipePath = @"\\.\pipe\" + args[1];
             if (!ImpersonateLoggedOnUser(restricted)) Throw("ImpersonateLoggedOnUser");
@@ -48,7 +49,7 @@ internal static class Program
             {
                 Console.WriteLine($"MEDIUM_SID={WindowsIdentity.GetCurrent().User?.Value}");
                 Console.WriteLine($"MEDIUM_ADMIN={new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)}");
-                Console.WriteLine($"MEDIUM_IL={CurrentIntegrity(thread: true)}");
+                Console.WriteLine($"MEDIUM_TOKEN_IL={IntegrityOf(restricted)}");
                 TryPipe(pipePath, "MEDIUM");
             }
             finally
@@ -78,34 +79,26 @@ internal static class Program
         if (handle != InvalidHandle) CloseHandle(handle);
     }
 
-    private static string CurrentIntegrity(bool thread = false)
+    private static string CurrentIntegrity()
     {
-        if (thread)
-        {
-            if (!OpenThreadToken(GetCurrentThread(), 0x0008, out var threadToken, true)) Throw("OpenThreadToken(query)");
-            return IntegrityOf(threadToken);
-        }
         if (!OpenProcessToken(GetCurrentProcess(), 0x0008, out var token)) Throw("OpenProcessToken(query)");
-        return IntegrityOf(token);
+        try { return IntegrityOf(token); }
+        finally { CloseHandle(token); }
     }
 
     private static string IntegrityOf(IntPtr token)
     {
+        GetTokenInformation(token, 25, IntPtr.Zero, 0, out var length);
+        var buffer = Marshal.AllocHGlobal(length);
         try
         {
-            GetTokenInformation(token, 25, IntPtr.Zero, 0, out var length);
-            var buffer = Marshal.AllocHGlobal(length);
-            try
-            {
-                if (!GetTokenInformation(token, 25, buffer, length, out _)) Throw("GetTokenInformation");
-                var label = Marshal.PtrToStructure<TokenMandatoryLabel>(buffer);
-                if (!ConvertSidToStringSid(label.Label.Sid, out var sidString)) Throw("ConvertSidToStringSid");
-                try { return Marshal.PtrToStringUni(sidString) ?? "UNKNOWN"; }
-                finally { LocalFree(sidString); }
-            }
-            finally { Marshal.FreeHGlobal(buffer); }
+            if (!GetTokenInformation(token, 25, buffer, length, out _)) Throw("GetTokenInformation");
+            var label = Marshal.PtrToStructure<TokenMandatoryLabel>(buffer);
+            if (!ConvertSidToStringSid(label.Label.Sid, out var sidString)) Throw("ConvertSidToStringSid");
+            try { return Marshal.PtrToStringUni(sidString) ?? "UNKNOWN"; }
+            finally { LocalFree(sidString); }
         }
-        finally { CloseHandle(token); }
+        finally { Marshal.FreeHGlobal(buffer); }
     }
 
     private static void Throw(string api) => throw new Win32Exception(Marshal.GetLastWin32Error(), api);
@@ -113,11 +106,9 @@ internal static class Program
     [StructLayout(LayoutKind.Sequential)] private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] private struct TokenMandatoryLabel { public SidAndAttributes Label; }
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
-    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentThread();
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr handle);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenThreadToken(IntPtr thread, uint access, out IntPtr token, bool openAsSelf);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool ImpersonateLoggedOnUser(IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool RevertToSelf();
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictSidCount, IntPtr sidsToRestrict, out IntPtr restricted);
