@@ -44,6 +44,7 @@ try {
 & icacls.exe $sentinelPath /setintegritylevel H | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Could not label the sentinel high' }
 
+Write-Host 'stage=before_add_type'
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -150,6 +151,7 @@ public static class MicNative {
     }
 }
 '@
+Write-Host 'stage=after_add_type'
 
 $token = [IntPtr]::Zero
 $medium = [IntPtr]::Zero
@@ -184,18 +186,22 @@ try {
     if (-not [MicNative]::SetTokenInformation($medium, 25, $labelBuffer, $labelLength)) {
         throw "SetTokenInformation failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
+    Write-Host 'stage=medium_token_ready'
     $highName = 'mic-high-control-' + [guid]::NewGuid().ToString('N')
     $highServer = [System.IO.Pipes.NamedPipeServerStream]::new($highName,
         [System.IO.Pipes.PipeDirection]::InOut, 1,
         [System.IO.Pipes.PipeTransmissionMode]::Byte,
-        [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+        ([System.IO.Pipes.PipeOptions]::CurrentUserOnly -bor [System.IO.Pipes.PipeOptions]::Asynchronous))
     try {
+        Write-Host 'stage=high_server_created'
         $highWait = $highServer.WaitForConnectionAsync()
+        Write-Host 'stage=high_wait_started'
         $highClient = [System.IO.Pipes.NamedPipeClientStream]::new('.', $highName,
             [System.IO.Pipes.PipeDirection]::InOut,
             [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
         try {
             $highClient.Connect(3000)
+            Write-Host 'stage=high_client_connected'
             $highClient.WriteByte(7)
             $highClient.Flush()
             $highWait.GetAwaiter().GetResult()
@@ -207,8 +213,9 @@ try {
     $mediumServer = [System.IO.Pipes.NamedPipeServerStream]::new($mediumName,
         [System.IO.Pipes.PipeDirection]::InOut, 1,
         [System.IO.Pipes.PipeTransmissionMode]::Byte,
-        [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+        ([System.IO.Pipes.PipeOptions]::CurrentUserOnly -bor [System.IO.Pipes.PipeOptions]::Asynchronous))
     try {
+        Write-Host 'stage=medium_server_created'
         $mediumWait = $mediumServer.WaitForConnectionAsync()
         $mediumResult = [MicNative]::ProbeMedium($medium, $sentinelPath, $mediumName)
         Write-Host "medium_probe=$mediumResult"
