@@ -1,4 +1,4 @@
-name: Hunter bdf34b0c Windows pipe control
+name: Hunter bdf34b0c Windows token control
 on:
   push:
     branches:
@@ -9,43 +9,9 @@ jobs:
   preflight:
     runs-on: windows-2022
     steps:
-      - name: Probe generic split-token pipe
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check explicit medium token
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Write-Host 'HIGH_TOKEN'
-          whoami /groups | Select-String 'Mandatory Label'
-          $pipeName = 'bdf34b0c-' + [guid]::NewGuid().ToString('N')
-          $childPath = Join-Path $env:RUNNER_TEMP 'bdf-medium-child.ps1'
-          $resultPath = Join-Path $env:RUNNER_TEMP 'bdf-medium-result.txt'
-          @'
-          param([string]$PipeName,[string]$ResultPath)
-          $lines = @('CHILD_TOKEN')
-          $lines += (whoami /groups | Select-String 'Mandatory Label' | Out-String).Trim()
-          $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
-          try {
-            $client.Connect(5000)
-            $client.WriteByte(42)
-            $client.Flush()
-            $lines += 'PIPE_CLIENT_CONNECTED'
-          } catch {
-            $lines += ('PIPE_CLIENT_DENIED=' + $_.Exception.GetType().Name)
-          } finally {
-            $client.Dispose()
-            $lines | Set-Content -LiteralPath $ResultPath
-          }
-          '@ | Set-Content -LiteralPath $childPath
-          $options = [System.IO.Pipes.PipeOptions]([int][System.IO.Pipes.PipeOptions]::Asynchronous -bor [int][System.IO.Pipes.PipeOptions]::CurrentUserOnly)
-          $server = [System.IO.Pipes.NamedPipeServerStream]::new($pipeName,[System.IO.Pipes.PipeDirection]::InOut,1,[System.IO.Pipes.PipeTransmissionMode]::Byte,$options)
-          try {
-            $pending = $server.WaitForConnectionAsync()
-            $pwsh = (Get-Command pwsh).Source
-            $program = '"' + $pwsh + '" -NoProfile -NonInteractive -File "' + $childPath + '" "' + $pipeName + '" "' + $resultPath + '"'
-            & runas.exe '/trustlevel:0x20000' $program
-            try {
-              if ($pending.Wait(12000)) { Write-Host ('PIPE_SERVER_READ=' + $server.ReadByte()) }
-              else { Write-Host 'PIPE_SERVER_TIMEOUT' }
-            } catch { Write-Host ('PIPE_SERVER_ERROR=' + $_.Exception.GetType().Name) }
-          } finally { $server.Dispose() }
-          if (Test-Path $resultPath) { Get-Content -LiteralPath $resultPath | Out-Host }
-          else { Write-Host 'CHILD_NO_RESULT' }
+        run: pwsh -NoProfile -NonInteractive -File ./medium-token-v1.ps1
