@@ -1,0 +1,82 @@
+name: G03 L096 Windows same-origin credential scope
+
+on:
+  push:
+    branches:
+      - rank-04-g03-l096-windows-20261127
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stock-sdk-replay:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.404
+            11.0.100
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build ephemeral fixture and install released provider
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install 'cryptography>=43,<48'
+          if ($LASTEXITCODE -ne 0) { throw 'cryptography install failed' }
+          python l096_windows_lab.py setup-cert
+          if ($LASTEXITCODE -ne 0) { throw 'certificate generation failed' }
+          certutil -user -addstore Root certs/l096-ca.crt
+          if ($LASTEXITCODE -ne 0) { throw 'ephemeral CA trust failed' }
+          dotnet tool install Microsoft.Artifacts.CredentialProvider.NuGet.Tool --tool-path .tools --version 2.0.5
+          if ($LASTEXITCODE -ne 0) { throw 'provider installation failed' }
+          $plugin = Get-ChildItem -Path .tools -Filter CredentialProvider.Microsoft.dll -Recurse | Select-Object -First 1
+          if (-not $plugin) { throw 'provider DLL not found' }
+          "L096_PLUGIN_DLL=$($plugin.FullName)" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force packages,evidence | Out-Null
+          dotnet new classlib --name Owned.L096 --framework net10.0 --output pkgsrc --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'fixture generation failed' }
+          dotnet pack pkgsrc/Owned.L096.csproj --configuration Release --output packages
+          if ($LASTEXITCODE -ne 0) { throw 'fixture pack failed' }
+          if (-not (Test-Path packages/Owned.L096.1.0.0.nupkg)) { throw 'fixture package missing' }
+          $metadata = [ordered]@{
+            repository = $env:GITHUB_REPOSITORY
+            branch = $env:GITHUB_REF_NAME
+            commit = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runnerOs = $env:RUNNER_OS
+            sdkVersions = @(dotnet --list-sdks)
+            providerVersion = '2.0.5'
+            providerSha256 = (Get-FileHash $plugin.FullName -Algorithm SHA256).Hash
+            fixtureSha256 = (Get-FileHash packages/Owned.L096.1.0.0.nupkg -Algorithm SHA256).Hash
+          }
+          $metadata | ConvertTo-Json -Depth 4 | Set-Content evidence/windows-provenance.json
+      - name: Run same-origin order and other-port controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = 0
+          foreach ($sdk in @('10.0.404','11.0.100')) {
+            foreach ($case in @(@('same','AB'),@('same','BA'),@('other','AB'))) {
+              $port = $case[0]
+              $order = $case[1]
+              $out = "evidence/win-$sdk-$port-$order.json"
+              python l096_windows_lab.py $sdk $port one_invocation $order > $out
+              if ($LASTEXITCODE -ne 0) { $failed++ }
+              $summary = Get-Content $out -Raw | ConvertFrom-Json
+              Write-Host "$sdk $port $order pass=$($summary.pass) restore=$($summary.restoreExitCode) B-has-A=$($summary.bReceivedACredential) actor-replay=$($summary.actorReplay.capturedCredential.status)"
+            }
+          }
+          if ($failed -ne 0) { throw "$failed replay case(s) failed" }
+      - name: Preserve sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g03-l096-windows-sanitized-${{ github.run_id }}
+          path: evidence/*.json
+          if-no-files-found: warn
