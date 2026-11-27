@@ -141,27 +141,27 @@ jobs:
           dotnet new console -n L042 -o $lab --framework net10.0 --no-restore | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Failed to create .NET 10 lab' }
           $source = @'
-using System.Net.Mail;
-using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
-var domain = Environment.GetEnvironmentVariable("COMPUTERNAME")!.ToLowerInvariant();
-var encoded = Environment.GetEnvironmentVariable("L042_DISPLAY_B64") ?? throw new Exception("Fixture absent");
-var mode = args[0];
-var name = mode == "mutation" ? Encoding.UTF8.GetString(Convert.FromBase64String(encoded)).Replace("{HOST}", domain) : "Victim Display";
-var output = args[1];
-Directory.CreateDirectory(output);
-var assembly = typeof(MailAddress).Assembly;
-Console.WriteLine("Runtime=" + RuntimeInformation.FrameworkDescription);
-Console.WriteLine("MailAssemblySha=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))).ToLowerInvariant());
-using var message = new MailMessage();
-message.From = new MailAddress("sender@" + domain);
-message.To.Add(new MailAddress("victim@" + domain, name));
-message.Subject = "Inert local mail";
-message.Body = "INERT-L042-SENTINEL";
-using var client = new SmtpClient { DeliveryMethod = SmtpDeliveryMethod.SpecifiedPickupDirectory, PickupDirectoryLocation = output, DeliveryFormat = SmtpDeliveryFormat.International };
-client.Send(message);
-'@
+          using System.Net.Mail;
+          using System.Runtime.InteropServices;
+          using System.Security.Cryptography;
+          using System.Text;
+          var domain = Environment.GetEnvironmentVariable("COMPUTERNAME")!.ToLowerInvariant();
+          var encoded = Environment.GetEnvironmentVariable("L042_DISPLAY_B64") ?? throw new Exception("Fixture absent");
+          var mode = args[0];
+          var name = mode == "mutation" ? Encoding.UTF8.GetString(Convert.FromBase64String(encoded)).Replace("{HOST}", domain) : "Victim Display";
+          var output = args[1];
+          Directory.CreateDirectory(output);
+          var assembly = typeof(MailAddress).Assembly;
+          Console.WriteLine("Runtime=" + RuntimeInformation.FrameworkDescription);
+          Console.WriteLine("MailAssemblySha=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))).ToLowerInvariant());
+          using var message = new MailMessage();
+          message.From = new MailAddress("sender@" + domain);
+          message.To.Add(new MailAddress("victim@" + domain, name));
+          message.Subject = "Inert local mail";
+          message.Body = "INERT-L042-SENTINEL";
+          using var client = new SmtpClient { DeliveryMethod = SmtpDeliveryMethod.SpecifiedPickupDirectory, PickupDirectoryLocation = output, DeliveryFormat = SmtpDeliveryFormat.International };
+          client.Send(message);
+          '@
           [IO.File]::WriteAllText((Join-Path $lab 'Program.cs'), $source, [Text.Encoding]::UTF8)
           $pickup = 'C:/inetpub/mailroot/Pickup'
           $drop = 'C:/inetpub/mailroot/Drop'
