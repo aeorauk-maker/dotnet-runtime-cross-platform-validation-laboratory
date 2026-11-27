@@ -1,0 +1,56 @@
+name: Hunter 44419f3f Windows path control
+on:
+  push:
+    paths:
+      - .github/workflows/hunter-44419f3f-zip-path.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  path-control:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run inert path controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = Join-Path $env:RUNNER_TEMP 'hunter-44419f3f-zip-path'
+          dotnet new console --framework net11.0 --output $probe --no-restore
+          @'
+          using System;
+          using System.IO;
+          using System.IO.Compression;
+          using System.Linq;
+          var root = Path.Combine(Path.GetTempPath(), "hunter-44419f3f-zip-path");
+          foreach (var (label, name) in new (string, string)[] {
+              ("valid", "nested/inside.txt"),
+              ("denied", "../outside.txt"),
+              ("candidate", ".. /outside.txt"),
+              ("negative", "safe /inside.txt")
+          }) {
+              var testRoot = Path.Combine(root, label);
+              var extractionRoot = Path.Combine(testRoot, "extract");
+              var outsidePath = Path.Combine(testRoot, "outside.txt");
+              Directory.CreateDirectory(extractionRoot);
+              using var stream = new MemoryStream();
+              using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, true)) {
+                  using var writer = new StreamWriter(archive.CreateEntry(name).Open());
+                  writer.Write("inert");
+              }
+              stream.Position = 0;
+              string outcome = "ok";
+              try {
+                  using var archive = new ZipArchive(stream, ZipArchiveMode.Read, true);
+                  archive.ExtractToDirectory(extractionRoot);
+              } catch (Exception ex) {
+                  outcome = ex.GetType().Name;
+              }
+              bool outside = File.Exists(outsidePath);
+              bool inside = Directory.EnumerateFiles(extractionRoot, "*", SearchOption.AllDirectories).Any();
+              Console.WriteLine($"{label}: result={outcome} outside={outside} inside={inside}");
+          }
+          '@ | Set-Content (Join-Path $probe 'Program.cs')
+          dotnet run --project $probe --framework net11.0 --configuration Release
