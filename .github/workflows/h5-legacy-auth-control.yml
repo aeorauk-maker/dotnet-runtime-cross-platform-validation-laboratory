@@ -17,5 +17,11 @@ jobs:
         shell: pwsh
         env:
           H5_URL_B64: ${{ secrets.H5_44419F3F_URL_B64 }}
+          H5_LAB_B64: ${{ secrets.H5_44419F3F_LAB_B64 }}
         run: |
-          dotnet run --project lab/h5-legacy-auth-control/cookie23-net48.csproj -c Release
+          $lab = Join-Path $env:RUNNER_TEMP 'h5-lab'
+          New-Item -ItemType Directory -Path $lab | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP 'h5-lab.zip'
+          [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($env:H5_LAB_B64))
+          Expand-Archive -Path $archive -DestinationPath $lab
+          dotnet run --project (Join-Path $lab 'cookie23-net48.csproj') -c Release
