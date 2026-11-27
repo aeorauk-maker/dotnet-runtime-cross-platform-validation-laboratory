@@ -57,6 +57,8 @@ jobs:
           }
           if ($null -eq $root -or $root.StatusCode -ne 200 -or $root.Content -ne 'H09-OPEN') { throw 'Clean IIS baseline failed' }
           Write-Output 'CleanIIS=200'
+          $routeBefore=Invoke-WebRequest 'http://127.0.0.1:8927/restricted' -SkipHttpErrorCheck
+          Write-Output "RestrictedBeforePolicy=$($routeBefore.StatusCode) Body=$($routeBefore.Content)"
           & $appcmd set config 'H09Site/restricted' /section:system.webServer/security/authentication/anonymousAuthentication /enabled:false /commit:apphost | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Anonymous restriction failed' }
           & $appcmd set config 'H09Site/restricted' /section:system.webServer/security/authentication/windowsAuthentication /enabled:true /commit:apphost | Out-Null
@@ -70,5 +72,6 @@ jobs:
           $config.DocumentElement.AppendChild($location) | Out-Null; $config.Save((Join-Path $published 'web.config'))
           $denied=Invoke-WebRequest 'http://127.0.0.1:8927/restricted' -SkipHttpErrorCheck
           $valid=Invoke-WebRequest 'http://127.0.0.1:8927/restricted' -UseDefaultCredentials -AllowUnencryptedAuthentication -SkipHttpErrorCheck
-          Write-Output "IISAnonymous=$($denied.StatusCode) IISAdmin=$($valid.StatusCode)"
+          Write-Output "IISAnonymous=$($denied.StatusCode) IISAdmin=$($valid.StatusCode) ValidBody=$($valid.Content) ValidServer=$($valid.Headers.Server)"
+          Write-Output "AdminRole=$([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
           if ($denied.StatusCode -notin @(401,403) -or $valid.StatusCode -ne 200 -or $valid.Content -ne 'H09-INERT-PROTECTED') { throw 'Native IIS authorization baselines failed' }
