@@ -135,6 +135,28 @@ try {
     }
     $startup = [MicNative+StartupInfo]::new()
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][MicNative+StartupInfo])
+    $cmdPath = Join-Path 'C:\Windows\Temp' ('bdf34b0c-cmd-child-' + [guid]::NewGuid().ToString('N') + '.cmd')
+    $cmdResultPath = Join-Path 'C:\Windows\Temp' ('bdf34b0c-cmd-result-' + [guid]::NewGuid().ToString('N') + '.txt')
+    @("echo child-start > `"$cmdResultPath`"", "whoami /groups >> `"$cmdResultPath`" 2>&1") |
+        Set-Content -LiteralPath $cmdPath -Encoding Ascii
+    $cmdExe = $env:ComSpec
+    $cmdLine = [System.Text.StringBuilder]::new("`"$cmdExe`" /d /c `"`"$cmdPath`"`"")
+    $cmdProc = [MicNative+ProcessInfo]::new()
+    if (-not [MicNative]::CreateProcessWithTokenW($medium, 0, $cmdExe, $cmdLine,
+        0, [IntPtr]::Zero, 'C:\Windows\Temp', [ref]$startup, [ref]$cmdProc)) {
+        throw "CreateProcessWithTokenW cmd failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    $cmdWait = [MicNative]::WaitForSingleObject($cmdProc.hProcess, 10000)
+    $cmdExit = [uint32]0
+    [void][MicNative]::GetExitCodeProcess($cmdProc.hProcess, [ref]$cmdExit)
+    Write-Host "cmd_pid=$($cmdProc.dwProcessId) wait=$cmdWait exit=$cmdExit result_exists=$(Test-Path -LiteralPath $cmdResultPath)"
+    if (Test-Path -LiteralPath $cmdResultPath) { Get-Content -LiteralPath $cmdResultPath | Out-Host }
+    & icacls.exe 'C:\Windows\Temp' | Out-Host
+    if ($cmdProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($cmdProc.hThread) }
+    if ($cmdProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($cmdProc.hProcess) }
+    if ($cmdWait -ne 0 -or -not (Test-Path -LiteralPath $cmdResultPath)) {
+        throw 'Minimal medium-token cmd child failed before pipe test'
+    }
     $powershellExe = (Get-Command pwsh).Source
     $commandLine = [System.Text.StringBuilder]::new("`"$powershellExe`" -NoProfile -NonInteractive -File `"$childPath`" -PipeName `"$pipeName`" -ResultPath `"$resultPath`" -SentinelPath `"$sentinelPath`"")
     if (-not [MicNative]::CreateProcessWithTokenW($medium, 0, $powershellExe, $commandLine,
