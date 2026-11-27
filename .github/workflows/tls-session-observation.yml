@@ -70,18 +70,26 @@ jobs:
             if bash -c 'echo > /dev/tcp/127.0.0.1/43479' 2>/dev/null; then break; fi
             sleep 0.2
           done
-          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_out session.pem > valid.out 2> valid.err || true
-          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_in session.pem > pre-resume.out 2> pre-resume.err || true
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_out session.pem -ign_eof > valid.out 2> valid.err || true
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_in session.pem -ign_eof > pre-resume.out 2> pre-resume.err || true
           touch revoked.flag
-          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_in session.pem > post-resume.out 2> post-resume.err || true
-          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key > full-denied.out 2> full-denied.err || true
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_in session.pem -ign_eof > post-resume.out 2> post-resume.err || true
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -ign_eof > full-denied.out 2> full-denied.err || true
           echo '--- VALID ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' valid.out || true
           echo '--- PRE-RESUME ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' pre-resume.out || true
           echo '--- POST-REVOCATION RESUME ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' post-resume.out || true
           echo '--- FULL DENIED ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' full-denied.out || true
           echo '--- SERVER OBSERVER ---'; grep -E '^RUNTIME=|^VALIDATION |^ACTION ' host.log || true
+          if ! grep -q '^HTTP/1.1 200' valid.out || ! grep -q '^HTTP/1.1 200' pre-resume.out; then
+            echo 'SETUP_FAILURE: valid baseline did not reach the protected endpoint'
+            exit 3
+          fi
           if ! grep -q '^Reused,' pre-resume.out; then
             echo 'COVERAGE_LIMIT: TLS resumption did not occur before revocation'
+            exit 2
+          fi
+          if ! grep -q '^Reused,' post-resume.out; then
+            echo 'COVERAGE_LIMIT: TLS resumption did not occur after revocation'
             exit 2
           fi
           if grep -q '^HTTP/1.1 200' post-resume.out; then
