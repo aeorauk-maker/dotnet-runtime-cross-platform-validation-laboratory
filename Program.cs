@@ -19,9 +19,18 @@ using var serverCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes
 var listener = new TcpListener(IPAddress.Loopback, 0);
 listener.Start();
 var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+var rejectServerCertificateNow = false;
+var totalCallbackCalls = 0;
+RemoteCertificateValidationCallback sharedValidationCallback = (_, peer, _, _) =>
+{
+    Interlocked.Increment(ref totalCallbackCalls);
+    return !rejectServerCertificateNow && peer?.GetCertHashString() == serverCert.GetCertHashString();
+};
 
 async Task<object> Attempt(string name, bool rejectServerCertificate, bool allowResume)
 {
+    rejectServerCertificateNow = rejectServerCertificate;
+    var callbacksBefore = Volatile.Read(ref totalCallbackCalls);
     using var client = new TcpClient();
     var acceptTask = listener.AcceptTcpClientAsync();
     await client.ConnectAsync(IPAddress.Loopback, port);
@@ -30,7 +39,6 @@ async Task<object> Attempt(string name, bool rejectServerCertificate, bool allow
     using var serverSsl = new SslStream(serverCapture, leaveInnerStreamOpen: true);
     using var clientSsl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
 
-    var callbackCalls = 0;
     var serverOptions = new SslServerAuthenticationOptions
     {
         ServerCertificate = serverCert,
@@ -43,11 +51,7 @@ async Task<object> Attempt(string name, bool rejectServerCertificate, bool allow
         TargetHost = "localhost",
         EnabledSslProtocols = SslProtocols.None,
         AllowTlsResume = allowResume,
-        RemoteCertificateValidationCallback = (_, peer, _, _) =>
-        {
-            Interlocked.Increment(ref callbackCalls);
-            return !rejectServerCertificate && peer?.GetCertHashString() == serverCert.GetCertHashString();
-        },
+        RemoteCertificateValidationCallback = sharedValidationCallback,
     };
 
     string? serverError = null;
@@ -90,7 +94,7 @@ async Task<object> Attempt(string name, bool rejectServerCertificate, bool allow
         name,
         rejectServerCertificate,
         allowResume,
-        callbackCalls,
+        callbackCalls = Volatile.Read(ref totalCallbackCalls) - callbacksBefore,
         serverOk,
         clientOk,
         serverError,
