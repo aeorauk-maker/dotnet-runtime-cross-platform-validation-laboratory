@@ -24,4 +24,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run benign medium MSBuild worker reuse check
         shell: pwsh
-        run: ./windows-benign-msbuild-reuse-v14.ps1
+        run: ./windows-benign-msbuild-reuse-v15.ps1
