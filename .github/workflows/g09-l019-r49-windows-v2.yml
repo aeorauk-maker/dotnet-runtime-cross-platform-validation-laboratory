@@ -1,0 +1,51 @@
+name: G09 L019 Windows parser and no-SAN matrix
+
+on:
+  push:
+    branches:
+      - g09-l019-r49-20261127
+    paths:
+      - .github/workflows/g09-l019-r49-windows-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-fixture-matrix:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.100
+      - name: Verify public fixture and execute supported runtimes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = 'c6d54a1426f26314e8aeb666cef98dbf261eccc55c2ebcd10925b5f5d263a751'
+          $actual = (Get-FileHash g09-l019-r49-windows-v2.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Fixture hash mismatch: $actual" }
+          dotnet --info | Out-File -Encoding utf8 runner-info.txt
+          Expand-Archive -Path g09-l019-r49-windows-v2.zip -DestinationPath fixture
+          Push-Location fixture
+          dotnet restore Matrix.csproj --source .
+          if ($LASTEXITCODE -ne 0) { throw 'Restore failed' }
+          dotnet run --project Matrix.csproj --framework net10.0 --no-restore --configuration Release > ../result-net10.json
+          if ($LASTEXITCODE -ne 0) { throw '.NET 10 matrix failed' }
+          dotnet run --project Matrix.csproj --framework net11.0 --no-restore --configuration Release > ../result-net11.json
+          if ($LASTEXITCODE -ne 0) { throw '.NET 11 matrix failed' }
+          Pop-Location
+          Get-Content result-net10.json
+          Get-Content result-net11.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g09-l019-r49-windows-v2-results
+          path: |
+            result-net10.json
+            result-net11.json
+            runner-info.txt
+          if-no-files-found: error
