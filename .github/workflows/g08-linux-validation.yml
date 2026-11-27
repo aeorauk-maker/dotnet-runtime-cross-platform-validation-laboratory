@@ -1,0 +1,49 @@
+name: G08 isolated Linux validation
+
+on:
+  push:
+    branches:
+      - hunter-2cbc2e7e-nuget-linux
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run private inert fixture
+        id: probe
+        shell: bash
+        env:
+          G08_PACKET: ${{ secrets.G08_2CBC2E7E_PACKET_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/g08"
+          cd "$RUNNER_TEMP/g08"
+          printf '%s' "$G08_PACKET" | base64 -d > packet.zip
+          unset G08_PACKET
+          unzip -q packet.zip
+          set +e
+          python3 run.py > private.log 2>&1
+          rc=$?
+          set -e
+          tar -czf evidence.tar.gz --exclude='*/private-dotnet' work private.log
+          key=$(sha256sum packet.zip | cut -d ' ' -f 1)
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in evidence.tar.gz -out evidence.enc -pass fd:3 3<<<"$key"
+          if [ "$rc" -eq 0 ]; then echo 'G08_RESULT=PASS' >> "$GITHUB_STEP_SUMMARY"; else echo 'G08_RESULT=FAIL' >> "$GITHUB_STEP_SUMMARY"; fi
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g08-linux-encrypted-evidence
+          path: ${{ runner.temp }}/g08/evidence.enc
+          if-no-files-found: error
+          retention-days: 7
+      - name: Mark validation outcome
+        if: steps.probe.outputs.exit_code != '0'
+        run: exit 1
