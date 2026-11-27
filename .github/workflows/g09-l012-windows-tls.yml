@@ -1,0 +1,173 @@
+name: G09-L012 Windows stock TLS duplicate SAN
+on:
+  push:
+    branches: [g09-l012-rank30-20261127]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tls-windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Write inert fixture and stock TLS probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path lab -Force | Out-Null
+          [IO.File]::WriteAllBytes('lab/root.der', [Convert]::FromBase64String('MIIBWzCCAQCgAwIBAgIUf8zDQlmyTFO4j93hFRfDsgBEbHswCgYIKoZIzj0EAwIwGTEXMBUGA1UEAwwOSDA5IGluZXJ0IHJvb3QwHhcNMjYxMTI2MDAwMDAwWhcNMzYxMTI0MDAwMDAwWjAZMRcwFQYDVQQDDA5IMDkgaW5lcnQgcm9vdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEHC35nCx+R+xMh4DcBF5b3Ku2058JOGl+Qyf8ftF64s1Ybheo+GnLBnKDM3lEgSWJ+24g3ExFuJJIYUL0LTkROjJjAkMBIGA1UdEwEB/wQIMAYBAf8CAQEwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMCA0kAMEYCIQC37fRvWaxfXtPvX9JHkAsx+fji5qGMkBD728cir3j/IAIhAL31tp1du4WPsYJHtAXULs9sKbyDKhqHAgj8OHNQD0qF'))
+          [IO.File]::WriteAllBytes('lab/intermediate.der', [Convert]::FromBase64String('MIIBuzCCAWGgAwIBAgIUfpyNjzMnYwZ6eIRNlMhIlfDYQPUwCgYIKoZIzj0EAwIwGTEXMBUGA1UEAwwOSDA5IGluZXJ0IHJvb3QwHhcNMjYxMTI2MDAwMDAwWhcNMzQxMTI1MDAwMDAwWjAoMSYwJAYDVQQDDB1IMDkgYWxsb3dlZC50ZXN0IGRlbGVnYXRlZCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABKH2Se8omSlppwhOHSRDC8xC0T30UT6CApOZXC8bSJHaDMGwvNGe2aswB/oK/aeb+QOc5GrDgut4LUSEU99BH2KjeDB2MBIGA1UdEwEB/wQIMAYBAf8CAQAwDgYDVR0PAQH/BAQDAgGGMB4GA1UdHgEB/wQUMBKgEDAOggxhbGxvd2VkLnRlc3QwMAYDVR0fBCkwJzAloCOgIYYfaHR0cDovLzEyNy4wLjAuMTo1Mjc0NS9yb290LmNybDAKBggqhkjOPQQDAgNIADBFAiEAlMEhepdQNWwwQf+wSoHaCOOiHmvQ7VWwb2qPJRsiTFkCIGJSlAmBmw88XKDgZlFL/JqVr/Mv0uLVqHeNPoQIiP1j'))
+          [IO.File]::WriteAllBytes('lab/allowed.der', [Convert]::FromBase64String('MIICAjCCAaigAwIBAgICA+kwCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HMMIHJMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDyNDxuRzCiLt7sB7PdjUqu2IQi9DEVnxnpxWidzwJW8AIgdAuLD1n4VGcHQ7q8o7hJa3wBYiODGuf9ZgWr5LcnZaQ='))
+          [IO.File]::WriteAllBytes('lab/forbidden.der', [Convert]::FromBase64String('MIICBDCCAaqgAwIBAgICA+owCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HOMIHLMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwCgYIKoZIzj0EAwIDSAAwRQIgFLnjCnSyFF3lO2/oSNnXfiRs1VUBYFiYxhD8DlBirMACIQDd8YUuLKirhRDc05J9F/cCxbHkdjut7/ozwUJJM31MWA=='))
+          [IO.File]::WriteAllBytes('lab/allowed-then-forbidden.der', [Convert]::FromBase64String('MIICHTCCAcOgAwIBAgICA+swCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HnMIHkMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MBkGA1UdEQQSMBCCDmZvcmJpZGRlbi50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDfIgzDLJhiKVKrEmBrfDahHqPheYTwrjhYqMRBBUVYAAIgBplgt0T+td3umsg55HsGGVqozyu9vVbAMPfMrkS81jE='))
+          [IO.File]::WriteAllBytes('lab/forbidden-then-allowed.der', [Convert]::FromBase64String('MIICHDCCAcOgAwIBAgICA+wwCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HnMIHkMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MAoGCCqGSM49BAMCA0cAMEQCIGPY/1jX4dGAo+Ypp+YyrsCI4IWLTw2ADNzgSn1I96DLAiAOpsAekpUj1T+YATad7YfhsOufKcxSvaeXgAy5vPfiLw=='))
+          [IO.File]::WriteAllBytes('lab/leaf-key.pem', [Convert]::FromBase64String('LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ21McmNrVjJTS1ZRN29VSkEKY2Y1RjJjU3Z6Slg0MjVDclh5REJlUC9IaHA2aFJBTkNBQVE1SW5kNm5ZU2toTVlsaGMvbG1UbDhVTEc0eEJOUAprZG5RUXBwT09UNHQ3WUI5c3E3a2hNYTV1Z0FwVUdPVkpBZUkyeW92Wi9PSXV6NGNwYzYvWVhmSgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='))
+          @'
+          using System.Net;
+          using System.Net.Security;
+          using System.Net.Sockets;
+          using System.Security.Authentication;
+          using System.Security.Cryptography;
+          using System.Security.Cryptography.X509Certificates;
+          using System.Text;
+          using System.Text.Json;
+          
+          using var root = X509CertificateLoader.LoadCertificateFromFile("root.der");
+          using var issuer = X509CertificateLoader.LoadCertificateFromFile("intermediate.der");
+          using ECDsa key = ECDsa.Create();
+          key.ImportFromPem(File.ReadAllText("leaf-key.pem"));
+          
+          var cases = new (string file, string host)[] {
+              ("allowed.der", "allowed.test"),
+              ("allowed.der", "forbidden.test"),
+              ("forbidden.der", "forbidden.test"),
+              ("allowed-then-forbidden.der", "forbidden.test"),
+              ("allowed-then-forbidden.der", "allowed.test"),
+              ("forbidden-then-allowed.der", "forbidden.test"),
+          };
+          var results = new List<object>();
+          foreach (var (file, host) in cases)
+          {
+              using var publicCert = X509CertificateLoader.LoadCertificateFromFile(file);
+              using var serverCert = publicCert.CopyWithPrivateKey(key);
+              var listener = new TcpListener(IPAddress.Loopback, 0);
+              listener.Start();
+              int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+              using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+              var serverTask = Task.Run(async () => {
+                  try
+                  {
+                      using TcpClient socket = await listener.AcceptTcpClientAsync(timeout.Token);
+                      using var ssl = new SslStream(socket.GetStream(), leaveInnerStreamOpen: false);
+                      await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions {
+                          ServerCertificate = serverCert,
+                          ClientCertificateRequired = false,
+                          EnabledSslProtocols = SslProtocols.Tls12,
+                      }, timeout.Token);
+                      byte[] buffer = new byte[128];
+                      int count = await ssl.ReadAsync(buffer, timeout.Token);
+                      return (handshake: true, received: Encoding.ASCII.GetString(buffer, 0, count), error: (string?)null);
+                  }
+                  catch (Exception error)
+                  {
+                      return (handshake: false, received: "", error: error.GetType().Name + ":" + error.Message);
+                  }
+              });
+          
+              bool clientHandshake = false;
+              string? clientError = null;
+              try
+              {
+                  using var socket = new TcpClient();
+                  await socket.ConnectAsync(IPAddress.Loopback, port, timeout.Token);
+                  using var ssl = new SslStream(socket.GetStream(), leaveInnerStreamOpen: false);
+                  var policy = new X509ChainPolicy {
+                      TrustMode = X509ChainTrustMode.CustomRootTrust,
+                      RevocationMode = X509RevocationMode.NoCheck,
+                      VerificationFlags = X509VerificationFlags.NoFlag,
+                  };
+                  policy.CustomTrustStore.Add(root);
+                  policy.ExtraStore.Add(issuer);
+                  policy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+                  await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions {
+                      TargetHost = host,
+                      CertificateChainPolicy = policy,
+                      EnabledSslProtocols = SslProtocols.Tls12,
+                  }, timeout.Token);
+                  clientHandshake = true;
+                  await ssl.WriteAsync(Encoding.ASCII.GetBytes("Authorization: Bearer INERT-G09-L012\r\n"), timeout.Token);
+                  await ssl.FlushAsync(timeout.Token);
+              }
+              catch (Exception error)
+              {
+                  clientError = error.GetType().Name + ":" + error.Message;
+              }
+              var server = await serverTask;
+              listener.Stop();
+              results.Add(new {
+                  file, host,
+                  certificateSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))),
+                  clientHandshake,
+                  clientError,
+                  serverHandshake = server.handshake,
+                  serverReceivedInertCredential = server.received.Contains("INERT-G09-L012", StringComparison.Ordinal),
+                  serverError = server.error,
+              });
+          }
+          Console.WriteLine(JsonSerializer.Serialize(new {
+              runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+              os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+              results,
+          }, new JsonSerializerOptions { WriteIndented = true }));
+          '@ | Set-Content -LiteralPath lab/TlsProbe.cs -Encoding utf8
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+              <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+            </PropertyGroup>
+            <ItemGroup><Compile Include="TlsProbe.cs" /></ItemGroup>
+          </Project>
+          '@ | Set-Content -LiteralPath lab/TlsProbe.csproj -Encoding utf8
+          '<configuration><packageSources><clear /></packageSources></configuration>' | Set-Content -LiteralPath lab/NuGet.Config -Encoding utf8
+      - name: Run released Windows TLS matrix
+        shell: pwsh
+        env:
+          DOTNET_NOLOGO: '1'
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+          DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location lab
+          Write-Output "Runner=$env:RUNNER_OS ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          dotnet --list-sdks
+          dotnet --list-runtimes
+          dotnet restore TlsProbe.csproj --configfile NuGet.Config
+          dotnet build TlsProbe.csproj --no-restore -f net11.0
+          dotnet build TlsProbe.csproj --no-restore -f net10.0
+          dotnet bin/Debug/net11.0/TlsProbe.dll | Tee-Object -FilePath tls11.json
+          dotnet bin/Debug/net10.0/TlsProbe.dll | Tee-Object -FilePath tls10.json
+          foreach ($file in @('tls11.json', 'tls10.json')) {
+            $matrix = Get-Content $file -Raw | ConvertFrom-Json
+            $positive = $matrix.results | Where-Object { $_.file -eq 'allowed.der' -and $_.host -eq 'allowed.test' }
+            $nameDenied = $matrix.results | Where-Object { $_.file -eq 'allowed.der' -and $_.host -eq 'forbidden.test' }
+            $constraintDenied = $matrix.results | Where-Object { $_.file -eq 'forbidden.der' -and $_.host -eq 'forbidden.test' }
+            if (-not $positive.clientHandshake -or -not $positive.serverReceivedInertCredential -or $nameDenied.clientHandshake -or $constraintDenied.clientHandshake) { throw "Baseline failed in $file" }
+          }
+      - name: Retain exact TLS matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g09-l012-rank30-windows-tls
+          path: lab/tls*.json
+          if-no-files-found: warn
