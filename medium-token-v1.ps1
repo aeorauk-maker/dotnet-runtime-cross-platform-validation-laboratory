@@ -143,7 +143,7 @@ try {
     $cmdLine = [System.Text.StringBuilder]::new("`"$cmdExe`" /d /c `"`"$cmdPath`"`"")
     $cmdProc = [MicNative+ProcessInfo]::new()
     if (-not [MicNative]::CreateProcessWithTokenW($medium, 0, $cmdExe, $cmdLine,
-        0, [IntPtr]::Zero, 'C:\Windows\Temp', [ref]$startup, [ref]$cmdProc)) {
+        0x08000000, [IntPtr]::Zero, 'C:\Windows\Temp', [ref]$startup, [ref]$cmdProc)) {
         throw "CreateProcessWithTokenW cmd failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
     $cmdWait = [MicNative]::WaitForSingleObject($cmdProc.hProcess, 10000)
@@ -151,6 +151,11 @@ try {
     [void][MicNative]::GetExitCodeProcess($cmdProc.hProcess, [ref]$cmdExit)
     Write-Host "cmd_pid=$($cmdProc.dwProcessId) wait=$cmdWait exit=$cmdExit result_exists=$(Test-Path -LiteralPath $cmdResultPath)"
     if (Test-Path -LiteralPath $cmdResultPath) { Get-Content -LiteralPath $cmdResultPath | Out-Host }
+    $cmdInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$($cmdProc.dwProcessId)"
+    Write-Host "cmd_name=$($cmdInfo.Name) cmd_line=$($cmdInfo.CommandLine) cmd_parent=$($cmdInfo.ParentProcessId)"
+    $cmdThreads = (Get-Process -Id $cmdProc.dwProcessId -ErrorAction SilentlyContinue).Threads
+    Write-Host "cmd_threads=$($cmdThreads.Count)"
+    & icacls.exe $cmdPath | Out-Host
     & icacls.exe 'C:\Windows\Temp' | Out-Host
     if ($cmdProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($cmdProc.hThread) }
     if ($cmdProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($cmdProc.hProcess) }
