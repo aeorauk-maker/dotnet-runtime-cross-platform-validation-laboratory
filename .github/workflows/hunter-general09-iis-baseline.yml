@@ -68,7 +68,7 @@ jobs:
           $authorization.AppendChild($config.CreateElement('clear')) | Out-Null
           $allow=$config.CreateElement('add'); $allow.SetAttribute('accessType','Allow'); $allow.SetAttribute('roles','Administrators')
           $authorization.AppendChild($allow) | Out-Null; $security.AppendChild($authorization) | Out-Null
-          $config.DocumentElement.SelectSingleNode('system.webServer').AppendChild($security) | Out-Null
+          $config.DocumentElement.SelectSingleNode('location/system.webServer').AppendChild($security) | Out-Null
           $config.Save((Join-Path $published 'web.config'))
           $denied=Invoke-WebRequest 'http://127.0.0.1:8927/restricted' -SkipHttpErrorCheck
           $valid=Invoke-WebRequest 'http://127.0.0.1:8927/restricted' -UseDefaultCredentials -AllowUnencryptedAuthentication -SkipHttpErrorCheck
