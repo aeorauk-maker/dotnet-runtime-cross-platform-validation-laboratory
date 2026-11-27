@@ -1,0 +1,21 @@
+name: H5 Legacy Auth Control
+run-name: H5 Legacy Auth Control
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-framework:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Compare supported cookie-handler controls
+        shell: pwsh
+        env:
+          H5_URL_B64: ${{ secrets.H5_44419F3F_URL_B64 }}
+        run: |
+          dotnet run --project lab/h5-legacy-auth-control/cookie23-net48.csproj -c Release
