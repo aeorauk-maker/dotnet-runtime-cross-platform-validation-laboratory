@@ -1,4 +1,4 @@
-name: H3 BX1 Windows workload state control
+name: H3 Windows workload state consistency
 on:
   push:
     branches:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   windows-preflight:
-    name: H3 BX1 disposable Windows fixture
+    name: H3 disposable Windows fixture
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -15,11 +15,11 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.100
-      - name: Compare valid and changed workload roots
+      - name: Check repeated workload maintenance
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'h3bx1-workload-state'
+          $root = Join-Path $env:RUNNER_TEMP 'h3-workload-state'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           $globalJsonPath = Join-Path $root 'global.json'
           Set-Content -LiteralPath $globalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}' -Encoding utf8
@@ -31,23 +31,22 @@ jobs:
           finally { Pop-Location }
           Write-Host "SDK_VERSION=$((dotnet --version).Trim())"
           Write-Host "INSTALL_EXIT=$installExit"
-          Write-Host "INSTALL_TEXT=$(($installText -replace '\r?\n',' | ').Substring(0,[Math]::Min(300,$installText.Length)))"
           $recordRoot = Join-Path $env:ProgramData 'dotnet/workloads'
-          $record = if (Test-Path -LiteralPath $recordRoot) { Get-ChildItem -LiteralPath $recordRoot -Filter 'globaljsonworkloadsets.json' -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like '*11.0.100*' } | Select-Object -First 1 }
+          $record = Get-ChildItem -LiteralPath $recordRoot -Filter 'globaljsonworkloadsets.json' -Recurse | Where-Object { $_.FullName -like '*11.0.100*' } | Select-Object -First 1
           Write-Host "RECORD_FOUND=$($null -ne $record)"
           if ($null -ne $record) {
             $state = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
             Write-Host "RECORDED_PATH_MATCH=$($state.ContainsKey($globalJsonPath))"
-            Write-Host "RECORDED_VERSION_MATCH=$($state[$globalJsonPath] -eq '11.0.100')"
             Push-Location $root
             try {
               $validText = (& dotnet workload clean 2>&1 | Out-String).Trim()
               $validExit = $LASTEXITCODE
             }
             finally { Pop-Location }
-            $validState = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
             Write-Host "VALID_CLEAN_EXIT=$validExit"
+            $validState = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
             Write-Host "VALID_ROOT_RETAINED=$($validState.ContainsKey($globalJsonPath))"
+            $beforeLength = (Get-Item -LiteralPath $record.FullName).Length
             Set-Content -LiteralPath $globalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.101"}}' -Encoding utf8
             Push-Location $root
             try {
@@ -55,10 +54,30 @@ jobs:
               $changedExit = $LASTEXITCODE
             }
             finally { Pop-Location }
-            $changedState = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
+            $afterLength = (Get-Item -LiteralPath $record.FullName).Length
+            $afterHash = (Get-FileHash -LiteralPath $record.FullName -Algorithm SHA256).Hash
             Write-Host "CHANGED_CLEAN_EXIT=$changedExit"
-            Write-Host "CHANGED_ROOT_RETAINED=$($changedState.ContainsKey($globalJsonPath))"
-            Write-Host "VALID_CLEAN_TEXT=$(($validText -replace '\r?\n',' | ').Substring(0,[Math]::Min(250,$validText.Length)))"
-            Write-Host "CHANGED_CLEAN_TEXT=$(($changedText -replace '\r?\n',' | ').Substring(0,[Math]::Min(250,$changedText.Length)))"
+            Write-Host "STATE_LENGTH_BEFORE=$beforeLength"
+            Write-Host "STATE_LENGTH_AFTER=$afterLength"
+            Write-Host "STATE_SHA256_AFTER=$afterHash"
+            try { $null = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable; $parseOk = $true }
+            catch { $parseOk = $false }
+            Write-Host "STATE_PARSE_OK=$parseOk"
+            Push-Location $root
+            try {
+              $freshText = (& dotnet workload clean 2>&1 | Out-String).Trim()
+              $freshExit = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            Write-Host "FRESH_CLEAN_EXIT=$freshExit"
+            Write-Host "FRESH_CLEAN_JSON_ERROR=$($freshText.Contains('JsonException') -or $freshText.Contains('JSON content'))"
+            Remove-Item -LiteralPath $record.FullName -Force
+            Push-Location $root
+            try {
+              $recoveryText = (& dotnet workload clean 2>&1 | Out-String).Trim()
+              $recoveryExit = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            Write-Host "RECOVERY_CLEAN_EXIT=$recoveryExit"
           }
           exit 0
