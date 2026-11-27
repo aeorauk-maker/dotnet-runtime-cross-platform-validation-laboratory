@@ -1,0 +1,23 @@
+name: General09 Windows Application log baseline
+on:
+  push:
+    branches:
+      - hunter-20261127-general09-fe1b1c-eventlog
+jobs:
+  eventlog-baseline:
+    runs-on: windows-2025
+    steps:
+      - name: Inspect standard Windows logging capability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          dotnet --list-runtimes
+          $channel = (& wevtutil gl Application | Where-Object { $_ -match '^\s*channelAccess:' } | Select-Object -First 1)
+          if (-not $channel) { throw 'Application channel ACL unavailable' }
+          Write-Output $channel
+          $source = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\.NET Runtime'
+          Write-Output ".NET Runtime event source registered=$source"
+          if (-not $source) { throw '.NET Runtime event source unavailable' }
+          $one = Get-WinEvent -LogName Application -MaxEvents 1 -ErrorAction Stop
+          Write-Output "Application log read available=$($null -ne $one)"
