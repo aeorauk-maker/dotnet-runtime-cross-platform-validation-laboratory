@@ -37,7 +37,10 @@ jobs:
           $files = @(Get-ChildItem -LiteralPath $pidDir -Filter 'rzc-*' -File)
           Write-Output "RAZOR_PIDFILE_COUNT=$($files.Count)"
           if ($files.Count -ne 1) { throw 'Razor server was absent or ambiguous' }
-          $lines = @(Get-Content -LiteralPath $files[0].FullName)
+          $stream = [IO.FileStream]::new($files[0].FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+          $reader = [IO.StreamReader]::new($stream)
+          try { $lines = @($reader.ReadToEnd() -split '\r?\n') }
+          finally { $reader.Dispose() }
           if ($lines.Count -lt 4 -or $lines[1] -ne 'rzc') { throw 'invalid Razor pid file' }
           $pipeName = $lines[3].Trim()
           Write-Output "RAZOR_PID=$($lines[0])"
