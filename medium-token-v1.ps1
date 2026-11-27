@@ -48,6 +48,8 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.IO;
+using System.IO.Pipes;
 public static class MicNative {
     [StructLayout(LayoutKind.Sequential)]
     public struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
@@ -93,10 +95,59 @@ public static class MicNative {
     public static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetExitCodeProcess(IntPtr handle, out uint exitCode);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool ImpersonateLoggedOnUser(IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool RevertToSelf();
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool OpenThreadToken(IntPtr thread, uint access, bool openAsSelf, out IntPtr token);
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetCurrentThread();
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr data, int length, out int returned);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr sidString);
     [DllImport("kernel32.dll")]
     public static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")]
     public static extern IntPtr LocalFree(IntPtr handle);
+
+    public static string ProbeMedium(IntPtr token, string sentinel, string pipeName) {
+        if (!ImpersonateLoggedOnUser(token)) throw new Exception("ImpersonateLoggedOnUser failed: " + Marshal.GetLastWin32Error());
+        try {
+            IntPtr threadToken = IntPtr.Zero;
+            IntPtr data = IntPtr.Zero;
+            IntPtr sidString = IntPtr.Zero;
+            string integrity;
+            try {
+                if (!OpenThreadToken(GetCurrentThread(), 0x0008, true, out threadToken)) throw new Exception("OpenThreadToken failed: " + Marshal.GetLastWin32Error());
+                data = Marshal.AllocHGlobal(256);
+                int returned;
+                if (!GetTokenInformation(threadToken, 25, data, 256, out returned)) throw new Exception("GetTokenInformation failed: " + Marshal.GetLastWin32Error());
+                if (!ConvertSidToStringSid(Marshal.ReadIntPtr(data), out sidString)) throw new Exception("ConvertSidToStringSid failed: " + Marshal.GetLastWin32Error());
+                integrity = Marshal.PtrToStringUni(sidString);
+            } finally {
+                if (sidString != IntPtr.Zero) LocalFree(sidString);
+                if (data != IntPtr.Zero) Marshal.FreeHGlobal(data);
+                if (threadToken != IntPtr.Zero) CloseHandle(threadToken);
+            }
+            string file = "unexpected-write";
+            try { File.AppendAllText(sentinel, "medium-write"); }
+            catch (Exception e) { file = e.GetType().Name + ":" + e.HResult.ToString("X8"); }
+            string pipe = "unknown";
+            try {
+                using (NamedPipeClientStream client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.CurrentUserOnly)) {
+                    client.Connect(3000);
+                    client.WriteByte(42);
+                    client.Flush();
+                    pipe = "connected";
+                }
+            } catch (Exception e) { pipe = e.GetType().Name + ":" + e.HResult.ToString("X8"); }
+            return "integrity=" + integrity + ";file=" + file + ";pipe=" + pipe;
+        } finally {
+            if (!RevertToSelf()) throw new Exception("RevertToSelf failed: " + Marshal.GetLastWin32Error());
+        }
+    }
 }
 '@
 
@@ -133,6 +184,45 @@ try {
     if (-not [MicNative]::SetTokenInformation($medium, 25, $labelBuffer, $labelLength)) {
         throw "SetTokenInformation failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
+    $highName = 'mic-high-control-' + [guid]::NewGuid().ToString('N')
+    $highServer = [System.IO.Pipes.NamedPipeServerStream]::new($highName,
+        [System.IO.Pipes.PipeDirection]::InOut, 1,
+        [System.IO.Pipes.PipeTransmissionMode]::Byte,
+        [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+    try {
+        $highWait = $highServer.WaitForConnectionAsync()
+        $highClient = [System.IO.Pipes.NamedPipeClientStream]::new('.', $highName,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+        try {
+            $highClient.Connect(3000)
+            $highClient.WriteByte(7)
+            $highClient.Flush()
+            $highWait.GetAwaiter().GetResult()
+            if ($highServer.ReadByte() -ne 7) { throw 'High pipe baseline byte mismatch' }
+            Write-Host 'high_to_high=connected'
+        } finally { $highClient.Dispose() }
+    } finally { $highServer.Dispose() }
+    $mediumName = 'mic-high-server-' + [guid]::NewGuid().ToString('N')
+    $mediumServer = [System.IO.Pipes.NamedPipeServerStream]::new($mediumName,
+        [System.IO.Pipes.PipeDirection]::InOut, 1,
+        [System.IO.Pipes.PipeTransmissionMode]::Byte,
+        [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+    try {
+        $mediumWait = $mediumServer.WaitForConnectionAsync()
+        $mediumResult = [MicNative]::ProbeMedium($medium, $sentinelPath, $mediumName)
+        Write-Host "medium_probe=$mediumResult"
+        if ($mediumResult -match 'pipe=connected') {
+            $mediumWait.GetAwaiter().GetResult()
+            Write-Host "high_server_byte=$($mediumServer.ReadByte())"
+        }
+        Write-Host "sentinel=$([System.IO.File]::ReadAllText($sentinelPath))"
+        if ($mediumResult -notmatch 'integrity=S-1-16-8192' -or
+            $mediumResult -match 'file=unexpected-write') {
+            throw 'Medium token or High sentinel denial was not established'
+        }
+    } finally { $mediumServer.Dispose() }
+    return
     $startup = [MicNative+StartupInfo]::new()
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][MicNative+StartupInfo])
     $cmdPath = Join-Path 'C:\Windows\Temp' ('bdf34b0c-cmd-child-' + [guid]::NewGuid().ToString('N') + '.cmd')
