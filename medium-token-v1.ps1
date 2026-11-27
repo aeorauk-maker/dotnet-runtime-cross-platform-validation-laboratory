@@ -298,6 +298,24 @@ try {
     if ($proc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($proc.hProcess) }
     if ($sid -ne [IntPtr]::Zero) { [void][MicNative]::LocalFree($sid) }
     if ($labelBuffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($labelBuffer) }
+    if ($medium -ne [IntPtr]::Zero) {
+        $ordinaryTemp = [System.IO.Path]::GetTempPath()
+        $ordinaryFile = Join-Path $ordinaryTemp ('mic-ordinary-' + [guid]::NewGuid().ToString('N') + '.txt')
+        [System.IO.File]::WriteAllText($ordinaryFile, 'H')
+        if (-not [MicNative]::ImpersonateLoggedOnUser($medium)) { throw 'Medium impersonation failed' }
+        try {
+            $mediumTemp = [System.IO.Path]::GetTempPath()
+            $mediumWrite = 'denied'
+            try { [System.IO.File]::AppendAllText($ordinaryFile, 'M'); $mediumWrite = 'success' }
+            catch { $mediumWrite = $_.Exception.GetType().Name }
+        } finally { [void][MicNative]::RevertToSelf() }
+        $sameTemp = [string]::Equals($ordinaryTemp, $mediumTemp, [StringComparison]::OrdinalIgnoreCase)
+        $ordinaryContent = [System.IO.File]::ReadAllText($ordinaryFile)
+        Write-Host "ordinary_temp_same=$sameTemp medium_write=$mediumWrite content=$ordinaryContent"
+        [System.IO.File]::Delete($ordinaryFile)
+        if (-not $sameTemp -or $mediumWrite -ne 'success' -or $ordinaryContent -ne 'HM') { throw 'Ordinary user temp control failed' }
+    }
+
     if ($medium -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($medium) }
     if ($token -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($token) }
 }
