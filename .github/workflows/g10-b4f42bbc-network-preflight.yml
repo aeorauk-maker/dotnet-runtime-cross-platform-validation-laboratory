@@ -32,10 +32,12 @@ jobs:
           sudo ip netns exec g10b ip link set lo up
           sudo ip netns exec g10a ip link set g10nA up
           sudo ip netns exec g10b ip link set g10nB up
-          sudo ip -6 addr add fe80::2/64 dev g10vA
-          sudo ip -6 addr add fe80::2/64 dev g10vB
-          sudo ip netns exec g10a ip -6 addr add fe80::1/64 dev g10nA
-          sudo ip netns exec g10b ip -6 addr add fe80::1/64 dev g10nB
-          ping -6 -c 1 -W 1 -I g10vA fe80::1 >/dev/null
-          ping -6 -c 1 -W 1 -I g10vB fe80::1 >/dev/null
+          sudo ip -6 addr add fe80::2/64 dev g10vA nodad
+          sudo ip -6 addr add fe80::2/64 dev g10vB nodad
+          sudo ip netns exec g10a ip -6 addr add fe80::1/64 dev g10nA nodad
+          sudo ip netns exec g10b ip -6 addr add fe80::1/64 dev g10nB nodad
+          ip -6 route get fe80::1 dev g10vA
+          ip -6 route get fe80::1 dev g10vB
+          ping -6 -c 1 -W 2 -I g10vA fe80::1%g10vA
+          ping -6 -c 1 -W 2 -I g10vB fe80::1%g10vB
           echo 'G10_TOPOLOGY=PASS'
