@@ -94,3 +94,35 @@ jobs:
               }
             }
           }
+
+      - name: Check two ordinary receiver fields in local Pickup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hostName = $env:COMPUTERNAME.ToLowerInvariant()
+          $pickup = 'C:/inetpub/mailroot/Pickup'
+          $drop = 'C:/inetpub/mailroot/Drop'
+          $badmail = 'C:/inetpub/mailroot/Badmail'
+          $lines = @(
+            "X-Sender: sender@$hostName",
+            "X-Receiver: victim@$hostName",
+            "X-Receiver:",
+            " observer@$hostName",
+            "From: sender@$hostName",
+            "To: victim@$hostName",
+            'Subject: two ordinary receiver fields',
+            'Content-Type: text/plain; charset=us-ascii',
+            '',
+            'DUAL-SENTINEL'
+          )
+          $mail = $lines -join "`r`n"
+          $path = Join-Path $pickup ('dual-' + [guid]::NewGuid().ToString('N') + '.eml')
+          [IO.File]::WriteAllText($path, $mail, [Text.Encoding]::ASCII)
+          Start-Sleep -Seconds 12
+          foreach ($folder in @($pickup, 'C:/inetpub/mailroot/Queue', $drop, $badmail)) {
+            Write-Output ('Folder=' + (Split-Path $folder -Leaf) + ' Count=' + @(Get-ChildItem $folder -File -ErrorAction SilentlyContinue).Count)
+          }
+          $match = Get-ChildItem $drop -File | Where-Object { (Get-Content $_.FullName -Raw) -like '*DUAL-SENTINEL*' } | Select-Object -First 1
+          if ($null -eq $match) { throw 'No Drop file for dual receiver control' }
+          Write-Output ('DualFile=' + $match.Name)
+          Get-Content $match.FullName | Select-String -Pattern '^(x-receiver|X-Receiver|To|Subject):|^ observer@|DUAL-SENTINEL$' | ForEach-Object { Write-Output $_.Line }
