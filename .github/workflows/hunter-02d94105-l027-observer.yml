@@ -1,0 +1,31 @@
+name: Hunter 02d94105 artifact observer
+on:
+  workflow_run:
+    workflows: [Hunter 02d94105 artifact producer]
+    types: [completed]
+permissions:
+  actions: read
+  issues: write
+jobs:
+  observe:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download triggering artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: hunter-02d94105-l027-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Record inert observation on owned issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('fs');
+            const value = fs.readFileSync('target.txt', 'utf8').trim();
+            if (!/^[0-9]{1,6}$/.test(value)) throw new Error('Invalid inert value');
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: 2,
+              body: `Inert artifact observation: value=${value}; run=${context.payload.workflow_run.id}.`
+            });
