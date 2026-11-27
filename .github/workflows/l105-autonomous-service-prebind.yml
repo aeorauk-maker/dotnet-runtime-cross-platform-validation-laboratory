@@ -177,22 +177,32 @@ jobs:
               for line in data.splitlines():
                   if any(x in line for x in ['SERVICE_SID=','DISCOVERY_COUNT=','DISCOVERED_PID=','PIPE_BOUND=','SERVICE_EXCEPTION=']): print(line,flush=True)
               bound = 'PIPE_BOUND=True' in data and ('PID='+str(pi.dwProcessId)) in data
+              service_sid_ok = 'SERVICE_SID=S-1-5-20' in data
               print('AUTONOMOUS_BIND_MATCH='+str(bound),flush=True)
+              print('SERVICE_IS_NETWORKSERVICE='+str(service_sid_ok),flush=True)
+              if not service_sid_ok: raise RuntimeError('SCM service identity was not NetworkService')
               if not bound: raise RuntimeError('Lower service did not independently bind target PID')
               if k.ResumeThread(pi.hThread)==0xffffffff: raise OSError(ctypes.get_last_error(),'ResumeThread')
               managed = wait_file(marker,10)
               alive = k.WaitForSingleObject(pi.hProcess,0)==0x102
               print(f'MANAGED_MARKER={managed} HIGH_PROCESS_ALIVE={alive}',flush=True)
-              if managed and alive: print('PS_WHILE_LOWER_BOUND='+str(ps_listed(pi.dwProcessId)),flush=True)
+              listed_while_bound = ps_listed(pi.dwProcessId) if managed and alive else False
+              print('PS_WHILE_LOWER_BOUND='+str(listed_while_bound),flush=True)
               with open(release,'w') as f: f.write('release')
               for _ in range(100):
                   if os.path.exists(trace) and 'SERVICE_STOPPED=True' in open(trace,encoding='utf-8-sig',errors='replace').read(): break
                   time.sleep(.1)
-              print('SERVICE_STOPPED='+str(os.path.exists(trace) and 'SERVICE_STOPPED=True' in open(trace,encoding='utf-8-sig',errors='replace').read()),flush=True)
+              service_stopped = os.path.exists(trace) and 'SERVICE_STOPPED=True' in open(trace,encoding='utf-8-sig',errors='replace').read()
+              print('SERVICE_STOPPED='+str(service_stopped),flush=True)
               time.sleep(2)
-              print('HIGH_PROCESS_ALIVE_AFTER_CLOSE='+str(k.WaitForSingleObject(pi.hProcess,0)==0x102),flush=True)
-              print('PS_AFTER_LOWER_CLOSE='+str(ps_listed(pi.dwProcessId)),flush=True)
+              alive_after_close = k.WaitForSingleObject(pi.hProcess,0)==0x102
+              listed_after_close = ps_listed(pi.dwProcessId)
+              print('HIGH_PROCESS_ALIVE_AFTER_CLOSE='+str(alive_after_close),flush=True)
+              print('PS_AFTER_LOWER_CLOSE='+str(listed_after_close),flush=True)
               if not managed or not alive: raise RuntimeError('Normal runtime target failed to start')
+              if not listed_while_bound or not service_stopped or not alive_after_close or listed_after_close:
+                  raise RuntimeError('Fake pipe listing/persistence/release controls failed')
+              print('R21_02_ALL_ASSERTIONS_PASSED=True',flush=True)
           finally:
               with open(release,'w') as f: f.write('release')
               k.TerminateProcess(pi.hProcess,0)
