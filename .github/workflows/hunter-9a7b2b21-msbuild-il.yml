@@ -9,13 +9,15 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - name: Inspect token and MSBuild server pipe
+      - uses: actions/checkout@v4
+      - name: Compare high and restricted medium pipe clients
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          whoami /groups | Select-String 'Mandatory Label|Administrators'
-          dotnet --list-sdks | Select-String '10.0.404|11.0.100'
-          $lab = Join-Path $env:RUNNER_TEMP 'hunter-9a7b2b21-msbuild'
+          Set-Content -LiteralPath 'global.json' -Value '{"sdk":{"version":"11.0.100"}}'
+          dotnet build MicPipeProbe.csproj -v:q
+          if ($LASTEXITCODE -ne 0) { throw 'probe build failed' }
+          $lab = Join-Path $env:RUNNER_TEMP 'hunter-9a7b2b21-victim'
           New-Item -ItemType Directory -Path $lab -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $lab 'global.json') -Value '{"sdk":{"version":"11.0.100"}}'
           Set-Content -LiteralPath (Join-Path $lab 'L38.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>'
@@ -23,12 +25,18 @@ jobs:
           try {
             $env:DOTNET_CLI_USE_MSBUILD_SERVER = '1'
             dotnet build -v:diag *> build.log
-            if ($LASTEXITCODE -ne 0) { Get-Content build.log -Tail 60; throw 'build failed' }
-            Get-Content build.log | Select-String 'MSBuild Server node|MSBuildServer' | Select-Object -First 8
+            if ($LASTEXITCODE -ne 0) { Get-Content build.log -Tail 60; throw 'victim build failed' }
+            Get-Content build.log | Select-String 'MSBuild Server node' | Select-Object -First 2
             $pipes = @(Get-ChildItem -LiteralPath '\\.\pipe\' -ErrorAction Stop | Where-Object { $_.Name -match 'MSBuildServer-' })
             Write-Output "PIPE_COUNT=$($pipes.Count)"
-            foreach ($pipe in $pipes) {
-              Write-Output "PIPE=$($pipe.FullName)"
-              try { $acl = Get-Acl -LiteralPath $pipe.FullName -ErrorAction Stop; Write-Output "PIPE_SDDL=$($acl.Sddl)" } catch { Write-Output "PIPE_ACL_ERROR=$($_.Exception.GetType().Name)" }
-            }
+            if ($pipes.Count -ne 1) { throw 'ambiguous MSBuild server pipe count' }
+            Write-Output "PIPE=$($pipes[0].Name)"
+            $resultDir = Join-Path $env:PUBLIC 'Documents\hunter-9a7b2b21-L38'
+            New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+            icacls $resultDir /setintegritylevel '(OI)(CI)M'
+            if ($LASTEXITCODE -ne 0) { throw 'result directory label failed' }
+            $result = Join-Path $resultDir 'medium-client.txt'
+            $probe = Join-Path $env:GITHUB_WORKSPACE 'bin\Debug\net11.0\MicPipeProbe.dll'
+            dotnet $probe parent $pipes[0].Name $result
+            if ($LASTEXITCODE -ne 0) { throw 'medium child setup failed' }
           } finally { Pop-Location }
