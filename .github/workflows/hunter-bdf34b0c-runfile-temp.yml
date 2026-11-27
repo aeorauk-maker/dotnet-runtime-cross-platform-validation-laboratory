@@ -1,0 +1,26 @@
+name: Hunter bdf34b0c Windows temp boundary
+on:
+  push:
+    branches: [hunter-20261127-bdf34b0c-runfile-temp]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  temp-boundary:
+    runs-on: windows-2022
+    steps:
+      - name: Inspect default temp paths and ACLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output ('os=' + [Environment]::OSVersion.VersionString)
+          Write-Output ('identity=' + [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+          Write-Output ('pwsh_runtime=' + [Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)
+          Write-Output ('path_temp=' + [IO.Path]::GetTempPath())
+          Write-Output ('env_temp=' + $env:TEMP)
+          Write-Output 'windows_temp_acl:'
+          & icacls (Join-Path $env:WINDIR 'Temp')
+          Write-Output 'system_temp_acl:'
+          & icacls (Join-Path $env:WINDIR 'SystemTemp')
+          Write-Output 'installed_sdks:'
+          & dotnet --list-sdks
