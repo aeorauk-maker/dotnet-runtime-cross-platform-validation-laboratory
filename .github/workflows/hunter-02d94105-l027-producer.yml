@@ -1,0 +1,23 @@
+name: Hunter 02d94105 artifact producer
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hunter-02d94105-l027-producer.yml'
+permissions:
+  contents: read
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write event-bound value
+        env:
+          TARGET_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p lab-artifact
+          printf '%s\n' "$TARGET_NUMBER" > lab-artifact/target.txt
+      - name: Upload inert artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: hunter-02d94105-l027-artifact
+          path: lab-artifact/
+          retention-days: 1
