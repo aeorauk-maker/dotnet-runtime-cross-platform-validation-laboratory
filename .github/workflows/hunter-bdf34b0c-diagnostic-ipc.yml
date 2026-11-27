@@ -38,8 +38,7 @@ jobs:
           set -euo pipefail
           dotnet --version
           dotnet new console --framework net11.0 --output "$RUNNER_TEMP/hunter-bdf34b0c-app" --no-restore
-          printf 'Console.WriteLine("READY"); Thread.Sleep(30000);
-' > "$RUNNER_TEMP/hunter-bdf34b0c-app/Program.cs"
+          echo 'Console.WriteLine("READY"); Thread.Sleep(30000);' > "$RUNNER_TEMP/hunter-bdf34b0c-app/Program.cs"
           dotnet build "$RUNNER_TEMP/hunter-bdf34b0c-app" -c Release -v quiet
           umask 000
           env -u TMPDIR dotnet "$RUNNER_TEMP/hunter-bdf34b0c-app/bin/Release/net11.0/hunter-bdf34b0c-app.dll" > "$RUNNER_TEMP/hunter-bdf34b0c-app.log" 2>&1 &
