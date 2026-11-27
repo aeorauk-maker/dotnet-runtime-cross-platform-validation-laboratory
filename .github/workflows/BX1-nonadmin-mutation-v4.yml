@@ -1,0 +1,125 @@
+name: H3 BX1 Windows nonadmin path mutation v4
+on:
+  push:
+    branches:
+      - h3-bx1-20261127-7f83
+permissions:
+  contents: read
+jobs:
+  nonadmin-mutation:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install official SDK 11.0.100
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Compare distinct admin after nonadmin file removal and restore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((dotnet --version).Trim() -ne '11.0.100') { throw 'Unexpected SDK' }
+          $adminAccount = 'h3bx1b7f83'
+          $lowAccount = 'h3bx1c7f83'
+          $adminPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'aA1!'
+          $lowPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'aA1!'
+          Write-Host "::add-mask::$adminPassword"
+          Write-Host "::add-mask::$lowPassword"
+          New-LocalUser -Name $adminAccount -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          New-LocalUser -Name $lowAccount -Password (ConvertTo-SecureString $lowPassword -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          Add-LocalGroupMember -Group Administrators -Member $adminAccount
+          $adminId = "$env:COMPUTERNAME\$adminAccount"
+          $lowId = "$env:COMPUTERNAME\$lowAccount"
+          $adminTask = 'h3bx1-7f83-admin-clean'
+          $adminScript = Join-Path $env:ProgramData 'h3bx1-7f83-admin.ps1'
+          $lowScript = Join-Path $env:ProgramData 'h3bx1-7f83-low.ps1'
+          $adminResult = Join-Path $env:ProgramData 'h3bx1-7f83-admin-result.txt'
+          $shareName = 'h3bx1-7f83-cshare'
+          $root = Join-Path $env:PUBLIC $shareName
+          $globalJson = Join-Path $root 'global.json'
+          $lowResult = Join-Path $root 'low-result.txt'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $validJson = '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}'
+          Set-Content -LiteralPath $globalJson -Encoding utf8 -Value $validJson
+          & icacls.exe $root /grant "${lowAccount}:(OI)(CI)M" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not grant low account file control' }
+          & icacls.exe $globalJson /grant "${lowAccount}:M" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not grant low account existing-file control' }
+          $unc = "\\localhost\$shareName"
+          @'
+          $ErrorActionPreference = 'Stop'
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($id)
+          $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          $neutral = Join-Path $env:ProgramData 'h3bx1-7f83-neutral'
+          New-Item -ItemType Directory -Path $neutral -Force | Out-Null
+          Set-Location $neutral
+          try {
+            $ErrorActionPreference = 'Continue'
+            $output = (& 'C:\Program Files\dotnet\dotnet.exe' workload clean 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+          }
+          catch {
+            $output = "WRAPPER_EXCEPTION=$($_.Exception.GetType().FullName): $($_.Exception.Message)"
+            $code = -99
+          }
+          @("B_ID=$($id.Name)", "B_ADMIN=$admin", "B_EXIT=$code", "B_OUTPUT=$($output.Trim() -replace '\s+', ' ')") | Set-Content -LiteralPath (Join-Path $env:ProgramData 'h3bx1-7f83-admin-result.txt') -Encoding utf8
+          '@ | Set-Content -LiteralPath $adminScript -Encoding utf8
+          @"
+          `$ErrorActionPreference = 'Stop'
+          `$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          `$principal = [Security.Principal.WindowsPrincipal]::new(`$id)
+          `$admin = `$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          `$state = 'deleted'
+          try { Remove-Item -LiteralPath '$globalJson' -Force }
+          catch { `$state = 'error:' + `$_.Exception.GetType().Name }
+          @("C_ID=`$(`$id.Name)", "C_ADMIN=`$admin", "C_STATE=`$state", "C_FILE_EXISTS=`$(Test-Path -LiteralPath '$globalJson')") | Set-Content -LiteralPath '$lowResult' -Encoding utf8
+          if (`$state -ne 'deleted') { exit 1 }
+          "@ | Set-Content -LiteralPath $lowScript -Encoding utf8
+          try {
+            Register-ScheduledTask -TaskName $adminTask -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -File `"$adminScript`"") -User $adminId -Password $adminPassword -RunLevel Highest -Force | Out-Null
+            function Invoke-B {
+              Remove-Item -LiteralPath $adminResult -Force -ErrorAction SilentlyContinue
+              Start-ScheduledTask -TaskName $adminTask
+              for ($i = 0; $i -lt 60 -and !(Test-Path -LiteralPath $adminResult); $i++) { Start-Sleep -Seconds 1 }
+              if (!(Test-Path -LiteralPath $adminResult)) {
+                $taskInfo = Get-ScheduledTaskInfo -TaskName $adminTask
+                throw "Admin B task did not complete; result $($taskInfo.LastTaskResult)"
+              }
+              Get-Content -LiteralPath $adminResult
+            }
+            New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME -ReadAccess $adminId | Out-Null
+            Write-Host 'B_NO_RECORD'
+            Invoke-B
+            Push-Location $unc
+            try { dotnet workload install aspire --verbosity quiet; $installExit = $LASTEXITCODE }
+            finally { Pop-Location }
+            Write-Host "INSTALL_EXIT=$installExit"
+            if ($installExit -ne 0) { throw 'Workload install failed' }
+            $records = @(Get-ChildItem -Path (Join-Path $env:ProgramData 'dotnet\workloads') -Recurse -Filter globaljsonworkloadsets.json -ErrorAction SilentlyContinue)
+            $registered = $false
+            foreach ($record in $records) {
+              $data = [IO.File]::ReadAllText($record.FullName) | ConvertFrom-Json -AsHashtable
+              if ($data.ContainsKey((Join-Path $unc 'global.json'))) { $registered = $true }
+            }
+            Write-Host "UNC_REGISTERED=$registered"
+            if (!$registered) { throw 'UNC path not registered' }
+            Write-Host 'B_VALID_REGISTERED'
+            Invoke-B
+            $lowCredential = [pscredential]::new($lowId, (ConvertTo-SecureString $lowPassword -AsPlainText -Force))
+            $lowProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -NonInteractive -File `"$lowScript`"" -Credential $lowCredential -Wait -PassThru
+            Write-Host "C_PROCESS_EXIT=$($lowProcess.ExitCode)"
+            if (!(Test-Path -LiteralPath $lowResult)) { throw "Low account process produced no result; exit $($lowProcess.ExitCode); file exists $(Test-Path -LiteralPath $globalJson)" }
+            Get-Content -LiteralPath $lowResult
+            Write-Host 'B_AFTER_LOW_REMOVAL'
+            Invoke-B
+            Set-Content -LiteralPath $globalJson -Encoding utf8 -Value $validJson
+            Write-Host 'B_AFTER_RESTORE'
+            Invoke-B
+          }
+          finally {
+            Unregister-ScheduledTask -TaskName $adminTask -Confirm:$false -ErrorAction SilentlyContinue
+            if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) { Remove-SmbShare -Name $shareName -Force | Out-Null }
+            Remove-LocalUser -Name $adminAccount -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $lowAccount -ErrorAction SilentlyContinue
+          }
