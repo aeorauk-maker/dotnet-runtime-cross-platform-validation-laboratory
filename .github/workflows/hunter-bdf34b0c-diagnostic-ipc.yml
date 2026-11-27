@@ -1,0 +1,68 @@
+name: Hunter bdf34b0c diagnostic socket mode
+on:
+  push:
+    branches:
+      - hunter-20261127-bdf34b0c-diagnostic-ipc
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Compare Linux socket modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, socket, stat
+          old = os.umask(0)
+          path = '/tmp/hunter-bdf34b0c-socket-' + str(os.getpid())
+          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          try:
+              os.fchmod(s.fileno(), 0o600)
+              s.bind(path)
+              print('pre-bind fchmod path mode:', oct(stat.S_IMODE(os.stat(path).st_mode)))
+              os.chmod(path, 0o600)
+              print('post-bind chmod path mode:', oct(stat.S_IMODE(os.stat(path).st_mode)))
+          finally:
+              s.close()
+              if os.path.exists(path): os.unlink(path)
+              os.umask(old)
+          PY
+      - name: Inspect released runtime default endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet --version
+          dotnet new console --framework net11.0 --output "$RUNNER_TEMP/hunter-bdf34b0c-app" --no-restore
+          printf 'Console.WriteLine("READY"); Thread.Sleep(30000);
+' > "$RUNNER_TEMP/hunter-bdf34b0c-app/Program.cs"
+          dotnet build "$RUNNER_TEMP/hunter-bdf34b0c-app" -c Release -v quiet
+          umask 000
+          env -u TMPDIR dotnet "$RUNNER_TEMP/hunter-bdf34b0c-app/bin/Release/net11.0/hunter-bdf34b0c-app.dll" > "$RUNNER_TEMP/hunter-bdf34b0c-app.log" 2>&1 &
+          victim_pid=$!
+          trap 'kill "$victim_pid" 2>/dev/null || true' EXIT
+          sock_path=''
+          for attempt in $(seq 1 50); do
+            for candidate in /tmp/dotnet-diagnostic-"$victim_pid"-*-socket; do
+              if [[ -S "$candidate" ]]; then sock_path="$candidate"; break; fi
+            done
+            if [[ -n "$sock_path" ]]; then break; fi
+            sleep 0.1
+          done
+          if [[ -z "$sock_path" ]]; then echo 'No default diagnostic socket appeared'; exit 1; fi
+          stat -c 'runtime socket mode=%a owner=%U group=%G' "$sock_path"
+          sudo -u nobody python3 - "$sock_path" <<'PY'
+          import socket, sys
+          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          try:
+              s.connect(sys.argv[1])
+              print('distinct-UID connect: accepted')
+          except OSError as e:
+              print('distinct-UID connect: denied errno=' + str(e.errno))
+          finally:
+              s.close()
+          PY
