@@ -1,0 +1,122 @@
+name: G09-L012 Windows released chain matrix
+on:
+  push:
+    branches: [g09-l012-rank30-20261127]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  chain-windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Write inert exact-DER fixtures and matrix source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path lab -Force | Out-Null
+          [IO.File]::WriteAllBytes('lab/root.der', [Convert]::FromBase64String('MIIBWzCCAQCgAwIBAgIUf8zDQlmyTFO4j93hFRfDsgBEbHswCgYIKoZIzj0EAwIwGTEXMBUGA1UEAwwOSDA5IGluZXJ0IHJvb3QwHhcNMjYxMTI2MDAwMDAwWhcNMzYxMTI0MDAwMDAwWjAZMRcwFQYDVQQDDA5IMDkgaW5lcnQgcm9vdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEHC35nCx+R+xMh4DcBF5b3Ku2058JOGl+Qyf8ftF64s1Ybheo+GnLBnKDM3lEgSWJ+24g3ExFuJJIYUL0LTkROjJjAkMBIGA1UdEwEB/wQIMAYBAf8CAQEwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMCA0kAMEYCIQC37fRvWaxfXtPvX9JHkAsx+fji5qGMkBD728cir3j/IAIhAL31tp1du4WPsYJHtAXULs9sKbyDKhqHAgj8OHNQD0qF'))
+          [IO.File]::WriteAllBytes('lab/intermediate.der', [Convert]::FromBase64String('MIIBuzCCAWGgAwIBAgIUfpyNjzMnYwZ6eIRNlMhIlfDYQPUwCgYIKoZIzj0EAwIwGTEXMBUGA1UEAwwOSDA5IGluZXJ0IHJvb3QwHhcNMjYxMTI2MDAwMDAwWhcNMzQxMTI1MDAwMDAwWjAoMSYwJAYDVQQDDB1IMDkgYWxsb3dlZC50ZXN0IGRlbGVnYXRlZCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABKH2Se8omSlppwhOHSRDC8xC0T30UT6CApOZXC8bSJHaDMGwvNGe2aswB/oK/aeb+QOc5GrDgut4LUSEU99BH2KjeDB2MBIGA1UdEwEB/wQIMAYBAf8CAQAwDgYDVR0PAQH/BAQDAgGGMB4GA1UdHgEB/wQUMBKgEDAOggxhbGxvd2VkLnRlc3QwMAYDVR0fBCkwJzAloCOgIYYfaHR0cDovLzEyNy4wLjAuMTo1Mjc0NS9yb290LmNybDAKBggqhkjOPQQDAgNIADBFAiEAlMEhepdQNWwwQf+wSoHaCOOiHmvQ7VWwb2qPJRsiTFkCIGJSlAmBmw88XKDgZlFL/JqVr/Mv0uLVqHeNPoQIiP1j'))
+          [IO.File]::WriteAllBytes('lab/root-forbidden.der', [Convert]::FromBase64String('MIIB8zCCAZigAwIBAgICB9EwCgYIKoZIzj0EAwIwGTEXMBUGA1UEAwwOSDA5IGluZXJ0IHJvb3QwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAsMSowKAYDVQQDDCFIMDkgYXV0aG9yaXplZCBmb3JiaWRkZW4gZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASsrJ7i2Q187U6hJesrl6elUvp0l1jqeLGpm0wpn4dhxws6KAvgesCSlm4FzRGPLxTXZ8yZL0Hp4dEPwgUtXxdbo4G8MIG5MAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMBMGA1UdJQQMMAoGCCsGAQUFBwMCMDAGA1UdHwQpMCcwJaAjoCGGH2h0dHA6Ly8xMjcuMC4wLjE6NTI3NDUvcm9vdC5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwCgYIKoZIzj0EAwIDSQAwRgIhAPBFQjI2u4FD/HBYWnhfL8s3lr9kXQ/OJNQt8ikPUHE9AiEA0lKk/gLznrbiqq25Rj/w7+G9mqxX0x20TeUmFgWi89A='))
+          [IO.File]::WriteAllBytes('lab/allowed.der', [Convert]::FromBase64String('MIICAjCCAaigAwIBAgICA+kwCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HMMIHJMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDyNDxuRzCiLt7sB7PdjUqu2IQi9DEVnxnpxWidzwJW8AIgdAuLD1n4VGcHQ7q8o7hJa3wBYiODGuf9ZgWr5LcnZaQ='))
+          [IO.File]::WriteAllBytes('lab/forbidden.der', [Convert]::FromBase64String('MIICBDCCAaqgAwIBAgICA+owCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HOMIHLMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwCgYIKoZIzj0EAwIDSAAwRQIgFLnjCnSyFF3lO2/oSNnXfiRs1VUBYFiYxhD8DlBirMACIQDd8YUuLKirhRDc05J9F/cCxbHkdjut7/ozwUJJM31MWA=='))
+          [IO.File]::WriteAllBytes('lab/allowed-then-forbidden.der', [Convert]::FromBase64String('MIICHTCCAcOgAwIBAgICA+swCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HnMIHkMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MBkGA1UdEQQSMBCCDmZvcmJpZGRlbi50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDfIgzDLJhiKVKrEmBrfDahHqPheYTwrjhYqMRBBUVYAAIgBplgt0T+td3umsg55HsGGVqozyu9vVbAMPfMrkS81jE='))
+          [IO.File]::WriteAllBytes('lab/forbidden-then-allowed.der', [Convert]::FromBase64String('MIICHDCCAcOgAwIBAgICA+wwCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdSDA5IGFsbG93ZWQudGVzdCBkZWxlZ2F0ZWQgQ0EwHhcNMjYxMTI2MDAwMDAwWhcNMzExMTI2MDAwMDAwWjAdMRswGQYDVQQDDBJIMDkgaW5lcnQgZW5kcG9pbnQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ5Ind6nYSkhMYlhc/lmTl8ULG4xBNPkdnQQppOOT4t7YB9sq7khMa5ugApUGOVJAeI2yovZ/OIuz4cpc6/YXfJo4HnMIHkMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjA4BgNVHR8EMTAvMC2gK6AphidodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L2ludGVybWVkaWF0ZS5jcmwwNwYIKwYBBQUHAQEEKzApMCcGCCsGAQUFBzABhhtodHRwOi8vMTI3LjAuMC4xOjUyNzQ1L29jc3AwGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MAoGCCqGSM49BAMCA0cAMEQCIGPY/1jX4dGAo+Ypp+YyrsCI4IWLTw2ADNzgSn1I96DLAiAOpsAekpUj1T+YATad7YfhsOufKcxSvaeXgAy5vPfiLw=='))
+          @'
+          using System.Security.Cryptography;
+          using System.Security.Cryptography.X509Certificates;
+          using System.Text.Json;
+          
+          using var root = X509CertificateLoader.LoadCertificateFromFile("root.der");
+          using var issuer = X509CertificateLoader.LoadCertificateFromFile("intermediate.der");
+          var results = new List<object>();
+          foreach (string file in new[] {
+              "root-forbidden.der", "allowed.der", "forbidden.der",
+              "allowed-then-forbidden.der", "forbidden-then-allowed.der"
+          })
+          {
+              string sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file)));
+              try
+              {
+                  using var certificate = X509CertificateLoader.LoadCertificateFromFile(file);
+                  using var chain = new X509Chain();
+                  chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                  chain.ChainPolicy.CustomTrustStore.Add(root);
+                  chain.ChainPolicy.ExtraStore.Add(issuer);
+                  chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                  chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+                  chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.2"));
+                  bool built = chain.Build(certificate);
+                  string? dnsName = null, dnsError = null;
+                  try { dnsName = certificate.GetNameInfo(X509NameType.DnsName, false); }
+                  catch (Exception error) { dnsError = error.GetType().Name + ":" + error.HResult; }
+                  results.Add(new {
+                      file, sha256, built,
+                      statuses = chain.ChainStatus.Select(status => status.Status.ToString()).ToArray(),
+                      sanCount = certificate.Extensions.Cast<X509Extension>().Count(extension => extension.Oid?.Value == "2.5.29.17"),
+                      dnsName, dnsError,
+                      loadError = (string?)null,
+                  });
+              }
+              catch (Exception error)
+              {
+                  results.Add(new {
+                      file, sha256, built = false,
+                      statuses = Array.Empty<string>(),
+                      sanCount = -1,
+                      dnsName = (string?)null,
+                      dnsError = (string?)null,
+                      loadError = error.GetType().Name + ":" + error.HResult,
+                  });
+              }
+          }
+          Console.WriteLine(JsonSerializer.Serialize(new {
+              runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+              os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+              results,
+          }, new JsonSerializerOptions { WriteIndented = true }));
+          '@ | Set-Content -LiteralPath lab/Program.cs -Encoding utf8
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><OutputType>Exe</OutputType><TargetFrameworks>net10.0;net11.0</TargetFrameworks><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+          </Project>
+          '@ | Set-Content -LiteralPath lab/Chain.csproj -Encoding utf8
+          '<configuration><packageSources><clear /></packageSources></configuration>' | Set-Content -LiteralPath lab/NuGet.Config -Encoding utf8
+      - name: Run released .NET 10 and 11 on Windows
+        shell: pwsh
+        env:
+          DOTNET_NOLOGO: '1'
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+          DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location lab
+          Write-Output "Runner=$env:RUNNER_OS ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          dotnet --list-sdks
+          dotnet --list-runtimes
+          dotnet restore Chain.csproj --configfile NuGet.Config
+          dotnet build Chain.csproj --no-restore -f net11.0
+          dotnet build Chain.csproj --no-restore -f net10.0
+          dotnet bin/Debug/net11.0/Chain.dll | Tee-Object -FilePath chain11.json
+          dotnet bin/Debug/net10.0/Chain.dll | Tee-Object -FilePath chain10.json
+          foreach ($file in @('chain11.json', 'chain10.json')) {
+            $matrix = Get-Content $file -Raw | ConvertFrom-Json
+            $allowed = $matrix.results | Where-Object { $_.file -eq 'allowed.der' }
+            $forbidden = $matrix.results | Where-Object { $_.file -eq 'forbidden.der' }
+            $direct = $matrix.results | Where-Object { $_.file -eq 'root-forbidden.der' }
+            if (-not $allowed.built -or $forbidden.built -or -not $direct.built) { throw "Baseline failed in $file" }
+          }
+      - name: Retain exact matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g09-l012-rank30-windows-matrix
+          path: lab/chain*.json
+          if-no-files-found: warn
