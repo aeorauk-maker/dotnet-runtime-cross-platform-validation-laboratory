@@ -74,6 +74,19 @@ jobs:
           $valid=Invoke-WebRequest 'http://127.0.0.1:8927/restricted' -UseDefaultCredentials -AllowUnencryptedAuthentication -SkipHttpErrorCheck
           Write-Output "IISAnonymous=$($denied.StatusCode) IISAdmin=$($valid.StatusCode) ValidBody=$($valid.Content) ValidServer=$($valid.Headers.Server)"
           Write-Output "AdminRole=$([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          $integration = Join-Path $env:ProgramFiles 'dotnet/shared/Microsoft.AspNetCore.App/11.0.0/Microsoft.AspNetCore.Server.IISIntegration.dll'
+          if (-not (Test-Path $integration)) { throw 'Released IISIntegration assembly missing' }
+          Write-Output "IISIntegrationSHA256=$((Get-FileHash $integration -Algorithm SHA256).Hash)"
           $iisLogs=Get-ChildItem (Join-Path $env:SystemDrive 'inetpub/logs/LogFiles') -Recurse -Filter 'u_ex*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($null -ne $iisLogs) { Get-Content $iisLogs.FullName -Tail 12 | ForEach-Object { Write-Output "IISLOG=$_" } }
           if ($denied.StatusCode -notin @(401,403) -or $valid.StatusCode -ne 200 -or $valid.Content -ne 'H09-INERT-PROTECTED') { throw 'Native IIS authorization baselines failed' }
+      - name: Validate secondary local user diagnostics
+        shell: pwsh
+        env:
+          H09_PRIVATE_PROBE_B64: ${{ secrets.HUNTER_GENERAL09_FE1B1C_PRIVATE_PROBE_B64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrEmpty($env:H09_PRIVATE_PROBE_B64)) { throw 'Private diagnostic control unavailable' }
+          $privateProbe = Join-Path $env:RUNNER_TEMP 'h09-private-probe.ps1'
+          [IO.File]::WriteAllBytes($privateProbe, [Convert]::FromBase64String($env:H09_PRIVATE_PROBE_B64))
+          & $privateProbe
