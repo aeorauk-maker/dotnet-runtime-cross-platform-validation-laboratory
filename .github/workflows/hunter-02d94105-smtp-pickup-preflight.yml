@@ -55,3 +55,42 @@ jobs:
             }
           }
 
+
+      - name: Check redundant recipient headers in local Pickup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:/inetpub/mailroot'
+          $domain = $env:COMPUTERNAME.ToLowerInvariant()
+          $from = "sender@$domain"
+          $victim = "victim@$domain"
+          $observer = "observer@$domain"
+          $mail = @(
+            "X-Sender: $from",
+            "X-Receiver: $victim",
+            "Bcc:",
+            " $observer",
+            "X-Lab: ordinary",
+            "MIME-Version: 1.0",
+            "From: $from",
+            "To: $victim",
+            "Bcc:",
+            " $observer",
+            "Subject: redundant recipient control",
+            "Content-Type: text/plain; charset=us-ascii",
+            "",
+            "MULTI-SENTINEL"
+          ) -join "`r`n"
+          [IO.File]::WriteAllText((Join-Path $root 'Pickup/multi.eml'), $mail, [Text.Encoding]::ASCII)
+          Start-Sleep -Seconds 20
+          foreach ($folder in @('Pickup','Queue','Drop','Badmail')) {
+            $path = Join-Path $root $folder
+            $files = @(Get-ChildItem $path -File -ErrorAction SilentlyContinue)
+            Write-Output ("Folder=$folder Count=" + $files.Count)
+            foreach ($file in $files) {
+              if ((Get-Content -Raw $file.FullName) -match 'MULTI-SENTINEL') {
+                Write-Output ("MultiFile=" + $file.Name)
+                Write-Output (Get-Content -Raw $file.FullName)
+              }
+            }
+          }
