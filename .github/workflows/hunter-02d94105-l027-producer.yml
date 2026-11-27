@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Write event-bound value
         env:
-          TARGET_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET_NUMBER: 2
         run: |
           mkdir -p lab-artifact
           printf '%s\n' "$TARGET_NUMBER" > lab-artifact/target.txt
