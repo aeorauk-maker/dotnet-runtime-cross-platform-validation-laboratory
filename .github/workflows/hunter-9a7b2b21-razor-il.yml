@@ -1,0 +1,49 @@
+name: Hunter 9a7b2b21 Razor server integrity preflight
+on:
+  push:
+    branches: [hunter-20261127-9a7b2b21-msbuild-il]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare real Razor server pipe admission
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Content -LiteralPath 'global.json' -Value '{"sdk":{"version":"11.0.100"}}'
+          dotnet --version
+          dotnet build MicPipeProbe.csproj -v:q
+          if ($LASTEXITCODE -ne 0) { throw 'probe build failed' }
+          $lab = Join-Path $env:RUNNER_TEMP 'hunter-9a7b2b21-razor-victim'
+          $pidDir = Join-Path $env:RUNNER_TEMP 'hunter-9a7b2b21-razor-pids'
+          New-Item -ItemType Directory -Path $lab,$pidDir -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $lab 'global.json') -Value '{"sdk":{"version":"11.0.100"}}'
+          $env:DOTNET_BUILD_PIDFILE_DIRECTORY = $pidDir
+          Push-Location $lab
+          try {
+            dotnet new webapp -n Victim -f net11.0 --no-restore
+            if ($LASTEXITCODE -ne 0) { throw 'webapp creation failed' }
+            Push-Location Victim
+            try {
+              dotnet build -p:UseRazorBuildServer=true -v:diag *> build.log
+              if ($LASTEXITCODE -ne 0) { Get-Content build.log -Tail 80; throw 'Razor build failed' }
+              Get-Content build.log | Select-String -Pattern 'Razor.*server|rzc|UseRazorBuildServer' | Select-Object -Last 12
+            } finally { Pop-Location }
+          } finally { Pop-Location }
+          $files = @(Get-ChildItem -LiteralPath $pidDir -Filter 'rzc-*' -File)
+          Write-Output "RAZOR_PIDFILE_COUNT=$($files.Count)"
+          if ($files.Count -ne 1) { throw 'Razor server was absent or ambiguous' }
+          $lines = @(Get-Content -LiteralPath $files[0].FullName)
+          if ($lines.Count -lt 4 -or $lines[1] -ne 'rzc') { throw 'invalid Razor pid file' }
+          $pipeName = $lines[3].Trim()
+          Write-Output "RAZOR_PID=$($lines[0])"
+          Write-Output "RAZOR_PIPE=$pipeName"
+          $process = Get-Process -Id ([int]$lines[0]) -ErrorAction Stop
+          Write-Output "RAZOR_PROCESS=$($process.ProcessName)"
+          $probe = Join-Path $env:GITHUB_WORKSPACE 'bin\Debug\net11.0\MicPipeProbe.dll'
+          dotnet $probe parent $pipeName unused
+          if ($LASTEXITCODE -ne 0) { throw 'token/pipe probe failed' }
