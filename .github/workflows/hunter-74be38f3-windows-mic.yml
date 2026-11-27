@@ -24,3 +24,7 @@ jobs:
           whoami /priv | Select-String 'SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege'
           Write-Host 'RUNNER_DOTNET_SDKS'
           dotnet --list-sdks
+      - uses: actions/checkout@v4
+      - name: Run generic split-token pipe check
+        shell: pwsh
+        run: ./windows-generic-mic.ps1
