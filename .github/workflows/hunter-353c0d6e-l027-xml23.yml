@@ -1,0 +1,58 @@
+name: Hunter 353c L027 .NET Framework XML reader
+on:
+  push:
+    branches:
+      - hunter-353c0d6e-l027-xml23
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  framework_xml_reader:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Test inert XML reader controls on .NET Framework
+        shell: powershell
+        run: |
+          $src = @'
+          using System;
+          using System.IO;
+          using System.Text;
+          using System.Xml;
+          using System.Xml.Serialization;
+          public class L027Root { public string Value { get; set; } }
+          public static class L027Lab {
+            public static void Run() {
+              Console.WriteLine("OS=" + Environment.OSVersion.VersionString);
+              Console.WriteLine("CLR=" + Environment.Version);
+              Console.WriteLine("XmlDictionaryReader=" + typeof(XmlDictionaryReader).Assembly.FullName);
+              string sentinel = Path.Combine(Path.GetTempPath(), "l027-inert-only.txt");
+              File.WriteAllText(sentinel, "L027_INERT_ONLY");
+              string valid = "<L027Root><Value>baseline</Value></L027Root>";
+              string denied = "<L027Root><Value>broken</L027Root>";
+              string internalDtd = "<!DOCTYPE L027Root [<!ENTITY xxe 'INTERNAL'>]><L027Root><Value>&xxe;</Value></L027Root>";
+              string externalDtd = "<!DOCTYPE L027Root [<!ENTITY xxe SYSTEM '" + new Uri(sentinel).AbsoluteUri + "'>]><L027Root><Value>&xxe;</Value></L027Root>";
+              Check("valid", valid);
+              Check("denied", denied);
+              Check("internal_dtd", internalDtd);
+              Check("external_file_dtd", externalDtd);
+              File.Delete(sentinel);
+            }
+            private static void Check(string name, string xml) {
+              try {
+                using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+                using (var reader = XmlDictionaryReader.CreateTextReader(stream, Encoding.UTF8, new XmlDictionaryReaderQuotas { MaxDepth = 32, MaxStringContentLength = 10240, MaxArrayLength = 10240, MaxBytesPerRead = 4096, MaxNameTableCharCount = 10240 }, null)) {
+                  var model = (L027Root)new XmlSerializer(typeof(L027Root)).Deserialize(reader);
+                  Console.WriteLine(name + ": VALUE=" + model.Value);
+                }
+              } catch (Exception ex) {
+                Exception root = ex.InnerException ?? ex;
+                Console.WriteLine(name + ": " + root.GetType().FullName + ": " + root.Message);
+              }
+            }
+          }
+          '@
+          Add-Type -ReferencedAssemblies 'System.Xml.dll','System.Runtime.Serialization.dll' -TypeDefinition $src
+          [L027Lab]::Run()
