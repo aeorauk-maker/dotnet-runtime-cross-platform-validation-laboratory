@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   windows-preflight:
-    name: H3 disposable Windows fixture
+    name: H3 disposable two-account fixture
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -15,40 +15,75 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.100
-      - name: Compare maintenance from neutral directory
+      - name: Compare separate account workload maintenance
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'h3-project'
-          $neutral = Join-Path $env:RUNNER_TEMP 'h3-neutral'
+          $lowName = 'h3cb1low7f83'
+          $plain = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+          $secure = ConvertTo-SecureString $plain -AsPlainText -Force
+          $null = New-LocalUser -Name $lowName -Password $secure -PasswordNeverExpires
+          $userId = "$env:COMPUTERNAME\$lowName"
+          $credential = [pscredential]::new($userId,$secure)
+          $root = Join-Path $env:PUBLIC 'Documents\h3cb1-project-7f83'
+          $neutral = Join-Path $env:RUNNER_TEMP 'h3cb1-neutral'
           New-Item -ItemType Directory -Path $root,$neutral -Force | Out-Null
-          $globalJsonPath = Join-Path $root 'global.json'
-          Set-Content -LiteralPath $globalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}' -Encoding utf8
-          Push-Location $root
+          & icacls.exe $root /grant "$($userId):(OI)(CI)M" /T | Out-Null
+          $whoScript = Join-Path $root 'who.ps1'
+          $whoMarker = Join-Path $root 'who.txt'
+          Set-Content -LiteralPath $whoScript -Value 'Set-Content -LiteralPath "C:\Users\Public\Documents\h3cb1-project-7f83\who.txt" -Value ([Security.Principal.WindowsIdentity]::GetCurrent().Name)' -Encoding utf8
           try {
-            $installText = (& dotnet workload install aspire --verbosity quiet 2>&1 | Out-String).Trim()
-            $installExit = $LASTEXITCODE
-          }
-          finally { Pop-Location }
-          Write-Host "INSTALL_EXIT=$installExit"
-          $recordRoot = Join-Path $env:ProgramData 'dotnet/workloads'
-          $record = Get-ChildItem -LiteralPath $recordRoot -Filter 'globaljsonworkloadsets.json' -Recurse | Where-Object { $_.FullName -like '*11.0.100*' } | Select-Object -First 1
-          Write-Host "RECORD_FOUND=$($null -ne $record)"
-          if ($null -ne $record) {
+            $who = Start-Process -FilePath (Get-Command pwsh).Source -Credential $credential -ArgumentList "-NoProfile -File `"$whoScript`"" -PassThru -Wait
+            Write-Host "LOW_PREFLIGHT_EXIT=$($who.ExitCode)"
+            Write-Host "LOW_PREFLIGHT_MARKER=$(Test-Path -LiteralPath $whoMarker)"
+            if (-not (Test-Path -LiteralPath $whoMarker)) { exit 0 }
+            Write-Host "LOW_ID=$(Get-Content -LiteralPath $whoMarker -Raw)"
+            $globalJsonPath = Join-Path $root 'global.json'
+            Set-Content -LiteralPath $globalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}' -Encoding utf8
+            Push-Location $root
+            try {
+              $installText = (& dotnet workload install aspire --verbosity quiet 2>&1 | Out-String).Trim()
+              $installExit = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            Write-Host "INSTALL_EXIT=$installExit"
+            $recordRoot = Join-Path $env:ProgramData 'dotnet/workloads'
+            $record = Get-ChildItem -LiteralPath $recordRoot -Filter 'globaljsonworkloadsets.json' -Recurse | Where-Object { $_.FullName -like '*11.0.100*' } | Select-Object -First 1
+            Write-Host "RECORD_FOUND=$($null -ne $record)"
+            if ($null -eq $record) { exit 0 }
             $state = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
             Write-Host "RECORDED_PATH_MATCH=$($state.ContainsKey($globalJsonPath))"
-            Write-Host "NEUTRAL_HAS_GLOBAL_JSON=$(Test-Path -LiteralPath (Join-Path $neutral 'global.json'))"
             Push-Location $neutral
             try {
-              Write-Host "NEUTRAL_SDK_VERSION=$((dotnet --version).Trim())"
               $validText = (& dotnet workload clean 2>&1 | Out-String).Trim()
               $validExit = $LASTEXITCODE
             }
             finally { Pop-Location }
             Write-Host "VALID_CLEAN_EXIT=$validExit"
-            $validState = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
-            Write-Host "VALID_ROOT_RETAINED=$($validState.ContainsKey($globalJsonPath))"
-            Set-Content -LiteralPath $globalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.101"}}' -Encoding utf8
+            $mutateScript = Join-Path $root 'mutate.ps1'
+            $mutationMarker = Join-Path $root 'mutated.txt'
+            $lowScript = @'
+          param([string]$GlobalJsonPath,[string]$RecordPath,[string]$MarkerPath)
+          $status = 'unknown'
+          try {
+            $stream = [IO.File]::Open($RecordPath,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+            $stream.Dispose()
+            $status = 'allowed'
+          }
+          catch [UnauthorizedAccessException] { $status = 'denied' }
+          catch { $status = 'error' }
+          Set-Content -LiteralPath $GlobalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.101"}}' -Encoding utf8
+          Set-Content -LiteralPath $MarkerPath -Value "$([Security.Principal.WindowsIdentity]::GetCurrent().Name)|$status" -Encoding utf8
+          '@
+            Set-Content -LiteralPath $mutateScript -Value $lowScript -Encoding utf8
+            $args = "-NoProfile -File `"$mutateScript`" -GlobalJsonPath `"$globalJsonPath`" -RecordPath `"$($record.FullName)`" -MarkerPath `"$mutationMarker`""
+            $mutator = Start-Process -FilePath (Get-Command pwsh).Source -Credential $credential -ArgumentList $args -PassThru -Wait
+            Write-Host "LOW_MUTATOR_EXIT=$($mutator.ExitCode)"
+            Write-Host "LOW_MUTATION_MARKER=$(Test-Path -LiteralPath $mutationMarker)"
+            if (Test-Path -LiteralPath $mutationMarker) { Write-Host "LOW_MUTATION_STATUS=$(Get-Content -LiteralPath $mutationMarker -Raw)" }
+            $versionChanged = ((Get-Content -LiteralPath $globalJsonPath -Raw | ConvertFrom-Json).sdk.workloadVersion -eq '11.0.101')
+            Write-Host "LOW_VERSION_CHANGED=$versionChanged"
+            if (-not $versionChanged) { exit 0 }
             Push-Location $neutral
             try {
               $changedText = (& dotnet workload clean 2>&1 | Out-String).Trim()
@@ -59,13 +94,7 @@ jobs:
             finally { Pop-Location }
             Write-Host "CHANGED_CLEAN_EXIT=$changedExit"
             Write-Host "FRESH_CLEAN_EXIT=$freshExit"
-            Write-Host "CHANGED_CLEAN_TEXT=$(($changedText -replace '\r?\n',' | ').Substring(0,[Math]::Min(350,$changedText.Length)))"
-            Write-Host "FRESH_CLEAN_TEXT=$(($freshText -replace '\r?\n',' | ').Substring(0,[Math]::Min(350,$freshText.Length)))"
-            $raw = Get-Content -LiteralPath $record.FullName -Raw
-            Write-Host "STATE_LENGTH=$((Get-Item -LiteralPath $record.FullName).Length)"
-            try { $null = $raw | ConvertFrom-Json -AsHashtable; $parseOk = $true }
-            catch { $parseOk = $false }
-            Write-Host "STATE_PARSE_OK=$parseOk"
+            Write-Host "FRESH_CLEAN_TEXT=$(($freshText -replace '\r?\n',' | ').Substring(0,[Math]::Min(250,$freshText.Length)))"
             Remove-Item -LiteralPath $record.FullName -Force
             Push-Location $neutral
             try {
@@ -74,6 +103,6 @@ jobs:
             }
             finally { Pop-Location }
             Write-Host "RECOVERY_CLEAN_EXIT=$recoveryExit"
-            Write-Host "RECOVERY_CLEAN_TEXT=$(($recoveryText -replace '\r?\n',' | ').Substring(0,[Math]::Min(350,$recoveryText.Length)))"
           }
+          finally { Remove-LocalUser -Name $lowName -ErrorAction SilentlyContinue }
           exit 0
