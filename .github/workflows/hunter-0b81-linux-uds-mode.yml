@@ -1,0 +1,35 @@
+name: Hunter 0b81 Linux Unix socket mode
+on:
+  push:
+    branches: [hunter-20261127-0b81-ipc]
+  workflow_dispatch:
+jobs:
+  socket-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare descriptor and pathname permissions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, socket, stat, subprocess
+          path = f"/tmp/uds-mode-0b81-{os.getpid()}.sock"
+          previous_umask = os.umask(0o022)
+          try:
+              server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+              os.fchmod(server.fileno(), 0o600)
+              server.bind(path)
+              server.listen(1)
+              client = 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); print("CONNECTED")'
+              def probe():
+                  p = subprocess.run(['sudo', '-n', '-u', 'nobody', 'python3', '-c', client, path], text=True, capture_output=True)
+                  return p.returncode, p.stdout.strip(), p.stderr.strip().splitlines()[-1:]
+              print('PRE_BIND_FCHMOD_PATH_MODE=%04o' % stat.S_IMODE(os.stat(path).st_mode))
+              print('OTHER_UID_BEFORE_PATH_CHMOD=', probe())
+              os.chmod(path, 0o600)
+              print('AFTER_PATH_CHMOD_MODE=%04o' % stat.S_IMODE(os.stat(path).st_mode))
+              print('OTHER_UID_AFTER_PATH_CHMOD=', probe())
+          finally:
+              os.umask(previous_umask)
+              try: os.unlink(path)
+              except FileNotFoundError: pass
+          PY
