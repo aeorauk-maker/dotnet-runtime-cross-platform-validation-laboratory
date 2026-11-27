@@ -80,10 +80,15 @@ async Task<object> Attempt(string name, bool rejectServerCertificate, bool allow
 
     if (serverOk && clientOk)
     {
+        // The client must read server data to process TLS 1.3 NewSessionTicket.
+        await serverSsl.WriteAsync(new byte[] { 0x42 });
+        await serverSsl.FlushAsync();
+        var one = new byte[1];
+        var got = await clientSsl.ReadAsync(one).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        if (got != 1 || one[0] != 0x42) throw new Exception("Owned server-data witness failed");
         await clientSsl.WriteAsync(new byte[] { 0x41 });
         await clientSsl.FlushAsync();
-        var one = new byte[1];
-        var got = await serverSsl.ReadAsync(one).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        got = await serverSsl.ReadAsync(one).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         if (got != 1 || one[0] != 0x41) throw new Exception("Owned application-data witness failed");
         // Give OpenSSL a chance to process post-handshake TLS 1.3 NewSessionTicket.
         await Task.Delay(100);
