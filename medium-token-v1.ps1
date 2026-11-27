@@ -316,7 +316,20 @@ try {
         if (-not $sameTemp -or $mediumWrite -ne 'success' -or $ordinaryContent -ne 'HM') { throw 'Ordinary user temp control failed' }
     }
 
-    if ($medium -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($medium) }
+    $nestedDir = Join-Path $ordinaryTemp ('mic-nested-' + [guid]::NewGuid().ToString('N'))
+[void][System.IO.Directory]::CreateDirectory($nestedDir)
+$nestedFile = Join-Path $nestedDir 'ordinary.txt'
+[System.IO.File]::WriteAllText($nestedFile, 'H')
+if (-not [MicNative]::ImpersonateLoggedOnUser($medium)) { throw 'Medium impersonation failed' }
+try {
+  $nestedWrite = 'denied'
+  try { [System.IO.File]::AppendAllText($nestedFile, 'M'); $nestedWrite = 'success' } catch { $nestedWrite = $_.Exception.GetType().Name }
+} finally { [void][MicNative]::RevertToSelf() }
+$nestedContent = [System.IO.File]::ReadAllText($nestedFile)
+Write-Host "nested_temp_write=$nestedWrite content=$nestedContent"
+[System.IO.Directory]::Delete($nestedDir, $true)
+if ($nestedWrite -ne 'success' -or $nestedContent -ne 'HM') { throw 'Nested ordinary temp control failed' }
+if ($medium -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($medium) }
     if ($token -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($token) }
 }
 
