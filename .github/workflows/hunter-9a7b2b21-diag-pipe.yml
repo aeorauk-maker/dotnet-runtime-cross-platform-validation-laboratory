@@ -1,0 +1,46 @@
+name: Hunter 9a7b2b21 diagnostic pipe integrity preflight
+on:
+  push:
+    branches: [hunter-20261127-9a7b2b21-diag-pipe]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare real runtime diagnostic pipe admission
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Content -LiteralPath 'global.json' -Value '{"sdk":{"version":"11.0.100"}}'
+          dotnet --version
+          dotnet build MicPipeProbe.csproj -v:q
+          if ($LASTEXITCODE -ne 0) { throw 'probe build failed' }
+          $lab = Join-Path $env:RUNNER_TEMP 'hunter-9a7b2b21-diagnostic-victim'
+          dotnet new console -n Victim -o $lab -f net11.0 --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'victim creation failed' }
+          Set-Content -LiteralPath (Join-Path $lab 'Program.cs') -Value 'Console.WriteLine("READY"); Thread.Sleep(TimeSpan.FromMinutes(3));'
+          dotnet build (Join-Path $lab 'Victim.csproj') -c Release -v:q
+          if ($LASTEXITCODE -ne 0) { throw 'victim build failed' }
+          $victimDll = Join-Path $lab 'bin\Release\net11.0\Victim.dll'
+          $victim = Start-Process -FilePath (Get-Command dotnet).Source -ArgumentList $victimDll -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $lab 'victim.out') -RedirectStandardError (Join-Path $lab 'victim.err')
+          try {
+            $pipeName = "dotnet-diagnostic-$($victim.Id)"
+            $found = $false
+            for ($attempt = 0; $attempt -lt 100; $attempt++) {
+              $found = @(Get-ChildItem -LiteralPath '\\.\pipe\' -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $pipeName }).Count -gt 0
+              if ($found) { break }
+              Start-Sleep -Milliseconds 100
+            }
+            Write-Output "VICTIM_PID=$($victim.Id)"
+            Write-Output "DIAGNOSTIC_PIPE=$pipeName"
+            Write-Output "PIPE_VISIBLE=$found"
+            if (-not $found) { throw 'real diagnostic pipe absent' }
+            $probe = Join-Path $env:GITHUB_WORKSPACE 'bin\Debug\net11.0\MicPipeProbe.dll'
+            dotnet $probe parent $pipeName unused
+            if ($LASTEXITCODE -ne 0) { throw 'token/pipe probe failed' }
+          } finally {
+            Stop-Process -Id $victim.Id -Force -ErrorAction SilentlyContinue
+          }
