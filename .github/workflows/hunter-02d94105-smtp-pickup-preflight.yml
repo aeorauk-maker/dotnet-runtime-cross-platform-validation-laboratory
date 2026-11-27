@@ -126,3 +126,69 @@ jobs:
           if ($null -eq $match) { throw 'No Drop file for dual receiver control' }
           Write-Output ('DualFile=' + $match.Name)
           Get-Content $match.FullName | Select-String -Pattern '^(x-receiver|X-Receiver|To|Subject):|^ observer@|DUAL-SENTINEL$' | ForEach-Object { Write-Output $_.Line }
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Observe released .NET pickup routing with private inert fixture
+        shell: powershell
+        env:
+          L042_DISPLAY_B64: ${{ secrets.HUNTER_02D94105_L042_DISPLAY_B64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrEmpty($env:L042_DISPLAY_B64)) { throw 'Private fixture absent' }
+          $lab = Join-Path $env:RUNNER_TEMP 'hunter-02d94105-l042-dotnet'
+          dotnet new console -n L042 -o $lab --framework net10.0 --no-restore | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create .NET 10 lab' }
+          $source = @'
+using System.Net.Mail;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+var domain = Environment.GetEnvironmentVariable("COMPUTERNAME")!.ToLowerInvariant();
+var encoded = Environment.GetEnvironmentVariable("L042_DISPLAY_B64") ?? throw new Exception("Fixture absent");
+var mode = args[0];
+var name = mode == "mutation" ? Encoding.UTF8.GetString(Convert.FromBase64String(encoded)).Replace("{HOST}", domain) : "Victim Display";
+var output = args[1];
+Directory.CreateDirectory(output);
+var assembly = typeof(MailAddress).Assembly;
+Console.WriteLine("Runtime=" + RuntimeInformation.FrameworkDescription);
+Console.WriteLine("MailAssemblySha=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))).ToLowerInvariant());
+using var message = new MailMessage();
+message.From = new MailAddress("sender@" + domain);
+message.To.Add(new MailAddress("victim@" + domain, name));
+message.Subject = "Inert local mail";
+message.Body = "INERT-L042-SENTINEL";
+using var client = new SmtpClient { DeliveryMethod = SmtpDeliveryMethod.SpecifiedPickupDirectory, PickupDirectoryLocation = output, DeliveryFormat = SmtpDeliveryFormat.International };
+client.Send(message);
+'@
+          [IO.File]::WriteAllText((Join-Path $lab 'Program.cs'), $source, [Text.Encoding]::UTF8)
+          $pickup = 'C:/inetpub/mailroot/Pickup'
+          $drop = 'C:/inetpub/mailroot/Drop'
+          function Invoke-Case([string] $mode) {
+            $stage = Join-Path $lab $mode
+            New-Item -ItemType Directory -Path $stage -Force | Out-Null
+            dotnet run --project $lab -- $mode $stage | ForEach-Object { Write-Output $_ }
+            if ($LASTEXITCODE -ne 0) { throw ('Generator failed: ' + $mode) }
+            $generated = @(Get-ChildItem $stage -Filter '*.eml' -File)
+            if ($generated.Count -ne 1) { throw ('Unexpected pickup file count: ' + $mode) }
+            $sha = (Get-FileHash $generated[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $before = @(Get-ChildItem $drop -File | ForEach-Object { $_.FullName })
+            $destination = Join-Path $pickup ($mode + '-' + [guid]::NewGuid().ToString('N') + '.eml')
+            Copy-Item $generated[0].FullName $destination
+            Start-Sleep -Seconds 15
+            $newFiles = @(Get-ChildItem $drop -File | Where-Object { $before -notcontains $_.FullName })
+            Write-Output ('Mode=' + $mode + ' PickupSha=' + $sha + ' DropFiles=' + $newFiles.Count)
+            foreach ($file in $newFiles) {
+              $raw = Get-Content $file.FullName -Raw
+              $receivers = @(Get-Content $file.FullName | Where-Object { $_ -match '^x-receiver:' })
+              Write-Output ('ReceiverCount=' + $receivers.Count)
+              $receivers | ForEach-Object { Write-Output $_ }
+              Write-Output ('SentinelPresent=' + $raw.Contains('INERT-L042-SENTINEL'))
+            }
+            Write-Output ('PickupCount=' + @(Get-ChildItem $pickup -File).Count)
+            Write-Output ('QueueCount=' + @(Get-ChildItem 'C:/inetpub/mailroot/Queue' -File).Count)
+            Write-Output ('BadmailCount=' + @(Get-ChildItem 'C:/inetpub/mailroot/Badmail' -File).Count)
+          }
+          Invoke-Case 'baseline'
+          Invoke-Case 'mutation'
