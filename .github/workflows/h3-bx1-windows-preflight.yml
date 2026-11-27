@@ -29,11 +29,24 @@ jobs:
           $shareName = 'h3bx1-7f83'
           $root = Join-Path $env:RUNNER_TEMP $shareName
           New-Item -ItemType Directory -Path $root -Force | Out-Null
-          Set-Content -LiteralPath (Join-Path $root 'global.json') -Value '{"sdk":{"workloadVersion":"11.0.100"}}' -Encoding utf8
+          Set-Content -LiteralPath (Join-Path $root 'global.json') -Value '{"sdk":{"workloadVersion":"not-a-version"}}' -Encoding utf8
           try {
             New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME | Out-Null
-            $unc = "\\localhost\$shareName\global.json"
-            Write-Host "OWNED_UNC_READ=$([IO.File]::ReadAllText($unc).Contains('workloadVersion'))"
+            $uncDir = "\\localhost\$shareName"
+            Write-Host "OWNED_UNC_READ=$([IO.File]::ReadAllText((Join-Path $uncDir 'global.json')).Contains('not-a-version'))"
+            $empty = Join-Path $env:RUNNER_TEMP 'h3bx1-empty'
+            New-Item -ItemType Directory -Path $empty -Force | Out-Null
+            Push-Location $empty
+            try { $denied = (& dotnet workload install h3bx1-nonexistent --skip-manifest-update 2>&1 | Out-String); $deniedExit = $LASTEXITCODE }
+            finally { Pop-Location }
+            Push-Location $uncDir
+            try { $mutated = (& dotnet workload install h3bx1-nonexistent --skip-manifest-update 2>&1 | Out-String); $mutatedExit = $LASTEXITCODE }
+            finally { Pop-Location }
+            Write-Host "NO_GLOBAL_JSON_EXIT=$deniedExit"
+            Write-Host "UNC_GLOBAL_JSON_EXIT=$mutatedExit"
+            Write-Host "NO_GLOBAL_JSON_INVALID_VERSION=$($denied.Contains('not-a-version'))"
+            Write-Host "UNC_GLOBAL_JSON_INVALID_VERSION=$($mutated.Contains('not-a-version'))"
+            Write-Host "UNC_GLOBAL_JSON_NAMED=$($mutated.Contains('global.json'))"
           }
           finally {
             if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) {
