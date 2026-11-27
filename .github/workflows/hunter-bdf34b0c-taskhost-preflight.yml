@@ -1,0 +1,30 @@
+name: Hunter bdf34b0c Windows taskhost preflight
+run-name: Taskhost preflight ${{ github.run_id }}
+on:
+  push:
+    branches:
+      - hunter-20261127-bdf34b0c-taskhost-preflight
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Windows token and SDK inventory
+        shell: pwsh
+        run: |
+          Write-Host 'PREFLIGHT_START'
+          whoami
+          whoami /groups | Select-String 'Mandatory Label|Administrators'
+          dotnet --list-sdks
+          $sdkRoot = Join-Path $env:ProgramFiles 'dotnet\sdk'
+          if (Test-Path $sdkRoot) {
+            Get-ChildItem $sdkRoot -Directory | Select-Object -ExpandProperty Name
+            Get-ChildItem $sdkRoot -Filter 'MSBuildTaskHost.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
+          }
+          $vsRoot = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022'
+          if (Test-Path $vsRoot) {
+            Get-ChildItem $vsRoot -Filter 'MSBuildTaskHost.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
+          }
+          Write-Host 'PREFLIGHT_END'
