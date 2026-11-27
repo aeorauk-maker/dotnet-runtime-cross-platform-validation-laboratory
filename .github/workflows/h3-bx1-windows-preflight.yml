@@ -1,0 +1,42 @@
+name: H3 BX1 Windows local share preflight
+on:
+  push:
+    branches:
+      - h3-bx1-20261127-7f83
+permissions:
+  contents: read
+jobs:
+  windows-preflight:
+    name: H3 BX1 disposable Windows fixture
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install official SDK 11.0.100
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Check SDK and owned local SMB fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (dotnet --version).Trim()
+          Write-Host "SDK_VERSION=$version"
+          if ($version -ne '11.0.100') { throw 'Unexpected SDK version' }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "RUNNER_ADMIN=$isAdmin"
+          $shareName = 'h3bx1-7f83'
+          $root = Join-Path $env:RUNNER_TEMP $shareName
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $root 'global.json') -Value '{"sdk":{"workloadVersion":"11.0.100"}}' -Encoding utf8
+          try {
+            New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME | Out-Null
+            $unc = "\\localhost\$shareName\global.json"
+            Write-Host "OWNED_UNC_READ=$([IO.File]::ReadAllText($unc).Contains('workloadVersion'))"
+          }
+          finally {
+            if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) {
+              Remove-SmbShare -Name $shareName -Force | Out-Null
+            }
+          }
