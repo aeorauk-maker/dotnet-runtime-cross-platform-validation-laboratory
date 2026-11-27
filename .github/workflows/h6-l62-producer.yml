@@ -13,7 +13,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p route
-          printf '%s\n' '${{ github.event.pull_request.number }}' > route/target.txt
+          printf '%s\n' '4' > route/target.txt
           printf '%s\n' 'H6 inert routing fixture' > route/note.txt
       - uses: actions/upload-artifact@v4
         with:
