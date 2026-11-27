@@ -1,0 +1,78 @@
+name: Hunter d370ff75 L76 inert static-link authority control
+
+on:
+  push:
+    branches: [hunter-d370ff75-l76-static-link]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-net11:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run isolated service and planter users
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo useradd -m l76svc
+          sudo useradd -m l76plant
+          base="/tmp/l76-d370ff75-$$"
+          mkdir -p "$base/app" "$base/outside" "$base/wwwroot"
+          chmod 755 "$base" "$base/outside"
+          sudo chown l76svc:l76plant "$base/wwwroot"
+          sudo chmod 770 "$base/wwwroot"
+          printf 'PUBLIC-L76\n' > "$base/wwwroot/public.txt"
+          printf 'INERT-L76-SECRET-%0500d\n' 0 > "$base/outside/secret.txt"
+          sudo chown l76svc:l76svc "$base/outside/secret.txt"
+          sudo chmod 600 "$base/outside/secret.txt"
+          sudo -u l76plant ln -s "$base/outside/secret.txt" "$base/wwwroot/linked.txt"
+          if sudo -u l76plant cat "$base/outside/secret.txt" >/dev/null 2>&1; then
+            echo 'setup failure: planter read the protected sentinel'
+            exit 1
+          fi
+          echo 'planter direct read: denied'
+          cat > "$base/app/L76.csproj" <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk.Web">
+            <PropertyGroup><TargetFramework>net11.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+          </Project>
+          EOF
+          cat > "$base/app/Program.cs" <<'EOF'
+          using Microsoft.AspNetCore.Builder;
+          using Microsoft.AspNetCore.Hosting;
+          var baseDir = Environment.GetEnvironmentVariable("L76_BASE")!;
+          var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+          {
+              Args = args,
+              ContentRootPath = baseDir,
+              WebRootPath = Path.Combine(baseDir, "wwwroot")
+          });
+          builder.WebHost.UseUrls("http://127.0.0.1:18076");
+          var app = builder.Build();
+          app.UseStaticFiles();
+          app.Run();
+          EOF
+          dotnet build "$base/app/L76.csproj" -c Release -o "$base/bin" >/dev/null
+          chmod -R a+rX "$base/bin"
+          echo "runtime: $(dotnet --list-runtimes | grep 'Microsoft.AspNetCore.App 11.0.0')"
+          sudo -u l76svc env L76_BASE="$base" dotnet "$base/bin/L76.dll" > "$base/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:18076/public.txt > "$base/public-response"; then break; fi
+            sleep 0.2
+          done
+          test "$(cat "$base/public-response")" = 'PUBLIC-L76'
+          echo 'valid in-root file: 200 PUBLIC-L76'
+          curl -fsS http://127.0.0.1:18076/linked.txt > "$base/link-response"
+          grep -q '^INERT-L76-SECRET-' "$base/link-response"
+          echo "linked outside file: 200 $(head -c 32 "$base/link-response")"
+          direct_status=$(curl --path-as-is -sS -o "$base/direct-response" -w '%{http_code}' http://127.0.0.1:18076/../outside/secret.txt)
+          test "$direct_status" = '404'
+          echo "direct traversal: $direct_status"
+          echo "service identity: $(id -u l76svc); planter identity: $(id -u l76plant)"
+          echo 'RESULT: planter cannot read sentinel, but service served its inert prefix through planter-created static-root symlink'
