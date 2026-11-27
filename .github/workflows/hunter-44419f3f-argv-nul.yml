@@ -1,0 +1,52 @@
+name: Hunter 44419f3f Windows argv control
+on:
+  push:
+    paths:
+      - .github/workflows/hunter-44419f3f-argv-nul.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  argv-control:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run inert argument controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = Join-Path $env:RUNNER_TEMP 'hunter-44419f3f-argv'
+          dotnet new console --framework net11.0 --output $probe --no-restore
+          @'
+          using System;
+          using System.Diagnostics;
+          using System.Linq;
+          using System.Reflection;
+          if (args.Length > 0 && args[0] == "--child") {
+              Console.WriteLine($"child_count={args.Length} has_fixed={args.Contains("--fixed")}");
+              return;
+          }
+          foreach (var (label, value) in new (string, string)[] {
+              ("valid", "user"),
+              ("quoted", "user \"quoted\""),
+              ("candidate", "user" + (char)0 + "tail")
+          }) {
+              var psi = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+              psi.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+              psi.ArgumentList.Add("--child");
+              psi.ArgumentList.Add(value);
+              psi.ArgumentList.Add("--fixed");
+              try {
+                  using var child = Process.Start(psi)!;
+                  var output = child.StandardOutput.ReadToEnd().Trim();
+                  var error = child.StandardError.ReadToEnd().Trim();
+                  child.WaitForExit();
+                  Console.WriteLine($"{label}: started=True exit={child.ExitCode} output={output} stderrPresent={!string.IsNullOrEmpty(error)}");
+              } catch (Exception ex) {
+                  Console.WriteLine($"{label}: started=False error={ex.GetType().Name}");
+              }
+          }
+          '@ | Set-Content (Join-Path $probe 'Program.cs')
+          dotnet run --project $probe --framework net11.0 --configuration Release
