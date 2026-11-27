@@ -29,7 +29,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'webapp creation failed' }
             Push-Location Victim
             try {
-              dotnet build -p:UseRazorBuildServer=true -v:diag *> build.log
+              dotnet build -p:UseRazorSourceGenerator=false -p:UseRazorBuildServer=true -v:minimal *> build.log
               if ($LASTEXITCODE -ne 0) { Get-Content build.log -Tail 80; throw 'Razor build failed' }
               Get-Content build.log | Select-String -Pattern 'Razor.*server|rzc|UseRazorBuildServer' | Select-Object -Last 12
             } finally { Pop-Location }
