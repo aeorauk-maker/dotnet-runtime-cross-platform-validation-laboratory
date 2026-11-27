@@ -1,4 +1,4 @@
-name: H3 BX1 Windows local share preflight
+name: H3 BX1 Windows SDK workload state
 on:
   push:
     branches:
@@ -15,41 +15,20 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.100
-      - name: Compare local and UNC global.json parsing
+      - name: Inspect workload installer selection
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $command = Get-Command dotnet
+          $dotnetRoot = Split-Path $command.Source -Parent
+          $marker = Join-Path $dotnetRoot 'metadata/workloads/11.0.100/installertype/msi'
+          $programFilesRoot = Join-Path $env:ProgramFiles 'dotnet'
+          $programFilesMarker = Join-Path $programFilesRoot 'metadata/workloads/11.0.100/installertype/msi'
           Write-Host "SDK_VERSION=$((dotnet --version).Trim())"
-          $shareName = 'h3bx1-7f83'
-          $root = Join-Path $env:RUNNER_TEMP $shareName
-          $localDir = Join-Path $env:RUNNER_TEMP 'h3bx1-local'
-          New-Item -ItemType Directory -Path $root,$localDir -Force | Out-Null
-          $fixture = '{"sdk":{"workloadVersion":42}}'
-          Set-Content -LiteralPath (Join-Path $root 'global.json') -Value $fixture -Encoding utf8
-          Set-Content -LiteralPath (Join-Path $localDir 'global.json') -Value $fixture -Encoding utf8
-          function Invoke-Probe($dir) {
-            Push-Location $dir
-            try {
-              $output = (& dotnet workload install h3bx1-nonexistent --skip-manifest-update 2>&1 | Out-String).Trim()
-              return [pscustomobject]@{ Exit = $LASTEXITCODE; Text = $output }
-            }
-            finally { Pop-Location }
-          }
-          try {
-            New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME | Out-Null
-            $uncDir = "\\localhost\$shareName"
-            Write-Host "UNC_FILE_READ=$([IO.File]::ReadAllText((Join-Path $uncDir 'global.json')).Contains('workloadVersion'))"
-            $local = Invoke-Probe $localDir
-            $unc = Invoke-Probe $uncDir
-            Write-Host "LOCAL_EXIT=$($local.Exit)"
-            Write-Host "UNC_EXIT=$($unc.Exit)"
-            Write-Host "LOCAL_TEXT=$($local.Text)"
-            Write-Host "UNC_TEXT=$($unc.Text)"
-            Write-Host "OUTPUT_MATCH=$($local.Text -eq $unc.Text)"
-          }
-          finally {
-            if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) {
-              Remove-SmbShare -Name $shareName -Force | Out-Null
-            }
-          }
-          exit 0
+          Write-Host "DOTNET_ROOT=$dotnetRoot"
+          Write-Host "SETUP_DOTNET_MSI_MARKER=$(Test-Path -LiteralPath $marker)"
+          Write-Host "PROGRAMFILES_DOTNET_EXISTS=$(Test-Path -LiteralPath $programFilesRoot)"
+          Write-Host "PROGRAMFILES_MSI_MARKER=$(Test-Path -LiteralPath $programFilesMarker)"
+          Write-Host "SDK_LIST=$((dotnet --list-sdks) -join '; ')"
+          if (Test-Path -LiteralPath $marker) { Write-Host "MARKER_TEXT=$([IO.File]::ReadAllText($marker).Trim())" }
+          if (Test-Path -LiteralPath $programFilesMarker) { Write-Host "PROGRAMFILES_MARKER_TEXT=$([IO.File]::ReadAllText($programFilesMarker).Trim())" }
