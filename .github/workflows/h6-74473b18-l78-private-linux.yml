@@ -1,0 +1,25 @@
+name: H6 74473b18 L78 private Linux control
+on:
+  push:
+    branches: [hunter-h6-74473b18-l78-linux]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  private-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Run isolated inert fixture
+        shell: bash
+        env:
+          H6_FIXTURE_B64: ${{ secrets.H6_74473B18_L78_PRIVATE_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$H6_FIXTURE_B64"
+          printf '%s' "$H6_FIXTURE_B64" | base64 -d > "$RUNNER_TEMP/h6-l78-private.sh"
+          chmod 700 "$RUNNER_TEMP/h6-l78-private.sh"
+          bash "$RUNNER_TEMP/h6-l78-private.sh"
