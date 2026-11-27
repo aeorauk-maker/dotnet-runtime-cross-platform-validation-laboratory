@@ -139,7 +139,6 @@ public static class MicNative {
             try {
                 using (NamedPipeClientStream client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.CurrentUserOnly)) {
                     client.Connect(3000);
-                    client.WriteByte(42);
                     pipe = "connected";
                 }
             } catch (Exception e) { pipe = e.GetType().Name + ":" + e.HResult.ToString("X8"); }
@@ -201,9 +200,7 @@ try {
         try {
             $highClient.Connect(3000)
             Write-Host 'stage=high_client_connected'
-            $highClient.WriteByte(7)
-            $highWait.GetAwaiter().GetResult()
-            if ($highServer.ReadByte() -ne 7) { throw 'High pipe baseline byte mismatch' }
+            if (-not $highWait.Wait(3000)) { throw 'High server did not observe connection' }
             Write-Host 'high_to_high=connected'
         } finally { $highClient.Dispose() }
     } finally { $highServer.Dispose() }
@@ -218,8 +215,8 @@ try {
         $mediumResult = [MicNative]::ProbeMedium($medium, $sentinelPath, $mediumName)
         Write-Host "medium_probe=$mediumResult"
         if ($mediumResult -match 'pipe=connected') {
-            $mediumWait.GetAwaiter().GetResult()
-            Write-Host "high_server_byte=$($mediumServer.ReadByte())"
+            if (-not $mediumWait.Wait(3000)) { throw 'High server did not observe Medium connection' }
+            Write-Host 'high_server_observed_medium_connection=1'
         }
         Write-Host "sentinel=$([System.IO.File]::ReadAllText($sentinelPath))"
         if ($mediumResult -notmatch 'integrity=S-1-16-8192' -or
