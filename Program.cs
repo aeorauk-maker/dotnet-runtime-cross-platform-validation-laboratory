@@ -20,20 +20,21 @@ internal static class Program
 
         if (args[0] == "child")
         {
-            var result = $"CHILD_SID={WindowsIdentity.GetCurrent().User?.Value}\n" +
-                         $"CHILD_ADMIN={new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)}\n" +
-                         $"CHILD_IL={CurrentIntegrity()}\n";
+            File.WriteAllText(args[2], "CHILD_STARTED=YES\n");
+            File.AppendAllText(args[2], $"CHILD_SID={WindowsIdentity.GetCurrent().User?.Value}\n" +
+                                        $"CHILD_ADMIN={new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)}\n" +
+                                        $"CHILD_IL={CurrentIntegrity()}\n");
             try
             {
+                File.AppendAllText(args[2], "CHILD_CONNECT_ATTEMPT=YES\n");
                 using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut);
                 pipe.Connect(3000);
-                result += "CHILD_CONNECT=SUCCESS\n";
+                File.AppendAllText(args[2], "CHILD_CONNECT=SUCCESS\n");
             }
             catch (Exception ex)
             {
-                result += $"CHILD_CONNECT={ex.GetType().Name}: {ex.Message}\n";
+                File.AppendAllText(args[2], $"CHILD_CONNECT={ex.GetType().Name}: {ex.Message}\n");
             }
-            File.WriteAllText(args[2], result);
             return 0;
         }
 
@@ -70,9 +71,15 @@ internal static class Program
             try
             {
                 Console.WriteLine($"CHILD_PID={process.ProcessId}");
-                var wait = WaitForSingleObject(process.Process, 10000);
+                var wait = WaitForSingleObject(process.Process, 30000);
                 Console.WriteLine($"CHILD_WAIT={wait}");
-                if (wait == WaitTimeout) return 3;
+                if (wait == WaitTimeout)
+                {
+                    Console.WriteLine("CHILD_TIMEOUT=YES");
+                    if (File.Exists(args[2])) Console.Write(File.ReadAllText(args[2]));
+                    TerminateProcess(process.Process, 3);
+                    return 3;
+                }
                 if (!File.Exists(args[2]))
                 {
                     Console.WriteLine("CHILD_RESULT=MISSING");
@@ -135,6 +142,7 @@ internal static class Program
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr handle);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictSidCount, IntPtr sidsToRestrict, out IntPtr restricted);
