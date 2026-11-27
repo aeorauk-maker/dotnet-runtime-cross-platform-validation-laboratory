@@ -30,3 +30,28 @@ jobs:
           Get-Service -Name SMTPSVC,IISADMIN -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType | Format-Table -AutoSize
           Write-Output ('DefaultPickupExists=' + (Test-Path 'C:/inetpub/mailroot/Pickup'))
           if (-not $feature.Installed) { throw 'SMTP-Server feature not installed' }
+      - name: Exercise local Pickup with ordinary folded Bcc
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-NetFirewallRule -DisplayName hunter-02d94105-block-smtp-egress -Direction Outbound -Action Block -Protocol TCP -RemotePort 25 | Out-Null
+          $root = 'C:/inetpub/mailroot'
+          $domain = $env:COMPUTERNAME.ToLowerInvariant()
+          $from = "sender@$domain"
+          $victim = "victim@$domain"
+          $observer = "observer@$domain"
+          $baseline = @("From: $from", "To: $victim", "Subject: ordinary baseline", "", "BASELINE-SENTINEL") -join "`r`n"
+          $bcc = @("From: $from", "To: $victim", "Bcc:", " $observer", "Subject: folded Bcc control", "", "BCC-SENTINEL") -join "`r`n"
+          [IO.File]::WriteAllText((Join-Path $root 'Pickup/baseline.eml'), $baseline, [Text.Encoding]::ASCII)
+          [IO.File]::WriteAllText((Join-Path $root 'Pickup/bcc.eml'), $bcc, [Text.Encoding]::ASCII)
+          Start-Sleep -Seconds 20
+          foreach ($folder in @('Pickup','Queue','Drop','Badmail')) {
+            $path = Join-Path $root $folder
+            $files = @(Get-ChildItem $path -File -ErrorAction SilentlyContinue)
+            Write-Output ("Folder=$folder Count=" + $files.Count)
+            foreach ($file in $files) {
+              Write-Output ("File=" + $file.Name)
+              Write-Output (Get-Content -Raw $file.FullName)
+            }
+          }
+
