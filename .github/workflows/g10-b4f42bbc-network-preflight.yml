@@ -1,4 +1,4 @@
-name: G10 isolated IPv6 preflight
+name: G10 isolated IPv6 validation
 on:
   push:
     branches: [hunter-20261127-b4f42bbc-l67-interfaces]
@@ -7,19 +7,39 @@ permissions:
 jobs:
   topology:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Validate separate link-local paths
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Run private owned fixture
         shell: bash
+        env:
+          G10_FIXTURE_GZ_B64: ${{ secrets.G10_B4F42BBC_L67_FIXTURE_GZ_B64 }}
         run: |
           set -euo pipefail
+          state_dir="$RUNNER_TEMP/g10-b4f42bbc"
+          src_dir="$RUNNER_TEMP/g10-src"
+          mkdir -p "$state_dir" "$src_dir"
           cleanup() {
+            set +e
+            pass=$(printf '%s' "$G10_FIXTURE_GZ_B64" | sha256sum | cut -d' ' -f1)
+            tar -C "$state_dir" -czf - . | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$pass" -out "$RUNNER_TEMP/g10-b4f42bbc.enc" 2>/dev/null
+            if [ -n "${pid_a:-}" ]; then sudo kill "$pid_a" 2>/dev/null || true; fi
+            if [ -n "${pid_b:-}" ]; then sudo kill "$pid_b" 2>/dev/null || true; fi
             sudo ip netns del g10a 2>/dev/null || true
             sudo ip netns del g10b 2>/dev/null || true
             sudo ip link del g10vA 2>/dev/null || true
             sudo ip link del g10vB 2>/dev/null || true
           }
           trap cleanup EXIT
+          test -n "$G10_FIXTURE_GZ_B64"
+          printf '%s' "$G10_FIXTURE_GZ_B64" | base64 -d | gzip -dc > "$src_dir/Program.cs"
+          printf '%s\n' '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup></Project>' > "$src_dir/g10lab.csproj"
+          dotnet --list-runtimes > "$state_dir/runtimes.txt"
+          dotnet build "$src_dir/g10lab.csproj" -c Release --ignore-failed-sources > "$state_dir/build.log" 2>&1
+          dotnet_bin="$(command -v dotnet)"
+          lab_bin="$src_dir/bin/Release/net11.0/g10lab.dll"
           sudo ip netns add g10a
           sudo ip netns add g10b
           sudo ip link add g10vA type veth peer name g10nA
@@ -36,8 +56,27 @@ jobs:
           sudo ip -6 addr add fe80::2/64 dev g10vB nodad
           sudo ip netns exec g10a ip -6 addr add fe80::1/64 dev g10nA nodad
           sudo ip netns exec g10b ip -6 addr add fe80::1/64 dev g10nB nodad
-          ip -6 route get fe80::1 dev g10vA
-          ip -6 route get fe80::1 dev g10vB
-          ping -6 -c 1 -W 2 -I g10vA fe80::1%g10vA
-          ping -6 -c 1 -W 2 -I g10vB fe80::1%g10vB
-          echo 'G10_TOPOLOGY=PASS'
+          scope_a="$(cat /sys/class/net/g10vA/ifindex)"
+          scope_b="$(cat /sys/class/net/g10vB/ifindex)"
+          ping -6 -c 1 -W 2 -I g10vA fe80::1%g10vA > "$state_dir/ping-a.log"
+          ping -6 -c 1 -W 2 -I g10vB fe80::1%g10vB > "$state_dir/ping-b.log"
+          sudo ip netns exec g10a "$dotnet_bin" "$lab_bin" server A "$state_dir" > "$state_dir/server-a.log" 2>&1 &
+          pid_a=$!
+          sudo ip netns exec g10b "$dotnet_bin" "$lab_bin" server B "$state_dir" > "$state_dir/server-b.log" 2>&1 &
+          pid_b=$!
+          for i in $(seq 1 40); do
+            if [ -f "$state_dir/A.ready" ] && [ -f "$state_dir/B.ready" ]; then break; fi
+            sleep 0.25
+          done
+          test -f "$state_dir/A.ready" && test -f "$state_dir/B.ready"
+          dotnet "$lab_bin" client "$scope_a" "$scope_b" "$state_dir" > "$state_dir/client.log" 2>&1
+          grep -q '^G10_PRIVATE_RESULT=PASS$' "$state_dir/client.log"
+          echo 'G10_RUN=PASS'
+      - name: Save encrypted private evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g10-b4f42bbc-evidence
+          path: ${{ runner.temp }}/g10-b4f42bbc.enc
+          if-no-files-found: warn
+          retention-days: 1
