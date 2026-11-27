@@ -1,0 +1,32 @@
+name: Hunter 44419f3f Linux fixture
+on:
+  push:
+    branches:
+      - hunter-44419f3f-tls-resume
+permissions:
+  contents: read
+jobs:
+  linux-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Run isolated fixture
+        shell: bash
+        env:
+          FIXTURE: ${{ secrets.HUNTER_44419F3F_TLS11_FIXTURE_B64 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/hunter44419f3f"
+          cd "$RUNNER_TEMP/hunter44419f3f"
+          printf '%s' "$FIXTURE" | base64 -d | tar -xzf -
+          python3 runner_min.py >/dev/null 2>&1
+          test -s result.enc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hunter-44419f3f-encrypted-result
+          path: ${{ runner.temp }}/hunter44419f3f/result.enc
+          if-no-files-found: error
+          retention-days: 1
