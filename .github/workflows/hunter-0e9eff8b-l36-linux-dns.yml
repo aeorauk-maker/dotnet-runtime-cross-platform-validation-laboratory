@@ -47,3 +47,51 @@ jobs:
               print(json.dumps(result, sort_keys=True))
           listener.close()
           PY
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.404
+            11.0.100
+      - name: Probe stock .NET loopback client
+        shell: bash
+        run: |
+          mkdir -p probe
+          cat > probe/probe.csproj <<'XML'
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFrameworks>net10.0;net11.0</TargetFrameworks></PropertyGroup></Project>
+          XML
+          cat > probe/Program.cs <<'CS'
+          using System;
+          using System.Net;
+          using System.Net.Http;
+          using System.Net.Sockets;
+          using System.Text;
+          using System.Text.Json;
+          using System.Threading;
+          using System.Threading.Tasks;
+          var listener = new TcpListener(IPAddress.Any, 0);
+          listener.Start();
+          var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+          foreach (var host in new[] { "127.0.0.1", "127.0.0.1.", "127.1.0.1." }) {
+              var reached = false;
+              using var gate = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+              var server = Task.Run(async () => {
+                  try {
+                      using var peer = await listener.AcceptTcpClientAsync(gate.Token);
+                      reached = true;
+                      using var stream = peer.GetStream();
+                      var buffer = new byte[4096];
+                      await stream.ReadAsync(buffer, gate.Token);
+                      await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"), gate.Token);
+                  } catch (OperationCanceledException) { }
+              });
+              using var client = new HttpClient(new SocketsHttpHandler { UseProxy = false, ConnectTimeout = TimeSpan.FromSeconds(2) }) { Timeout = TimeSpan.FromSeconds(4) };
+              string result;
+              try { result = ((int)(await client.GetAsync($"http://{host}:{port}/")).StatusCode).ToString(); }
+              catch (Exception error) { result = error.GetType().Name + ": " + error.Message; }
+              gate.Cancel();
+              await server;
+              Console.WriteLine(JsonSerializer.Serialize(new { runtime = Environment.Version.ToString(), host, reached, result }));
+          }
+          listener.Stop();
+          CS
+          for framework in net10.0 net11.0; do dotnet run --project probe/probe.csproj --framework "$framework" --no-launch-profile; done
