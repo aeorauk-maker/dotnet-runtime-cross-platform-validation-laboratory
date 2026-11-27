@@ -1,0 +1,60 @@
+name: Hunter 74be38f3 isolated Linux fixture
+on:
+  push:
+    branches: [hunter-74be38f3-linux-fixture-20261127]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run private inert fixture and seal output
+        shell: bash
+        env:
+          PRIVATE_FIXTURE_B64: ${{ secrets.HUNTER_74BE38F3_LINUX_FIXTURE_B64 }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/h74"
+          printf '%s' "$PRIVATE_FIXTURE_B64" | base64 -d | tar -xz -C "$RUNNER_TEMP/h74"
+          cat > "$RUNNER_TEMP/h74-public.pem" <<'CERT'
+          -----BEGIN CERTIFICATE-----
+          MIIDvjCCAiYCCQDzmecpwb1i5DANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZI
+          NzQgcHJpdmF0ZSBsYWIgcmVzdWx0MB4XDTI2MTEyNzEyMTg1OVoXDTI2MTEyOTEy
+          MTg1OVowITEfMB0GA1UEAwwWSDc0IHByaXZhdGUgbGFiIHJlc3VsdDCCAaIwDQYJ
+          KoZIhvcNAQEBBQADggGPADCCAYoCggGBAMoNyaLA1DDslsoCA3QwMEVa/rb1g4wg
+          if1iT3r9/KsUj2I8Jsh0B+CmC4LoD0ddq9WSSTvgSariJN7K/IP6b44VuIznyheJ
+          7UPK/lZd1wIqjl7teY08CzBG7gYmubTqXDELgAU70oe9K3hFbgAUFd/Alo+PGOkC
+          HsBKUcLvHVULk3DE4AQzzdvZaQeY5/Wtlv90otTW2IX/89kg2X519MNBXnPdub/Q
+          w6ZA+okGzEzBPk4uqeHpftXCVSP/Gzgz9wxNcBkThZzAQQKiCQXJf0VlYdrsgnCA
+          Mz3LohI3hLKFK8TyX2fbNXxY6Ls7+VmJOTHmnAI+4mRvOdvGPwwAV6G+kZSv/gZm
+          sFgJbbNeUJHk6mgTX/orBlGkMo0iSzVm1QmwPGa0ZVCZZb0CiEXlLiAqfPsCxaN2
+          NUmJoVgJmZFoilYTotfzBdzS4QNn5t2YOljpxVby1aQD4E+39qIhzKmfZLiCtbFA
+          rev4CRZscUIRrFxNlZf8KGssRgEgXt8X6wIDAQABMA0GCSqGSIb3DQEBCwUAA4IB
+          gQB8EfOE+EGFXIl0iCP3rLgqaKFrLYwX8fjN8tIHG8EoThjSYjF8t6AbR+8Gp+Va
+          x2zwfk6sdIZZkWdqk0CcWVi8lyXPEFDDgQ5PwqpDPHjTRDjLe7S/vMRCITx5vfp7
+          Noc5xICA8Jyk6t/dMgGH8zbusD6EmLnCaV8F7fMSHqEPZ/9V/7lK5xtk/RJ4B4dL
+          CUA/TcdzLtzukvibGdY36xVzNtspPE6Nn+MNn49HAMrVQZBlJvJ+fKyMKe3e9LSP
+          1v+NHyDndF3jaoo4H2bNlaKiH6EmSg5pDAvVtVgIF7CuroV5hgToGScrM8GrI3Jm
+          kAmsnoDNOkk/K3zJOUORzR0nB5B6s/+YaqMFzkxbbnp5mYCs5Vq6c29JE/qE4DbO
+          a+vjGGNq4bSNm00MOeKWJlX6QY49UzspWTnNZjLKFfwfvC9rZv7k8FXxkcp5WigE
+          /4+pURZyDAqwOyUAllYJkRvGqisQx2lVy0Jzn8o5Y5mAMotjw2/FPgletEYRV0WR
+          Pd8=
+          -----END CERTIFICATE-----
+          CERT
+          (cd "$RUNNER_TEMP/h74" && bash run.sh) > "$RUNNER_TEMP/h74-private.log" 2>&1
+          result=$?
+          openssl cms -encrypt -aes256 -binary -in "$RUNNER_TEMP/h74-private.log" -out "$RUNNER_TEMP/h74-private.log.cms" -outform DER "$RUNNER_TEMP/h74-public.pem"
+          printf 'fixture exit status: %s; sealed log bytes: %s\n' "$result" "$(wc -c < "$RUNNER_TEMP/h74-private.log.cms")"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: h74-sealed-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/h74-private.log.cms
+          if-no-files-found: error
+          retention-days: 1
