@@ -1,0 +1,32 @@
+name: Hunter 02d94105 SMTP pickup preflight
+run-name: Hunter 02d94105 Windows SMTP pickup preflight
+on:
+  push:
+    branches:
+      - hunter-02d94105-l042-pickup
+  workflow_dispatch:
+permissions: {}
+jobs:
+  smtp-preflight:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Inspect and install Windows SMTP Server feature
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output ('OS=' + [Environment]::OSVersion.VersionString)
+          Write-Output ('Identity=' + [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+          $feature = Get-WindowsFeature -Name SMTP-Server
+          if ($null -eq $feature) { throw 'SMTP-Server feature absent' }
+          Write-Output ('FeatureBefore=' + $feature.InstallState)
+          if (-not $feature.Installed) {
+            $result = Install-WindowsFeature -Name SMTP-Server -IncludeManagementTools
+            Write-Output ('InstallSuccess=' + $result.Success)
+            Write-Output ('RestartNeeded=' + $result.RestartNeeded)
+          }
+          $feature = Get-WindowsFeature -Name SMTP-Server
+          Write-Output ('FeatureAfter=' + $feature.InstallState)
+          Get-Service -Name SMTPSVC,IISADMIN -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType | Format-Table -AutoSize
+          Write-Output ('DefaultPickupExists=' + (Test-Path 'C:/inetpub/mailroot/Pickup'))
+          if (-not $feature.Installed) { throw 'SMTP-Server feature not installed' }
