@@ -1,5 +1,4 @@
-name: Hunter bdf34b0c Windows taskhost preflight
-run-name: Taskhost preflight ${{ github.run_id }}
+name: Hunter bdf34b0c Windows pipe control
 on:
   push:
     branches:
@@ -10,21 +9,43 @@ jobs:
   preflight:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - name: Inspect Windows token and SDK inventory
+      - name: Probe generic split-token pipe
         shell: pwsh
         run: |
-          Write-Host 'PREFLIGHT_START'
-          whoami
-          whoami /groups | Select-String 'Mandatory Label|Administrators'
-          dotnet --list-sdks
-          $sdkRoot = Join-Path $env:ProgramFiles 'dotnet\sdk'
-          if (Test-Path $sdkRoot) {
-            Get-ChildItem $sdkRoot -Directory | Select-Object -ExpandProperty Name
-            Get-ChildItem $sdkRoot -Filter 'MSBuildTaskHost.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
+          $ErrorActionPreference = 'Stop'
+          Write-Host 'HIGH_TOKEN'
+          whoami /groups | Select-String 'Mandatory Label'
+          $pipeName = 'bdf34b0c-' + [guid]::NewGuid().ToString('N')
+          $childPath = Join-Path $env:RUNNER_TEMP 'bdf-medium-child.ps1'
+          $resultPath = Join-Path $env:RUNNER_TEMP 'bdf-medium-result.txt'
+          @'
+          param([string]$PipeName,[string]$ResultPath)
+          $lines = @('CHILD_TOKEN')
+          $lines += (whoami /groups | Select-String 'Mandatory Label' | Out-String).Trim()
+          $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+          try {
+            $client.Connect(5000)
+            $client.WriteByte(42)
+            $client.Flush()
+            $lines += 'PIPE_CLIENT_CONNECTED'
+          } catch {
+            $lines += ('PIPE_CLIENT_DENIED=' + $_.Exception.GetType().Name)
+          } finally {
+            $client.Dispose()
+            $lines | Set-Content -LiteralPath $ResultPath
           }
-          $vsRoot = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022'
-          if (Test-Path $vsRoot) {
-            Get-ChildItem $vsRoot -Filter 'MSBuildTaskHost.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
-          }
-          Write-Host 'PREFLIGHT_END'
+          '@ | Set-Content -LiteralPath $childPath
+          $options = [System.IO.Pipes.PipeOptions]([int][System.IO.Pipes.PipeOptions]::Asynchronous -bor [int][System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+          $server = [System.IO.Pipes.NamedPipeServerStream]::new($pipeName,[System.IO.Pipes.PipeDirection]::InOut,1,[System.IO.Pipes.PipeTransmissionMode]::Byte,$options)
+          try {
+            $pending = $server.WaitForConnectionAsync()
+            $pwsh = (Get-Command pwsh).Source
+            $program = '"' + $pwsh + '" -NoProfile -NonInteractive -File "' + $childPath + '" "' + $pipeName + '" "' + $resultPath + '"'
+            & runas.exe '/trustlevel:0x20000' $program
+            try {
+              if ($pending.Wait(12000)) { Write-Host ('PIPE_SERVER_READ=' + $server.ReadByte()) }
+              else { Write-Host 'PIPE_SERVER_TIMEOUT' }
+            } catch { Write-Host ('PIPE_SERVER_ERROR=' + $_.Exception.GetType().Name) }
+          } finally { $server.Dispose() }
+          if (Test-Path $resultPath) { Get-Content -LiteralPath $resultPath | Out-Host }
+          else { Write-Host 'CHILD_NO_RESULT' }
