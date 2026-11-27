@@ -18,6 +18,7 @@ jobs:
         env:
           PRIVATE_FIXTURE_B64: ${{ secrets.HUNTER_74BE38F3_LINUX_FIXTURE_B64 }}
         run: |
+          set +e
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/h74"
           printf '%s' "$PRIVATE_FIXTURE_B64" | base64 -d | tar -xz -C "$RUNNER_TEMP/h74"
