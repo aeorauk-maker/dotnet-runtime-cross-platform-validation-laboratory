@@ -1,0 +1,26 @@
+name: Hunter 74be38f3 Windows MIC capability
+
+on:
+  push:
+    branches:
+      - hunter-74be38f3-windows-mic
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-mic-capability:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Inspect disposable runner token and SDKs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host 'RUNNER_TOKEN_GROUPS'
+          whoami /groups | Select-String 'Mandatory Level|Administrators'
+          Write-Host 'RUNNER_TOKEN_PRIVILEGES'
+          whoami /priv | Select-String 'SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege'
+          Write-Host 'RUNNER_DOTNET_SDKS'
+          dotnet --list-sdks
