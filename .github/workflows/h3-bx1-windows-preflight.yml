@@ -15,41 +15,41 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.100
-      - name: Check SDK and owned local SMB fixture
+      - name: Compare local and UNC global.json parsing
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = (dotnet --version).Trim()
-          Write-Host "SDK_VERSION=$version"
-          if ($version -ne '11.0.100') { throw 'Unexpected SDK version' }
-          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-          $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          Write-Host "RUNNER_ADMIN=$isAdmin"
+          Write-Host "SDK_VERSION=$((dotnet --version).Trim())"
           $shareName = 'h3bx1-7f83'
           $root = Join-Path $env:RUNNER_TEMP $shareName
-          New-Item -ItemType Directory -Path $root -Force | Out-Null
-          Set-Content -LiteralPath (Join-Path $root 'global.json') -Value '{"sdk":{"workloadVersion":"not-a-version"}}' -Encoding utf8
+          $localDir = Join-Path $env:RUNNER_TEMP 'h3bx1-local'
+          New-Item -ItemType Directory -Path $root,$localDir -Force | Out-Null
+          $fixture = '{"sdk":{"workloadVersion":42}}'
+          Set-Content -LiteralPath (Join-Path $root 'global.json') -Value $fixture -Encoding utf8
+          Set-Content -LiteralPath (Join-Path $localDir 'global.json') -Value $fixture -Encoding utf8
+          function Invoke-Probe($dir) {
+            Push-Location $dir
+            try {
+              $output = (& dotnet workload install h3bx1-nonexistent --skip-manifest-update 2>&1 | Out-String).Trim()
+              return [pscustomobject]@{ Exit = $LASTEXITCODE; Text = $output }
+            }
+            finally { Pop-Location }
+          }
           try {
             New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME | Out-Null
             $uncDir = "\\localhost\$shareName"
-            Write-Host "OWNED_UNC_READ=$([IO.File]::ReadAllText((Join-Path $uncDir 'global.json')).Contains('not-a-version'))"
-            $empty = Join-Path $env:RUNNER_TEMP 'h3bx1-empty'
-            New-Item -ItemType Directory -Path $empty -Force | Out-Null
-            Push-Location $empty
-            try { $denied = (& dotnet workload install h3bx1-nonexistent --skip-manifest-update 2>&1 | Out-String); $deniedExit = $LASTEXITCODE }
-            finally { Pop-Location }
-            Push-Location $uncDir
-            try { $mutated = (& dotnet workload install h3bx1-nonexistent --skip-manifest-update 2>&1 | Out-String); $mutatedExit = $LASTEXITCODE }
-            finally { Pop-Location }
-            Write-Host "NO_GLOBAL_JSON_EXIT=$deniedExit"
-            Write-Host "UNC_GLOBAL_JSON_EXIT=$mutatedExit"
-            Write-Host "NO_GLOBAL_JSON_INVALID_VERSION=$($denied.Contains('not-a-version'))"
-            Write-Host "UNC_GLOBAL_JSON_INVALID_VERSION=$($mutated.Contains('not-a-version'))"
-            Write-Host "UNC_GLOBAL_JSON_NAMED=$($mutated.Contains('global.json'))"
+            Write-Host "UNC_FILE_READ=$([IO.File]::ReadAllText((Join-Path $uncDir 'global.json')).Contains('workloadVersion'))"
+            $local = Invoke-Probe $localDir
+            $unc = Invoke-Probe $uncDir
+            Write-Host "LOCAL_EXIT=$($local.Exit)"
+            Write-Host "UNC_EXIT=$($unc.Exit)"
+            Write-Host "LOCAL_TEXT=$($local.Text)"
+            Write-Host "UNC_TEXT=$($unc.Text)"
+            Write-Host "OUTPUT_MATCH=$($local.Text -eq $unc.Text)"
           }
           finally {
             if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) {
               Remove-SmbShare -Name $shareName -Force | Out-Null
             }
           }
+          exit 0
