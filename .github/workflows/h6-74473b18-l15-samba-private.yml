@@ -1,0 +1,22 @@
+name: H6 74473b18 L15 private Linux preflight
+on:
+  push:
+    branches: [hunter-h6-74473b18-l15-samba]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  private-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Run isolated inert directory fixture
+        shell: bash
+        env:
+          H6_FIXTURE_B64: ${{ secrets.H6_74473B18_L15_SAMBA_PREFLIGHT_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$H6_FIXTURE_B64"
+          printf '%s' "$H6_FIXTURE_B64" | base64 -d > "$RUNNER_TEMP/h6-l15-private.sh"
+          chmod 700 "$RUNNER_TEMP/h6-l15-private.sh"
+          bash "$RUNNER_TEMP/h6-l15-private.sh"
