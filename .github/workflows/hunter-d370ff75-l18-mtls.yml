@@ -1,6 +1,9 @@
 name: Hunter d370ff75 L18 owned TLS resumption control
 
 on:
+  push:
+    branches:
+      - hunter-d370ff75-l18-mtls
   workflow_dispatch:
 
 permissions:
