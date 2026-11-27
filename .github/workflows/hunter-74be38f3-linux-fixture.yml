@@ -19,9 +19,10 @@ jobs:
           PRIVATE_FIXTURE_B64: ${{ secrets.HUNTER_74BE38F3_LINUX_FIXTURE_B64 }}
         run: |
           set +e
-          set -uo pipefail
+          set -uo pipefail          
           mkdir -p "$RUNNER_TEMP/h74"
           printf '%s' "$PRIVATE_FIXTURE_B64" | base64 -d | tar -xz -C "$RUNNER_TEMP/h74"
+          find "$RUNNER_TEMP/h74" -name '._*' -type f -delete
           cat > "$RUNNER_TEMP/h74-public.pem" <<'CERT'
           -----BEGIN CERTIFICATE-----
           MIIDvjCCAiYCCQDzmecpwb1i5DANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZI
