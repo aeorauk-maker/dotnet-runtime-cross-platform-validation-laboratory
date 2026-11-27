@@ -1,0 +1,49 @@
+name: H3 BX1 Windows WebDAV UNC preflight
+on:
+  push:
+    branches:
+      - h3-bx1-20261127-7f83
+permissions:
+  contents: read
+jobs:
+  webdav-unc:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Test owned inert WebDAV UNC file access
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'h3-bx1-webdav-root'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $root 'global.json') -Encoding utf8 -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}'
+          python -m pip install --disable-pip-version-check --quiet wsgidav cheroot
+          if ($LASTEXITCODE -ne 0) { throw 'WsgiDAV installation failed' }
+          $serverCmd = (Get-Command wsgidav -ErrorAction Stop).Source
+          $server = Start-Process -FilePath $serverCmd -ArgumentList @('--host=127.0.0.1', '--port=1445', "--root=$root", '--auth=anonymous') -PassThru -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'h3-bx1-webdav-out.txt') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'h3-bx1-webdav-err.txt')
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              try {
+                $reply = Invoke-WebRequest -Uri 'http://127.0.0.1:1445/global.json' -TimeoutSec 2
+                if ($reply.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Milliseconds 500 }
+            }
+            Write-Host "HTTP_READY=$ready"
+            if (!$ready) { throw 'WebDAV listener did not serve inert file' }
+            $service = Get-Service WebClient -ErrorAction SilentlyContinue
+            if ($null -eq $service) { Write-Host 'WEBCLIENT_STATE=absent'; return }
+            Write-Host "WEBCLIENT_STATE=$($service.Status)"
+            Write-Host "WEBCLIENT_STARTTYPE=$($service.StartType)"
+            if ($service.Status -ne 'Running' -and $service.StartType -ne 'Disabled') {
+              try { Start-Service WebClient -ErrorAction Stop }
+              catch { Write-Host "WEBCLIENT_START_ERROR=$($_.Exception.GetType().Name)" }
+            }
+            $unc = '\\localhost@1445\DavWWWRoot\global.json'
+            Write-Host "UNC_EXISTS=$(Test-Path -LiteralPath $unc)"
+            try { Write-Host "UNC_READ=$([IO.File]::ReadAllText($unc))" }
+            catch { Write-Host "UNC_ERROR=$($_.Exception.GetType().Name): $($_.Exception.Message)" }
+          }
+          finally {
+            if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
+          }
