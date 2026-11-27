@@ -1,0 +1,82 @@
+name: Hunter 9a7b2b21 L85 pipe admission control
+
+on:
+  push:
+    branches:
+      - hunter-9a7b2b21-l85-pipe-admission
+
+permissions:
+  contents: read
+
+jobs:
+  windows-admission:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Check distinct-user pipe handshake
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lab = 'C:\Users\Public\l85-pipe-admission'
+          New-Item -ItemType Directory -Force -Path $lab | Out-Null
+          dotnet new console --framework net11.0 --output $lab --no-restore
+          @'
+          using System;
+          using System.IO.Pipes;
+          using System.Security.Principal;
+          using System.Text;
+
+          const string pipeName = "l85-pipe-control";
+          const string publicPhrase = "I am the one true server!";
+          if (args.Length == 0) return;
+          if (args[0] == "server")
+          {
+              using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1);
+              server.WaitForConnection();
+              byte[] phrase = Encoding.Unicode.GetBytes(publicPhrase);
+              server.WriteByte((byte)(phrase.Length / 256));
+              server.WriteByte((byte)(phrase.Length & 255));
+              server.Write(phrase);
+              server.Flush();
+              int hi = server.ReadByte(), lo = server.ReadByte();
+              if (hi < 0 || lo < 0) throw new Exception("No client write");
+              byte[] input = new byte[hi * 256 + lo];
+              server.ReadExactly(input);
+              Console.WriteLine($"SERVER_WRITE_RECEIVED={Encoding.Unicode.GetString(input) == "ping"}");
+              return;
+          }
+          using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut,
+              PipeOptions.None, TokenImpersonationLevel.Impersonation);
+          client.Connect(15000);
+          int high = client.ReadByte(), low = client.ReadByte();
+          if (high < 0 || low < 0) throw new Exception("No server phrase");
+          byte[] output = new byte[high * 256 + low];
+          client.ReadExactly(output);
+          bool accepted = Encoding.Unicode.GetString(output) == publicPhrase;
+          Console.WriteLine($"CLIENT_PHRASE_ACCEPTED={accepted}");
+          if (accepted)
+          {
+              byte[] payload = Encoding.Unicode.GetBytes("ping");
+              client.WriteByte((byte)(payload.Length / 256));
+              client.WriteByte((byte)(payload.Length & 255));
+              client.Write(payload);
+              client.Flush();
+              Console.WriteLine("CLIENT_WRITE_SENT=True");
+          }
+          '@ | Set-Content -Path "$lab\Program.cs" -Encoding utf8
+          dotnet build $lab --configuration Release --verbosity quiet
+          $dotnet = (Get-Command dotnet).Source
+          net user l85low L85LabOnly2347 /add | Out-Null
+          icacls $lab /grant 'l85low:(OI)(CI)M' | Out-Null
+          $password = ConvertTo-SecureString 'L85LabOnly2347' -AsPlainText -Force
+          $credential = [pscredential]::new("$env:COMPUTERNAME\l85low", $password)
+          $dll = "$lab\bin\Release\net11.0\l85-pipe-admission.dll"
+          $server = Start-Process -FilePath $dotnet -ArgumentList @($dll, 'server') -Credential $credential -WorkingDirectory $lab -PassThru -RedirectStandardOutput "$lab\server.out" -RedirectStandardError "$lab\server.err"
+          Start-Sleep -Seconds 2
+          & $dotnet $dll client
+          if (-not $server.WaitForExit(15000)) { Stop-Process -Id $server.Id -Force; throw 'Server timeout' }
+          Get-Content "$lab\server.out"
+          if (Test-Path "$lab\server.err") { Get-Content "$lab\server.err" }
