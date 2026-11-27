@@ -1,0 +1,43 @@
+name: Hunter 0e9eff8b Linux resolver control
+
+on:
+  push:
+    branches:
+      - hunter-0e9eff8b-l36-dns-20261127
+    paths:
+      - .github/workflows/hunter-0e9eff8b-l36-linux-dns.yml
+
+permissions: {}
+
+jobs:
+  resolver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve and connect loopback spellings
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import socket
+
+          listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          listener.bind(('0.0.0.0', 0))
+          listener.listen(3)
+          port = listener.getsockname()[1]
+          for host in ('127.0.0.1', '127.0.0.1.', '127.1.0.1.'):
+              result = {'host': host}
+              try:
+                  infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                  result['addresses'] = sorted(set(item[4][0] for item in infos))
+                  with socket.create_connection((host, port), timeout=2) as client:
+                      accepted, peer = listener.accept()
+                      with accepted:
+                          result['connected'] = True
+                          result['peer'] = peer[0]
+              except Exception as error:
+                  result['connected'] = False
+                  result['error'] = type(error).__name__ + ': ' + str(error)
+              print(json.dumps(result, sort_keys=True))
+          listener.close()
+          PY
