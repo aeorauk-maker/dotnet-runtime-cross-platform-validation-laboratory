@@ -1,0 +1,54 @@
+name: H3 BX1 UNC workload root control
+on:
+  push:
+    branches:
+      - h3-bx1-20261127-7f83
+permissions:
+  contents: read
+jobs:
+  windows-unc-root:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install official SDK 11.0.100
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Exercise owned UNC global.json and protected record
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((dotnet --version).Trim() -ne '11.0.100') { throw 'Unexpected SDK' }
+          $shareName = 'h3bx1-7f83-uncroot'
+          $root = Join-Path $env:RUNNER_TEMP $shareName
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $root 'global.json') -Encoding utf8 -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}'
+          $unc = "\\localhost\$shareName"
+          try {
+            New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME | Out-Null
+            Write-Host "UNC_FILE_READ=$([IO.File]::ReadAllText((Join-Path $unc 'global.json')).Contains('workloadVersion'))"
+            Push-Location $unc
+            try {
+              Write-Host "PROCESS_CWD=$([Environment]::CurrentDirectory)"
+              dotnet workload install aspire --verbosity quiet
+              $installExit = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            Write-Host "INSTALL_EXIT=$installExit"
+            if ($installExit -ne 0) { throw 'Owned workload install failed' }
+            $files = @(Get-ChildItem -Path (Join-Path $env:ProgramData 'dotnet\workloads') -Recurse -Filter globaljsonworkloadsets.json -ErrorAction SilentlyContinue)
+            Write-Host "RECORD_COUNT=$($files.Count)"
+            foreach ($file in $files) {
+              try {
+                $data = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json -AsHashtable
+                Write-Host "RECORD_HAS_UNC=$($data.ContainsKey((Join-Path $unc 'global.json')))"
+                Write-Host "RECORD_KEY_COUNT=$($data.Keys.Count)"
+              }
+              catch { Write-Host 'RECORD_PARSE_FAILED=True' }
+            }
+          }
+          finally {
+            if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) {
+              Remove-SmbShare -Name $shareName -Force | Out-Null
+            }
+          }
