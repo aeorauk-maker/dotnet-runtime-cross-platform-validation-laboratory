@@ -1,0 +1,202 @@
+name: Rank21 L105 autonomous lower service prebind
+
+on:
+  push:
+    branches: [rank-21-l105-prebind-20261127]
+    paths:
+      - .github/workflows/l105-autonomous-service-prebind.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test autonomous NetworkService PID discovery before CLR startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\Users\Public\Rank21L105Auto'
+          $target = "$root\rank21target"
+          $server = "$root\rank21server"
+          New-Item -ItemType Directory -Force -Path $root, $target, $server | Out-Null
+          dotnet --info | Select-Object -First 30
+          dotnet tool install dotnet-trace --tool-path "$root\tools" --version 10.0.750501
+          & "$root\tools\dotnet-trace.exe" --version
+          dotnet new console --framework net11.0 --output $target --no-restore
+          @'
+          using System;
+          using System.IO;
+          using System.Threading;
+          Console.WriteLine($"TARGET_PID={Environment.ProcessId} DIAGNOSTICS={Environment.GetEnvironmentVariable("DOTNET_EnableDiagnostics") ?? "default"}");
+          File.WriteAllText(args[0], "managed-started");
+          Thread.Sleep(TimeSpan.FromSeconds(45));
+          '@ | Set-Content -Path "$target\Program.cs" -Encoding utf8
+          dotnet build $target --configuration Release --verbosity quiet
+          dotnet new console --framework net11.0 --output $server --no-restore
+          @'
+          using System;
+          using System.Diagnostics;
+          using System.IO;
+          using System.IO.Pipes;
+          using System.Runtime.InteropServices;
+          using System.Security.Principal;
+          using System.Threading;
+
+          var trace = new StreamWriter(new FileStream(args[0], FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+          Console.SetOut(trace);
+          ServiceHost.Run(() =>
+          {
+              Console.WriteLine($"SERVICE_SID={WindowsIdentity.GetCurrent().User?.Value}");
+              var found = Process.GetProcessesByName("rank21target");
+              Console.WriteLine($"DISCOVERY_COUNT={found.Length}");
+              foreach (var p in found) Console.WriteLine($"DISCOVERED_PID={p.Id}");
+              if (found.Length != 1) throw new InvalidOperationException("Expected one live target by name");
+              using var pipe = new NamedPipeServerStream($"dotnet-diagnostic-{found[0].Id}", PipeDirection.InOut, 1);
+              Console.WriteLine($"PIPE_BOUND=True PID={found[0].Id}");
+              while (!File.Exists(args[1])) Thread.Sleep(50);
+              Console.WriteLine("PIPE_RELEASING=True");
+          });
+
+          static class ServiceHost
+          {
+              private const uint Own = 0x10, StartPending = 2, Running = 4, Stopped = 1;
+              private static Action? action;
+              private static IntPtr statusHandle;
+              private static ServiceMainDelegate? mainDelegate;
+              private static ServiceControlDelegate? controlDelegate;
+              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+              private struct ServiceEntry { public string? Name; public ServiceMainDelegate? Main; }
+              [StructLayout(LayoutKind.Sequential)]
+              private struct ServiceStatus { public uint ServiceType, CurrentState, ControlsAccepted, Win32ExitCode, ServiceSpecificExitCode, CheckPoint, WaitHint; }
+              private delegate void ServiceMainDelegate(uint count, IntPtr args);
+              private delegate void ServiceControlDelegate(uint control);
+              [DllImport("advapi32.dll", EntryPoint = "StartServiceCtrlDispatcherW", CharSet = CharSet.Unicode, SetLastError = true)]
+              private static extern bool StartServiceCtrlDispatcher(ServiceEntry[] table);
+              [DllImport("advapi32.dll", EntryPoint = "RegisterServiceCtrlHandlerW", CharSet = CharSet.Unicode, SetLastError = true)]
+              private static extern IntPtr RegisterServiceCtrlHandler(string name, ServiceControlDelegate handler);
+              [DllImport("advapi32.dll", SetLastError = true)]
+              private static extern bool SetServiceStatus(IntPtr handle, ref ServiceStatus status);
+              private static void Status(uint state)
+              {
+                  var value = new ServiceStatus { ServiceType = Own, CurrentState = state };
+                  if (!SetServiceStatus(statusHandle, ref value)) Console.WriteLine($"STATUS_ERROR={Marshal.GetLastWin32Error()}");
+              }
+              private static void Main(uint count, IntPtr args)
+              {
+                  controlDelegate = _ => {};
+                  statusHandle = RegisterServiceCtrlHandler("Rank21L105Service", controlDelegate);
+                  if (statusHandle == IntPtr.Zero) { Console.WriteLine($"REGISTER_ERROR={Marshal.GetLastWin32Error()}"); return; }
+                  Status(StartPending);
+                  Status(Running);
+                  Console.WriteLine("SERVICE_RUNNING=True");
+                  try { action!(); }
+                  catch (Exception ex) { Console.WriteLine($"SERVICE_EXCEPTION={ex.GetType().Name} MESSAGE={ex.Message}"); }
+                  finally { Status(Stopped); Console.WriteLine("SERVICE_STOPPED=True"); }
+              }
+              public static void Run(Action callback)
+              {
+                  action = callback;
+                  mainDelegate = Main;
+                  var table = new[] { new ServiceEntry { Name = "Rank21L105Service", Main = mainDelegate }, new ServiceEntry() };
+                  if (!StartServiceCtrlDispatcher(table)) Console.WriteLine($"DISPATCH_ERROR={Marshal.GetLastWin32Error()}");
+              }
+          }
+          '@ | Set-Content -Path "$server\Program.cs" -Encoding utf8
+          dotnet build $server --configuration Release --verbosity quiet
+          icacls $root /grant '*S-1-5-20:(OI)(CI)M' | Out-Null
+          $serviceExe = "$server\bin\Release\net11.0\rank21server.exe"
+          $serviceBin = "$serviceExe $root\service.trace $root\release.signal"
+          sc.exe create Rank21L105Service binPath= $serviceBin obj= 'NT AUTHORITY\NetworkService' type= own start= demand
+          if ($LASTEXITCODE -ne 0) { throw 'SCM create failed' }
+          $env:L105_ROOT = $root
+          $env:L105_TARGET_EXE = "$target\bin\Release\net11.0\rank21target.exe"
+          $env:L105_TRACE_EXE = "$root\tools\dotnet-trace.exe"
+          @'
+          import ctypes, os, re, subprocess, sys, time
+          from ctypes import wintypes
+
+          class STARTUPINFO(ctypes.Structure):
+              _fields_ = [('cb',wintypes.DWORD),('lpReserved',wintypes.LPWSTR),('lpDesktop',wintypes.LPWSTR),('lpTitle',wintypes.LPWSTR),('dwX',wintypes.DWORD),('dwY',wintypes.DWORD),('dwXSize',wintypes.DWORD),('dwYSize',wintypes.DWORD),('dwXCountChars',wintypes.DWORD),('dwYCountChars',wintypes.DWORD),('dwFillAttribute',wintypes.DWORD),('dwFlags',wintypes.DWORD),('wShowWindow',wintypes.WORD),('cbReserved2',wintypes.WORD),('lpReserved2',ctypes.c_void_p),('hStdInput',wintypes.HANDLE),('hStdOutput',wintypes.HANDLE),('hStdError',wintypes.HANDLE)]
+          class PROCESS_INFORMATION(ctypes.Structure):
+              _fields_ = [('hProcess',wintypes.HANDLE),('hThread',wintypes.HANDLE),('dwProcessId',wintypes.DWORD),('dwThreadId',wintypes.DWORD)]
+          k = ctypes.WinDLL('kernel32', use_last_error=True)
+          k.CreateProcessW.argtypes = [wintypes.LPCWSTR,wintypes.LPWSTR,ctypes.c_void_p,ctypes.c_void_p,wintypes.BOOL,wintypes.DWORD,ctypes.c_void_p,wintypes.LPCWSTR,ctypes.POINTER(STARTUPINFO),ctypes.POINTER(PROCESS_INFORMATION)]
+          k.CreateProcessW.restype = wintypes.BOOL
+          k.ResumeThread.argtypes = [wintypes.HANDLE]; k.ResumeThread.restype = wintypes.DWORD
+          k.WaitForSingleObject.argtypes = [wintypes.HANDLE,wintypes.DWORD]; k.WaitForSingleObject.restype = wintypes.DWORD
+          k.TerminateProcess.argtypes = [wintypes.HANDLE,wintypes.UINT]
+          k.CloseHandle.argtypes = [wintypes.HANDLE]
+
+          root = os.environ['L105_ROOT']
+          exe = os.environ['L105_TARGET_EXE']
+          tool = os.environ['L105_TRACE_EXE']
+          trace = os.path.join(root, 'service.trace')
+          release = os.path.join(root, 'release.signal')
+          def ps_listed(pid):
+              r = subprocess.run([tool,'ps'],capture_output=True,text=True,timeout=12)
+              print('PS_EXIT=' + str(r.returncode),flush=True)
+              return bool(re.search(r'^\s*' + str(pid) + r'\s',r.stdout,re.M))
+          def wait_file(path, seconds):
+              for _ in range(seconds*10):
+                  if os.path.exists(path): return True
+                  time.sleep(.1)
+              return False
+
+          normal_marker = os.path.join(root,'normal.marker')
+          normal = subprocess.Popen([exe,normal_marker],stdout=subprocess.DEVNULL)
+          if not wait_file(normal_marker,10): raise RuntimeError('Normal target did not reach managed code')
+          normal_listed = ps_listed(normal.pid)
+          print(f'NORMAL_PID={normal.pid} NORMAL_LISTED={normal_listed}',flush=True)
+          normal.kill(); normal.wait(timeout=5)
+          if not normal_listed: raise RuntimeError('Normal endpoint baseline failed')
+
+          marker = os.path.join(root,'prebind.marker')
+          si = STARTUPINFO(); si.cb=ctypes.sizeof(si)
+          pi = PROCESS_INFORMATION()
+          cmd = ctypes.create_unicode_buffer('"'+exe+'" "'+marker+'"')
+          if not k.CreateProcessW(exe,cmd,None,None,False,0x4,None,None,ctypes.byref(si),ctypes.byref(pi)):
+              raise OSError(ctypes.get_last_error(),'CreateProcessW')
+          print('SUSPENDED_HIGH_PID='+str(pi.dwProcessId),flush=True)
+          try:
+              start = subprocess.run(['sc.exe','start','Rank21L105Service'],capture_output=True,text=True,timeout=15)
+              print('SC_START_EXIT='+str(start.returncode),flush=True)
+              if start.returncode != 0: print('SC_START_OUTPUT='+start.stdout[-500:]+start.stderr[-500:],flush=True)
+              bound = False
+              for _ in range(150):
+                  if os.path.exists(trace):
+                      data=open(trace,encoding='utf-8-sig',errors='replace').read()
+                      if 'PIPE_BOUND=True' in data or 'SERVICE_EXCEPTION=' in data: break
+                  time.sleep(.1)
+              data=open(trace,encoding='utf-8-sig',errors='replace').read() if os.path.exists(trace) else ''
+              for line in data.splitlines():
+                  if any(x in line for x in ['SERVICE_SID=','DISCOVERY_COUNT=','DISCOVERED_PID=','PIPE_BOUND=','SERVICE_EXCEPTION=']): print(line,flush=True)
+              bound = 'PIPE_BOUND=True' in data and ('PID='+str(pi.dwProcessId)) in data
+              print('AUTONOMOUS_BIND_MATCH='+str(bound),flush=True)
+              if not bound: raise RuntimeError('Lower service did not independently bind target PID')
+              if k.ResumeThread(pi.hThread)==0xffffffff: raise OSError(ctypes.get_last_error(),'ResumeThread')
+              managed = wait_file(marker,10)
+              alive = k.WaitForSingleObject(pi.hProcess,0)==0x102
+              print(f'MANAGED_MARKER={managed} HIGH_PROCESS_ALIVE={alive}',flush=True)
+              if managed and alive: print('PS_WHILE_LOWER_BOUND='+str(ps_listed(pi.dwProcessId)),flush=True)
+              with open(release,'w') as f: f.write('release')
+              for _ in range(100):
+                  if os.path.exists(trace) and 'SERVICE_STOPPED=True' in open(trace,encoding='utf-8-sig',errors='replace').read(): break
+                  time.sleep(.1)
+              print('SERVICE_STOPPED='+str(os.path.exists(trace) and 'SERVICE_STOPPED=True' in open(trace,encoding='utf-8-sig',errors='replace').read()),flush=True)
+              time.sleep(2)
+              print('HIGH_PROCESS_ALIVE_AFTER_CLOSE='+str(k.WaitForSingleObject(pi.hProcess,0)==0x102),flush=True)
+              print('PS_AFTER_LOWER_CLOSE='+str(ps_listed(pi.dwProcessId)),flush=True)
+              if not managed or not alive: raise RuntimeError('Normal runtime target failed to start')
+          finally:
+              with open(release,'w') as f: f.write('release')
+              k.TerminateProcess(pi.hProcess,0)
+              k.CloseHandle(pi.hThread); k.CloseHandle(pi.hProcess)
+              subprocess.run(['sc.exe','delete','Rank21L105Service'],capture_output=True,text=True,timeout=10)
+          '@ | Set-Content -Path "$root\autonomous.py" -Encoding utf8
+          python "$root\autonomous.py"
