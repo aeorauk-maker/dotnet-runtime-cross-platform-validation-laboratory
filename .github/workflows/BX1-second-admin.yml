@@ -1,0 +1,94 @@
+name: H3 BX1 Windows second-account control
+on:
+  push:
+    branches:
+      - h3-bx1-20261127-7f83
+permissions:
+  contents: read
+jobs:
+  second-account:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install official SDK 11.0.100
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Compare neutral maintenance before and after owned path registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((dotnet --version).Trim() -ne '11.0.100') { throw 'Unexpected SDK' }
+          $account = 'h3bx1b7f83'
+          $password = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'aA1!'
+          Write-Host "::add-mask::$password"
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name $account -Password $secure -PasswordNeverExpires | Out-Null
+          Add-LocalGroupMember -Group Administrators -Member $account
+          $userId = "$env:COMPUTERNAME\$account"
+          $taskName = 'h3bx1-7f83-neutral-clean'
+          $scriptPath = Join-Path $env:ProgramData 'h3bx1-7f83-neutral.ps1'
+          $resultPath = Join-Path $env:ProgramData 'h3bx1-7f83-result.txt'
+          $shareName = 'h3bx1-7f83-bshare'
+          $root = Join-Path $env:RUNNER_TEMP $shareName
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $root 'global.json') -Encoding utf8 -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.100"}}'
+          $unc = "\\localhost\$shareName"
+          @'
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          $out = Join-Path $env:ProgramData 'h3bx1-7f83-result.txt'
+          $neutral = Join-Path $env:ProgramData 'h3bx1-7f83-neutral'
+          New-Item -ItemType Directory -Path $neutral -Force | Out-Null
+          Set-Location $neutral
+          $sdkVersion = (& 'C:\Program Files\dotnet\dotnet.exe' --version).Trim()
+          $commandOutput = (& 'C:\Program Files\dotnet\dotnet.exe' workload clean 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
+          @("B_ID=$($identity.Name)", "B_ADMIN=$admin", "B_SDK=$sdkVersion", "B_EXIT=$exitCode", "B_OUTPUT=$($commandOutput.Trim() -replace '\s+', ' ')") | Set-Content -LiteralPath $out -Encoding utf8
+          '@ | Set-Content -LiteralPath $scriptPath -Encoding utf8
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -File `"$scriptPath`""
+          try {
+            Register-ScheduledTask -TaskName $taskName -Action $action -User $userId -Password $password -RunLevel Highest -Force | Out-Null
+            function Invoke-B {
+              Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+              Start-ScheduledTask -TaskName $taskName
+              for ($i = 0; $i -lt 120 -and !(Test-Path -LiteralPath $resultPath); $i++) { Start-Sleep -Seconds 1 }
+              if (!(Test-Path -LiteralPath $resultPath)) {
+                $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+                throw "Second-account task did not complete, last result $($taskInfo.LastTaskResult)"
+              }
+              Get-Content -LiteralPath $resultPath
+            }
+            New-SmbShare -Name $shareName -Path $root -FullAccess $env:USERNAME -ReadAccess $userId | Out-Null
+            Write-Host 'CONTROL_BEFORE_REGISTER'
+            Invoke-B
+            $beforeSessions = @(Get-SmbSession | Where-Object ClientUserName -EQ $userId).Count
+            Write-Host "B_SESSIONS_BEFORE=$beforeSessions"
+            Push-Location $unc
+            try {
+              dotnet workload install aspire --verbosity quiet
+              $installExit = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            Write-Host "INSTALL_EXIT=$installExit"
+            if ($installExit -ne 0) { throw 'Workload install failed' }
+            $files = @(Get-ChildItem -Path (Join-Path $env:ProgramData 'dotnet\workloads') -Recurse -Filter globaljsonworkloadsets.json -ErrorAction SilentlyContinue)
+            $registered = $false
+            foreach ($file in $files) {
+              $data = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json -AsHashtable
+              if ($data.ContainsKey((Join-Path $unc 'global.json'))) { $registered = $true }
+            }
+            Write-Host "UNC_REGISTERED=$registered"
+            if (!$registered) { throw 'UNC path was not recorded' }
+            Write-Host 'CONTROL_AFTER_REGISTER'
+            Invoke-B
+            $afterSessions = @(Get-SmbSession | Where-Object ClientUserName -EQ $userId).Count
+            Write-Host "B_SESSIONS_AFTER=$afterSessions"
+          }
+          finally {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            if (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue) { Remove-SmbShare -Name $shareName -Force | Out-Null }
+            Remove-LocalUser -Name $account -ErrorAction SilentlyContinue
+          }
