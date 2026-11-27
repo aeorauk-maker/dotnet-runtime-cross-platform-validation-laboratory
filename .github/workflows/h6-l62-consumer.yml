@@ -1,0 +1,29 @@
+name: H6 L62 Artifact Consumer
+on:
+  workflow_run:
+    workflows: ['H6 L62 Artifact Producer']
+    types: [completed]
+permissions:
+  actions: read
+  issues: write
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: h6-l62-route
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const target = Number.parseInt(fs.readFileSync('target.txt', 'utf8'), 10);
+            if (!Number.isSafeInteger(target) || target < 1) throw Error('bad target');
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: target,
+              body: 'H6 inert routing control from producer run ' + context.payload.workflow_run.id
+            });
