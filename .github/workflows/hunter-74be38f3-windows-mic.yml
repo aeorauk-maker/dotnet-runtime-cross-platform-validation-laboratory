@@ -27,4 +27,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run generic split-token pipe check
         shell: pwsh
-        run: ./windows-generic-mic-v6.ps1
+        run: ./windows-generic-mic-v7.ps1
