@@ -15,7 +15,7 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.100
-      - name: Check workload state after ordinary command
+      - name: Compare valid and changed workload roots
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -31,23 +31,34 @@ jobs:
           finally { Pop-Location }
           Write-Host "SDK_VERSION=$((dotnet --version).Trim())"
           Write-Host "INSTALL_EXIT=$installExit"
-          Write-Host "INSTALL_TEXT=$(($installText -replace '\r?\n',' | ').Substring(0,[Math]::Min(500,$installText.Length)))"
+          Write-Host "INSTALL_TEXT=$(($installText -replace '\r?\n',' | ').Substring(0,[Math]::Min(300,$installText.Length)))"
           $recordRoot = Join-Path $env:ProgramData 'dotnet/workloads'
           $record = if (Test-Path -LiteralPath $recordRoot) { Get-ChildItem -LiteralPath $recordRoot -Filter 'globaljsonworkloadsets.json' -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like '*11.0.100*' } | Select-Object -First 1 }
           Write-Host "RECORD_FOUND=$($null -ne $record)"
           if ($null -ne $record) {
-            $before = [IO.File]::ReadAllText($record.FullName)
-            Write-Host "RECORD_HAS_PATH=$($before.Contains($globalJsonPath))"
+            $state = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
+            Write-Host "RECORDED_PATH_MATCH=$($state.ContainsKey($globalJsonPath))"
+            Write-Host "RECORDED_VERSION_MATCH=$($state[$globalJsonPath] -eq '11.0.100')"
+            Push-Location $root
+            try {
+              $validText = (& dotnet workload clean 2>&1 | Out-String).Trim()
+              $validExit = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            $validState = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
+            Write-Host "VALID_CLEAN_EXIT=$validExit"
+            Write-Host "VALID_ROOT_RETAINED=$($validState.ContainsKey($globalJsonPath))"
             Set-Content -LiteralPath $globalJsonPath -Value '{"sdk":{"version":"11.0.100","workloadVersion":"11.0.101"}}' -Encoding utf8
             Push-Location $root
             try {
-              $cleanText = (& dotnet workload clean --verbosity quiet 2>&1 | Out-String).Trim()
-              $cleanExit = $LASTEXITCODE
+              $changedText = (& dotnet workload clean 2>&1 | Out-String).Trim()
+              $changedExit = $LASTEXITCODE
             }
             finally { Pop-Location }
-            Write-Host "CLEAN_EXIT=$cleanExit"
-            Write-Host "CLEAN_TEXT=$(($cleanText -replace '\r?\n',' | ').Substring(0,[Math]::Min(500,$cleanText.Length)))"
-            $after = [IO.File]::ReadAllText($record.FullName)
-            Write-Host "RECORD_HAS_PATH_AFTER=$($after.Contains($globalJsonPath))"
+            $changedState = Get-Content -LiteralPath $record.FullName -Raw | ConvertFrom-Json -AsHashtable
+            Write-Host "CHANGED_CLEAN_EXIT=$changedExit"
+            Write-Host "CHANGED_ROOT_RETAINED=$($changedState.ContainsKey($globalJsonPath))"
+            Write-Host "VALID_CLEAN_TEXT=$(($validText -replace '\r?\n',' | ').Substring(0,[Math]::Min(250,$validText.Length)))"
+            Write-Host "CHANGED_CLEAN_TEXT=$(($changedText -replace '\r?\n',' | ').Substring(0,[Math]::Min(250,$changedText.Length)))"
           }
           exit 0
