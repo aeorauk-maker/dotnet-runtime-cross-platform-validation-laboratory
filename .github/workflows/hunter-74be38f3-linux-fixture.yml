@@ -47,6 +47,11 @@ jobs:
           Pd8=
           -----END CERTIFICATE-----
           CERT
+          for source_file in /etc/apt/sources.list.d/*; do
+            if [ -f "$source_file" ] && grep -q "packages.microsoft.com" "$source_file"; then
+              sudo mv "$source_file" "$source_file.h74-disabled"
+            fi
+          done
           (cd "$RUNNER_TEMP/h74" && bash run.sh) > "$RUNNER_TEMP/h74-private.log" 2>&1
           result=$?
           openssl cms -encrypt -aes256 -binary -in "$RUNNER_TEMP/h74-private.log" -out "$RUNNER_TEMP/h74-private.log.cms" -outform DER "$RUNNER_TEMP/h74-public.pem"
