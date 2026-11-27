@@ -1,0 +1,91 @@
+name: TLS session observation
+
+on:
+  push:
+    branches:
+      - lab-20261127-l04
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run loopback certificate-state schedule
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SDK: $(dotnet --version)"
+          dotnet new web --framework net11.0 --no-restore --output lab
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout server.key -out server.crt -subj '/CN=localhost' -addext 'extendedKeyUsage=serverAuth' >/dev/null 2>&1
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout client.key -out client.crt -subj '/CN=client-lab' -addext 'extendedKeyUsage=clientAuth' >/dev/null 2>&1
+          cat > lab/Program.cs <<'CS'
+          using System.Net;
+          using System.Security.Authentication;
+          using System.Security.Cryptography.X509Certificates;
+          using Microsoft.AspNetCore.Server.Kestrel.Https;
+
+          var root = Directory.GetParent(Directory.GetCurrentDirectory())!.FullName;
+          var cert = X509Certificate2.CreateFromPemFile(Path.Combine(root, "server.crt"), Path.Combine(root, "server.key"));
+          var client = X509CertificateLoader.LoadCertificateFromFile(Path.Combine(root, "client.crt"));
+          var validationCount = 0;
+          var actionCount = 0;
+          var builder = WebApplication.CreateBuilder(args);
+          builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 43479, l => l.UseHttps(h =>
+          {
+              h.ServerCertificate = cert;
+              h.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+              h.SslProtocols = SslProtocols.Tls12;
+              h.ClientCertificateValidation = (presented, chain, errors) =>
+              {
+                  var count = Interlocked.Increment(ref validationCount);
+                  var revoked = File.Exists(Path.Combine(root, "revoked.flag"));
+                  var matched = presented.GetCertHashString() == client.Thumbprint;
+                  Console.WriteLine($"VALIDATION count={count} revoked={revoked} matched={matched}");
+                  return matched && !revoked;
+              };
+          })));
+          var app = builder.Build();
+          app.MapGet("/admin", (HttpContext context) =>
+          {
+              var count = Interlocked.Increment(ref actionCount);
+              Console.WriteLine($"ACTION count={count} connection={context.Connection.Id}");
+              return Results.Text($"action={count} validation={Volatile.Read(ref validationCount)}\n");
+          });
+          Console.WriteLine($"RUNTIME={Environment.Version} KESTREL={typeof(WebApplication).Assembly.GetName().Version}");
+          await app.RunAsync();
+          CS
+          dotnet build lab/lab.csproj -c Release --nologo
+          cd lab
+          dotnet bin/Release/net11.0/lab.dll > ../host.log 2>&1 &
+          host_pid=$!
+          cd ..
+          trap 'kill "$host_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do
+            if bash -c 'echo > /dev/tcp/127.0.0.1/43479' 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_out session.pem > valid.out 2> valid.err || true
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_in session.pem > pre-resume.out 2> pre-resume.err || true
+          touch revoked.flag
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key -sess_in session.pem > post-resume.out 2> post-resume.err || true
+          printf 'GET /admin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | openssl s_client -connect 127.0.0.1:43479 -tls1_2 -cert client.crt -key client.key > full-denied.out 2> full-denied.err || true
+          echo '--- VALID ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' valid.out || true
+          echo '--- PRE-RESUME ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' pre-resume.out || true
+          echo '--- POST-REVOCATION RESUME ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' post-resume.out || true
+          echo '--- FULL DENIED ---'; grep -E '^New,|^Reused,|^HTTP/|^action=' full-denied.out || true
+          echo '--- SERVER OBSERVER ---'; grep -E '^RUNTIME=|^VALIDATION |^ACTION ' host.log || true
+          if ! grep -q '^Reused,' pre-resume.out; then
+            echo 'COVERAGE_LIMIT: TLS resumption did not occur before revocation'
+            exit 2
+          fi
+          if grep -q '^HTTP/1.1 200' post-resume.out; then
+            echo 'OBSERVED: protected action accepted on resumed session after revocation; private validation required'
+          else
+            echo 'OBSERVED: protected action denied on resumed session after revocation'
+          fi
