@@ -1,0 +1,21 @@
+name: Hunter d370ff75 L18 owned TLS resumption control
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+run-name: d370ff75 L18 TLS policy transition ${{ github.run_id }}
+
+jobs:
+  linux-net11:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run inert loopback TLS controls
+        run: dotnet run --project L18.csproj --configuration Release
