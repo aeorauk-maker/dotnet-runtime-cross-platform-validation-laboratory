@@ -1,0 +1,111 @@
+name: Rank21 L105 normal runtime prebind discriminator
+
+on:
+  push:
+    branches: [rank-21-l105-prebind-20261127]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test normal runtime after controlled prebind
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\Users\Public\Rank21L105Prebind'
+          $target = "$root\target"
+          New-Item -ItemType Directory -Force -Path $root, $target | Out-Null
+          dotnet --info | Select-Object -First 30
+          dotnet tool install dotnet-trace --tool-path "$root\tools" --version 10.0.750501
+          & "$root\tools\dotnet-trace.exe" --version
+          dotnet new console --framework net11.0 --output $target --no-restore
+          @'
+          using System;
+          using System.IO;
+          using System.Threading;
+          Console.WriteLine($"RUNNING_PID={Environment.ProcessId} DIAGNOSTICS={Environment.GetEnvironmentVariable("DOTNET_EnableDiagnostics") ?? "default"}");
+          File.WriteAllText(args[0], "running");
+          Thread.Sleep(TimeSpan.FromSeconds(45));
+          '@ | Set-Content -Path "$target\Program.cs" -Encoding utf8
+          dotnet build $target --configuration Release --verbosity quiet
+          $env:L105_TARGET_EXE = "$target\bin\Release\net11.0\target.exe"
+          $env:L105_MARKER = "$root\managed-started.txt"
+          $env:L105_TRACE_EXE = "$root\tools\dotnet-trace.exe"
+          $normalMarker = "$root\normal-started.txt"
+          $normal = Start-Process -FilePath $env:L105_TARGET_EXE -ArgumentList @($normalMarker) -PassThru -RedirectStandardOutput "$root\normal-target.out"
+          for ($i = 0; $i -lt 100 -and -not (Test-Path $normalMarker); $i++) { Start-Sleep -Milliseconds 100 }
+          if (-not (Test-Path $normalMarker)) { throw 'Normal managed baseline failed' }
+          $normalPs = & $env:L105_TRACE_EXE ps | Out-String
+          $normalListed = $normalPs -match "(?m)^\s*$($normal.Id)\s"
+          Write-Host "NORMAL_PID=$($normal.Id) NORMAL_LISTED=$normalListed"
+          Stop-Process -Id $normal.Id -Force
+          if (-not $normalListed) { throw 'Normal diagnostic endpoint baseline failed' }
+          @'
+          import ctypes, os, re, subprocess, sys, time
+          from ctypes import wintypes
+
+          class STARTUPINFO(ctypes.Structure):
+              _fields_ = [('cb',wintypes.DWORD),('lpReserved',wintypes.LPWSTR),('lpDesktop',wintypes.LPWSTR),('lpTitle',wintypes.LPWSTR),('dwX',wintypes.DWORD),('dwY',wintypes.DWORD),('dwXSize',wintypes.DWORD),('dwYSize',wintypes.DWORD),('dwXCountChars',wintypes.DWORD),('dwYCountChars',wintypes.DWORD),('dwFillAttribute',wintypes.DWORD),('dwFlags',wintypes.DWORD),('wShowWindow',wintypes.WORD),('cbReserved2',wintypes.WORD),('lpReserved2',ctypes.c_void_p),('hStdInput',wintypes.HANDLE),('hStdOutput',wintypes.HANDLE),('hStdError',wintypes.HANDLE)]
+          class PROCESS_INFORMATION(ctypes.Structure):
+              _fields_ = [('hProcess',wintypes.HANDLE),('hThread',wintypes.HANDLE),('dwProcessId',wintypes.DWORD),('dwThreadId',wintypes.DWORD)]
+
+          k = ctypes.WinDLL('kernel32', use_last_error=True)
+          k.CreateProcessW.argtypes = [wintypes.LPCWSTR,wintypes.LPWSTR,ctypes.c_void_p,ctypes.c_void_p,wintypes.BOOL,wintypes.DWORD,ctypes.c_void_p,wintypes.LPCWSTR,ctypes.POINTER(STARTUPINFO),ctypes.POINTER(PROCESS_INFORMATION)]
+          k.CreateProcessW.restype = wintypes.BOOL
+          k.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p]
+          k.CreateNamedPipeW.restype = wintypes.HANDLE
+          k.ResumeThread.argtypes = [wintypes.HANDLE]
+          k.ResumeThread.restype = wintypes.DWORD
+          k.WaitForSingleObject.argtypes = [wintypes.HANDLE,wintypes.DWORD]
+          k.WaitForSingleObject.restype = wintypes.DWORD
+          k.TerminateProcess.argtypes = [wintypes.HANDLE,wintypes.UINT]
+          k.CloseHandle.argtypes = [wintypes.HANDLE]
+
+          exe = os.environ['L105_TARGET_EXE']
+          marker = os.environ['L105_MARKER']
+          trace = os.environ['L105_TRACE_EXE']
+          def listed(pid):
+              result = subprocess.run([trace, 'ps'], capture_output=True, text=True, timeout=12)
+              print('PS_EXIT=' + str(result.returncode), flush=True)
+              if result.returncode != 0:
+                  print('PS_STDERR=' + result.stderr[:500], flush=True)
+              return bool(re.search(r'^\s*' + str(pid) + r'\s', result.stdout, re.M))
+          si = STARTUPINFO(); si.cb = ctypes.sizeof(si)
+          pi = PROCESS_INFORMATION()
+          cmd = ctypes.create_unicode_buffer('"' + exe + '" "' + marker + '"')
+          if not k.CreateProcessW(exe, cmd, None, None, False, 0x4, None, None, ctypes.byref(si), ctypes.byref(pi)):
+              raise OSError(ctypes.get_last_error(), 'CreateProcessW')
+          print('SUSPENDED_PID=' + str(pi.dwProcessId), flush=True)
+          name = r'\\.\pipe\dotnet-diagnostic-' + str(pi.dwProcessId)
+          pipe = k.CreateNamedPipeW(name, 0x3, 0, 1, 16384, 16384, 0, None)
+          invalid = ctypes.c_void_p(-1).value
+          if pipe == invalid or pipe is None:
+              k.TerminateProcess(pi.hProcess, 1)
+              raise OSError(ctypes.get_last_error(), 'CreateNamedPipeW')
+          print('PIPE_PREBOUND=True NAME=' + name, flush=True)
+          if k.ResumeThread(pi.hThread) == 0xffffffff:
+              raise OSError(ctypes.get_last_error(), 'ResumeThread')
+          for _ in range(100):
+              if os.path.exists(marker): break
+              time.sleep(0.1)
+          seen = os.path.exists(marker)
+          alive = k.WaitForSingleObject(pi.hProcess, 0) == 0x102
+          print('MANAGED_MARKER_SEEN=' + str(seen) + ' PROCESS_ALIVE=' + str(alive), flush=True)
+          if seen and alive:
+              print('PS_WHILE_FAKE_BOUND=' + str(listed(pi.dwProcessId)), flush=True)
+          k.CloseHandle(pipe)
+          time.sleep(2)
+          if alive:
+              print('PS_AFTER_FAKE_CLOSE=' + str(listed(pi.dwProcessId)), flush=True)
+          k.TerminateProcess(pi.hProcess, 0)
+          k.CloseHandle(pi.hThread); k.CloseHandle(pi.hProcess)
+          if not seen or not alive: sys.exit(2)
+          '@ | Set-Content -Path "$root\prebind.py" -Encoding utf8
+          python "$root\prebind.py"
