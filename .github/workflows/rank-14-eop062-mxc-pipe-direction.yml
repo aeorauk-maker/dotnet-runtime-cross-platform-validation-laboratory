@@ -89,7 +89,7 @@ jobs:
             version = '1.0.0'
             containment = 'processcontainer'
             process = @{ commandLine = "`"$binary`" `"$result`" `"$pipe`" `"$protectedFile`""; cwd = $actor; timeout = 65000 }
-            filesystem = @{ readwritePaths = @($actor); denyPaths = @($protected) }
+            filesystem = @{ readwritePaths = @($actor); deniedPaths = @($protected) }
             network = @{ egress = @{ default = 'deny' } }
           }
           $requestPath = Join-Path $actor 'request.json'
