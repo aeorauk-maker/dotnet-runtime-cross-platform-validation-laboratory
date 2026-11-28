@@ -28,6 +28,15 @@ jobs:
         with:
           dotnet-version: 10.0.404
 
+      - name: Pin exact SDK selection before GitLab startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' '{"sdk":{"version":"10.0.404","rollForward":"disable"}}' > "$GITHUB_WORKSPACE/global.json"
+          cp "$GITHUB_WORKSPACE/global.json" "$RUNNER_TEMP/global.json"
+          test "$(dotnet --version)" = "10.0.404"
+          (cd "$RUNNER_TEMP" && test "$(dotnet --version)" = "10.0.404")
+
       - name: Start ephemeral GitLab CE 19.6.2
         shell: bash
         run: |
