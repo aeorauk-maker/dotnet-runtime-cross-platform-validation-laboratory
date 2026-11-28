@@ -1,0 +1,35 @@
+name: net10-maintained-consumer-build
+on:
+  push:
+    branches:
+      - validation-net10-consumer-build-20261128-r21
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Fetch pinned public source
+        run: |
+          git clone --depth 1 https://github.com/Aguafrommars/TheIdServer.git consumer
+          test "$(git -C consumer rev-parse HEAD)" = c33395d5f0354b7efed9d664c8c62de27312306d
+      - name: Build maintained net10 host
+        run: |
+          set +e
+          dotnet build consumer/src/Aguacongas.TheIdServer.Duende/Aguacongas.TheIdServer.Duende.csproj -c Release --nologo > consumer-build.log 2>&1
+          result=$?
+          tail -n 70 consumer-build.log
+          exit "$result"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: net10-maintained-consumer-build-log
+          path: consumer-build.log
+          if-no-files-found: ignore
+          retention-days: 1
