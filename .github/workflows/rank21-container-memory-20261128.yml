@@ -1,0 +1,32 @@
+name: Rank 21 container memory boundary
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-fd-capacity-20261128
+    paths:
+      - .github/workflows/rank21-container-memory-20261128.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  memory_probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Compare host and official image memory boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Host memory and descriptor limits:'
+          free -b
+          ulimit -Sn
+          ulimit -Hn
+          echo 'Official ASP.NET Core 11 container:'
+          docker run --rm --network none mcr.microsoft.com/dotnet/aspnet:11.0 sh -c '
+            printf "nofile soft/hard: "; ulimit -Sn; ulimit -Hn
+            printf "cgroup memory.max: "; cat /sys/fs/cgroup/memory.max
+            printf "cgroup memory.current: "; cat /sys/fs/cgroup/memory.current
+            printf "cgroup memory.peak: "; cat /sys/fs/cgroup/memory.peak
+            printf "cgroup memory.events:\n"; cat /sys/fs/cgroup/memory.events
+            printf "process Max address space: "; grep "Max address space" /proc/self/limits
+          '
