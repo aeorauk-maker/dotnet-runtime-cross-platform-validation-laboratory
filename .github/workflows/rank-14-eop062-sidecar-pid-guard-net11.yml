@@ -1,5 +1,11 @@
 name: rank-14-eop062-sidecar-pid-guard-net11
 on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-sidecar-pid-guard-net11.py'
+      - 'eop062-fake-compiler.pl'
+      - '.github/workflows/rank-14-eop062-sidecar-pid-guard-net11.yml'
   workflow_dispatch:
 jobs:
   sidecar:
