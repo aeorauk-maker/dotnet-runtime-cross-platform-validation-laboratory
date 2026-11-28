@@ -440,7 +440,7 @@ try {
     $compilerPipe = [Convert]::ToBase64String($pipeHash).Replace('/', '_').Replace('=', '')
     Write-Host "compiler-dir=$compilerDir default-pipe=$compilerPipe"
 
-    $labRoot = Join-Path $env:PUBLIC ('Documents\eop062-roslyn-' + [guid]::NewGuid().ToString('N'))
+    $labRoot = Join-Path $env:RUNNER_TEMP ('eop062-roslyn-' + [guid]::NewGuid().ToString('N'))
     [void][System.IO.Directory]::CreateDirectory($labRoot)
     & icacls.exe $labRoot /grant:r "${runnerUser}:(OI)(CI)(M)" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Could not grant lab directory' }
