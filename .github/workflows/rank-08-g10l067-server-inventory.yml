@@ -1,4 +1,4 @@
-name: G10-L067 Windows stock-server inventory
+name: G10-L067 Windows network capability inventory
 on:
   push:
     branches: [rank-08-g10l067-pwshwin-20261128]
@@ -9,15 +9,24 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 5
     steps:
-      - name: Check local server availability
+      - name: Check independent peer feasibility
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $paths = @(
-            'C:\Program Files\IIS Express\iisexpress.exe',
-            'C:\Program Files (x86)\IIS Express\iisexpress.exe',
-            'C:\Apache24\bin\httpd.exe'
-          )
-          foreach ($p in $paths) { Write-Output ("SERVER_PATH={0};EXISTS={1}" -f $p, (Test-Path -LiteralPath $p)) }
-          $feature = Get-WindowsFeature -Name Web-Basic-Auth,Web-DAV-Publishing -ErrorAction SilentlyContinue
-          foreach ($f in $feature) { Write-Output ("FEATURE={0};INSTALLED={1}" -f $f.Name, $f.Installed) }
+          Write-Output ('ADMIN={0}' -f ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+          Write-Output ('HYPERVISOR_PRESENT={0}' -f (Get-CimInstance Win32_ComputerSystem).HypervisorPresent)
+          foreach ($name in @('Microsoft-Hyper-V-All','VirtualMachinePlatform','Microsoft-Windows-Subsystem-Linux','Containers')) {
+            try {
+              $feature = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction Stop
+              Write-Output ('OPTIONAL_FEATURE={0};STATE={1}' -f $name,$feature.State)
+            } catch { Write-Output ('OPTIONAL_FEATURE={0};STATE=UNAVAILABLE' -f $name) }
+          }
+          foreach ($name in @('wsl.exe','docker.exe','New-VMSwitch','New-ContainerNetwork')) {
+            Write-Output ('COMMAND={0};EXISTS={1}' -f $name,[bool](Get-Command $name -ErrorAction SilentlyContinue))
+          }
+          $links = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' } | Select-Object -ExpandProperty InterfaceIndex -Unique | Sort-Object)
+          Write-Output ('PREFERRED_LINKLOCAL_INTERFACES={0}' -f $links.Count)
+          foreach ($id in $links) {
+            $iface = Get-NetIPInterface -InterfaceIndex $id -AddressFamily IPv6
+            Write-Output ('INTERFACE_INDEX={0};METRIC={1};CONNECTION_STATE={2}' -f $id,$iface.InterfaceMetric,$iface.ConnectionState)
+          }
