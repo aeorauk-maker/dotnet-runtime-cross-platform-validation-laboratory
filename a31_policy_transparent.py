@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix="a31-policy-cookie-") as tmp:
     assert "Subject Alternative Name" not in attack_text
     assert "CN=forbidden.test" in attack_text or "CN = forbidden.test" in attack_text
     assert "X509v3 Name Constraints: critical" in issuer_text
-    assert "DNS:allowed.test" in issuer_text
+    assert "Excluded:" in issuer_text; assert "DNS:forbidden.test" in issuer_text; assert "Permitted:" not in issuer_text
     env = os.environ.copy()
     env.update(DOTNET_CLI_HOME=str(base / "cli-home"),
                DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1",
