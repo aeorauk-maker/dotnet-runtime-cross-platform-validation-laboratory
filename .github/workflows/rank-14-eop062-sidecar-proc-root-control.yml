@@ -1,0 +1,15 @@
+name: Rank 14 EOP062 sidecar process-namespace authority control
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-sidecar-proc-root-control.sh'
+      - '.github/workflows/rank-14-eop062-sidecar-proc-root-control.yml'
+jobs:
+  proc-root-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare isolated and shared process namespace
+        run: bash ./eop062-sidecar-proc-root-control.sh
