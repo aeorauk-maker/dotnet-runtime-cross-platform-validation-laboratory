@@ -28,15 +28,17 @@ jobs:
           using System.Threading;
           using System.Threading.Tasks;
 
-          bool actorMode = args.Length != 0 && args[0] == "actor";
-          Console.WriteLine($"DNS_MODE={(actorMode ? "ACTOR_A_PTR" : "HONEST_A_PTR")} PID={Environment.ProcessId}");
+          string mode = args.Length != 0 ? args[0] : "honest";
+          bool actorMode = mode == "actor";
+          bool cnameMode = mode == "cname";
+          Console.WriteLine($"DNS_MODE={mode} PID={Environment.ProcessId}");
           using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(18));
           using var dns = new UdpClient(new IPEndPoint(IPAddress.Loopback, 53));
           var dnsServer = Task.Run(async () => {
               try {
                   while (!deadline.IsCancellationRequested) {
                       var packet = await dns.ReceiveAsync(deadline.Token);
-                      var response = Reply(packet.Buffer, actorMode);
+                      var response = Reply(packet.Buffer, actorMode, cnameMode);
                       if (response.Length != 0) await dns.SendAsync(response, packet.RemoteEndPoint, deadline.Token);
                   }
               } catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
@@ -47,6 +49,7 @@ jobs:
               try {
                   using var peer = await listener.AcceptTcpClientAsync(deadline.Token);
                   Console.WriteLine("LOOPBACK_TCP_ACCEPTED=YES");
+                  Console.WriteLine($"TCP_LOCAL_ENDPOINT={peer.Client.LocalEndPoint}");
                   using var stream = peer.GetStream();
                   var packet = new byte[8192];
                   Console.WriteLine($"LDAP_FIRST_PACKET_BYTES={await stream.ReadAsync(packet, deadline.Token)}");
@@ -77,7 +80,7 @@ jobs:
           static void Answer(Stream s, byte[] owner, int type, byte[] data) {
               s.Write(owner); U16(s, type); U16(s, 1); U32(s, 30); U16(s, data.Length); s.Write(data);
           }
-          static byte[] Reply(byte[] q, bool actorMode) {
+          static byte[] Reply(byte[] q, bool actorMode, bool cnameMode) {
               if (q.Length < 17) return Array.Empty<byte>();
               var labels = new List<string>(); int p = 12;
               while (p < q.Length && q[p] != 0) {
@@ -89,14 +92,16 @@ jobs:
               int type = (q[p+1] << 8) | q[p+2]; int end = p + 5;
               if (name is "lab.example" or "actor.lab.example" or "1.0.0.127.in-addr.arpa" or "2.0.0.127.in-addr.arpa")
                   Console.WriteLine($"DNS_QUERY={name} TYPE={type}");
-              bool direct = name == "lab.example" && type == 1;
+              bool cname = cnameMode && name == "lab.example" && type == 1;
+              bool direct = !cnameMode && name == "lab.example" && type == 1;
               bool actor = name == "actor.lab.example" && type == 1;
               bool ptr = (name is "1.0.0.127.in-addr.arpa" or "2.0.0.127.in-addr.arpa") && type == 12;
               using var m = new MemoryStream();
               m.Write(q, 0, 2); U16(m, name.EndsWith("lab.example") || ptr ? 0x8180 : 0x8183);
-              U16(m, 1); U16(m, direct || actor || ptr ? 1 : 0); U16(m, 0); U16(m, 0);
+              U16(m, 1); U16(m, cname ? 2 : direct || actor || ptr ? 1 : 0); U16(m, 0); U16(m, 0);
               m.Write(q, 12, end - 12);
               byte[] pointer = { 0xC0, 0x0C };
+              if (cname) { Answer(m, pointer, 5, Encode("actor.lab.example")); Answer(m, Encode("actor.lab.example"), 1, new byte[] {127, 0, 0, 2}); }
               if (direct) Answer(m, pointer, 1, new byte[] {127, 0, 0, actorMode ? (byte)2 : (byte)1});
               if (actor) Answer(m, pointer, 1, new byte[] {127, 0, 0, 2});
               if (ptr) Answer(m, pointer, 12, Encode(name[0] == '2' ? "actor.lab.example" : "dc.lab.example"));
@@ -106,7 +111,7 @@ jobs:
           dotnet build probe/probe.csproj --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host 'RELEASED_PACKAGE=System.DirectoryServices.Protocols/10.0.15'
-      - name: Trace cold honest A PTR actor A PTR honest A PTR service targets
+      - name: Trace cold honest A PTR actor A PTR CNAME A honest A PTR service targets
         shell: pwsh
         run: |
           $dnsClients = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop)
@@ -123,7 +128,7 @@ jobs:
           try {
             Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses @('127.0.0.1')
             ipconfig /flushdns | Out-Null
-            foreach ($mode in @('honest', 'actor', 'honest')) {
+            foreach ($mode in @('honest', 'actor', 'cname', 'honest')) {
               ipconfig /flushdns | Out-Null
               & './probe/bin/Release/net10.0/probe.exe' $mode
             }
