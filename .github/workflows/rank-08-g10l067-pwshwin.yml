@@ -1,0 +1,94 @@
+name: Isolated Windows PowerShell network validation
+on:
+  push:
+    branches: [rank-08-g10l067-pwshwin-20261128]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Run private owned fixture
+        shell: pwsh
+        env:
+          G10_FIXTURE_GZ_B64: ${{ secrets.G10L067_PWSH_WINDOWS_FIXTURE_GZ_B64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = Join-Path $env:RUNNER_TEMP 'g10l067-rank08-pwshwin'
+          New-Item -ItemType Directory -Path $state -Force | Out-Null
+          $ip = 'fe80::c0de:8067'
+          $added = @()
+          $failed = $false
+          try {
+            if ([string]::IsNullOrWhiteSpace($env:G10_FIXTURE_GZ_B64)) { throw 'Private fixture secret missing' }
+            $compressed = [Convert]::FromBase64String($env:G10_FIXTURE_GZ_B64)
+            $inputStream = [IO.MemoryStream]::new($compressed)
+            $gzip = [IO.Compression.GzipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+            $reader = [IO.StreamReader]::new($gzip)
+            $source = $reader.ReadToEnd()
+            $reader.Dispose()
+            [IO.File]::WriteAllText((Join-Path $state 'Program.cs'), $source)
+            $project = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup></Project>'
+            [IO.File]::WriteAllText((Join-Path $state 'g10lab.csproj'), $project)
+            & dotnet --list-runtimes *> (Join-Path $state 'runtimes.log')
+            & pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' *> (Join-Path $state 'pwsh-version.log')
+            & dotnet build (Join-Path $state 'g10lab.csproj') -c Release --ignore-failed-sources *> (Join-Path $state 'build.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Private fixture build failed' }
+            $ids = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' } | Select-Object -ExpandProperty InterfaceIndex -Unique | Sort-Object)
+            [IO.File]::WriteAllText((Join-Path $state 'interfaces.log'), "count=$($ids.Count); ids=$($ids -join ',')")
+            if ($ids.Count -lt 2) { throw 'Two distinct active link-local interfaces unavailable' }
+            $a = [int]$ids[0]
+            $b = [int]$ids[1]
+            New-NetIPAddress -InterfaceIndex $a -IPAddress $ip -PrefixLength 64 -SkipAsSource $true -ErrorAction Stop | Out-Null
+            $added += $a
+            Start-Sleep -Seconds 2
+            New-NetIPAddress -InterfaceIndex $b -IPAddress $ip -PrefixLength 64 -SkipAsSource $true -ErrorAction Stop | Out-Null
+            $added += $b
+            Start-Sleep -Seconds 8
+            $env:G10_TEST_IP = $ip
+            $env:G10_SCOPE_A = [string]$a
+            $env:G10_SCOPE_B = [string]$b
+            & dotnet (Join-Path $state 'bin/Release/net10.0/g10lab.dll') *> (Join-Path $state 'fixture.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Private fixture failed' }
+            if (-not (Select-String -Path (Join-Path $state 'fixture.log') -Pattern '^G10_L067_PWSH_SINGLECALL_RESULT=' -Quiet)) { throw 'Private result missing' }
+            Write-Output 'G10L067_WINDOWS_PRIVATE_RESULT=PASS'
+          }
+          catch {
+            [IO.File]::WriteAllText((Join-Path $state 'error.log'), $_.Exception.ToString())
+            $failed = $true
+            Write-Output 'G10L067_WINDOWS_PRIVATE_RESULT=FAIL'
+          }
+          finally {
+            foreach ($id in $added) { Remove-NetIPAddress -InterfaceIndex $id -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue }
+            if (-not [string]::IsNullOrWhiteSpace($env:G10_FIXTURE_GZ_B64)) {
+              $archive = Join-Path $env:RUNNER_TEMP 'g10l067-rank08-pwshwin.zip'
+              Compress-Archive -Path (Join-Path $state '*') -DestinationPath $archive -Force
+              $key = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($env:G10_FIXTURE_GZ_B64))
+              $nonce = [byte[]]::new(12)
+              [Security.Cryptography.RandomNumberGenerator]::Fill($nonce)
+              $plain = [IO.File]::ReadAllBytes($archive)
+              $cipher = [byte[]]::new($plain.Length)
+              $tag = [byte[]]::new(16)
+              $aes = [Security.Cryptography.AesGcm]::new($key, 16)
+              $aes.Encrypt($nonce, $plain, $cipher, $tag)
+              $aes.Dispose()
+              $payload = [byte[]]::new($nonce.Length + $tag.Length + $cipher.Length)
+              [Array]::Copy($nonce, 0, $payload, 0, $nonce.Length)
+              [Array]::Copy($tag, 0, $payload, $nonce.Length, $tag.Length)
+              [Array]::Copy($cipher, 0, $payload, $nonce.Length + $tag.Length, $cipher.Length)
+              [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'g10l067-rank08-pwshwin.enc'), $payload)
+            }
+          }
+          if ($failed) { throw 'Private Windows validation failed' }
+      - name: Save encrypted private evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g10l067-rank08-windows-pwsh-evidence
+          path: ${{ runner.temp }}/g10l067-rank08-pwshwin.enc
+          if-no-files-found: warn
+          retention-days: 1
