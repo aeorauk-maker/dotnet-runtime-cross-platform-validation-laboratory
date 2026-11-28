@@ -1,0 +1,130 @@
+name: Rank 14 EOP062 MXC pipe direction
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - .github/workflows/rank-14-eop062-mxc-pipe-direction.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-mxc-pipe-direction:
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test contained server to host client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $lab = Join-Path $env:RUNNER_TEMP 'eop062-mxc-pipe-direction'
+          $actor = Join-Path $lab 'actor'
+          $protected = Join-Path $lab 'protected'
+          New-Item -ItemType Directory -Path $actor,$protected -Force | Out-Null
+          Set-Location $lab
+          npm init -y | Out-Null
+          npm install --no-audit --no-fund @microsoft/mxc-sdk@1.0.1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'MXC install failed' }
+          $exe = Join-Path $lab 'node_modules\@microsoft\mxc-sdk\bin\arm64\wxc-exec.exe'
+          & $exe --probe | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'MXC probe failed' }
+          $sdk = (& dotnet --version).Trim()
+          Write-Host "DOTNET_SDK=$sdk HOST_USER=$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+          $tfm = if ($sdk.StartsWith('11.')) { 'net11.0' } else { 'net10.0' }
+          @"
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>$tfm</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>
+          "@ | Set-Content -Path (Join-Path $actor 'Actor.csproj')
+          @'
+          using System;
+          using System.IO;
+          using System.IO.Pipes;
+          using System.Runtime.InteropServices;
+          using System.Security.Principal;
+          using System.Text;
+          using System.Threading.Tasks;
+          class Actor {
+            [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+            [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr p, int access, out IntPtr token);
+            [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr buffer, int length, out int returnLength);
+            static string Sid(int cls) {
+              if (!OpenProcessToken(GetCurrentProcess(), 8, out var token)) return "OPEN_FAILED";
+              var buffer=Marshal.AllocHGlobal(1024);
+              try { return GetTokenInformation(token,cls,buffer,1024,out _) ? new SecurityIdentifier(Marshal.ReadIntPtr(buffer)).Value : "QUERY_FAILED_"+Marshal.GetLastWin32Error(); }
+              finally { Marshal.FreeHGlobal(buffer); }
+            }
+            static void Log(string path,string value) { File.AppendAllText(path,value+Environment.NewLine); Console.WriteLine(value); }
+            static async Task<int> Main(string[] a) {
+              var result=a[0]; var name=a[1]; var protectedFile=a[2];
+              Log(result,"ACTOR_USER="+WindowsIdentity.GetCurrent().User?.Value+" OWNER="+Sid(4)+" IL="+Sid(25));
+              try { File.AppendAllText(protectedFile,"ACTOR_TOUCHED\n"); Log(result,"PROTECTED_WRITE=ALLOWED"); }
+              catch(Exception e) { Log(result,"PROTECTED_WRITE=DENIED "+e.GetType().Name); }
+              try {
+                using var pipe=new NamedPipeServerStream(name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.CurrentUserOnly);
+                Log(result,"PIPE_CREATE=ALLOWED");
+                using var cancel=new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(55));
+                await pipe.WaitForConnectionAsync(cancel.Token);
+                Log(result,"PIPE_ACCEPT=ALLOWED");
+                var buf=new byte[4]; var n=await pipe.ReadAsync(buf,cancel.Token);
+                Log(result,"PIPE_REQUEST="+Encoding.ASCII.GetString(buf,0,n));
+                await pipe.WriteAsync(Encoding.ASCII.GetBytes("PONG"),cancel.Token);
+                Log(result,"PIPE_RESPONSE=SENT"); return 0;
+              } catch(Exception e) { Log(result,"PIPE_ERROR="+e.GetType().Name+" "+e.Message); return 2; }
+            }
+          }
+          '@ | Set-Content -Path (Join-Path $actor 'Program.cs')
+          dotnet build (Join-Path $actor 'Actor.csproj') -c Release -v quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Actor build failed' }
+          $binary = Join-Path $actor "bin\Release\$tfm\Actor.exe"
+          $result = Join-Path $actor 'result.txt'
+          $protectedFile = Join-Path $protected 'owner.txt'
+          'ORIGINAL' | Set-Content $protectedFile
+          icacls $protectedFile /setintegritylevel 'M' | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Medium label failed' }
+          $pipe = 'eop062-mxc-' + [Guid]::NewGuid().ToString('N')
+          $request = @{
+            version = '1.0.0'
+            containment = 'processcontainer'
+            process = @{ commandLine = "`"$binary`" `"$result`" `"$pipe`" `"$protectedFile`""; cwd = $actor; timeout = 65000 }
+            filesystem = @{ readwritePaths = @($actor); denyPaths = @($protected) }
+            network = @{ egress = @{ default = 'deny' } }
+          }
+          $requestPath = Join-Path $actor 'request.json'
+          $request | ConvertTo-Json -Depth 8 | Set-Content $requestPath
+          $out = Join-Path $lab 'executor-stdout.txt'
+          $err = Join-Path $lab 'executor-stderr.txt'
+          $proc = Start-Process -FilePath $exe -ArgumentList @($requestPath) -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $ready = $false
+            for ($i=0; $i -lt 60; $i++) {
+              if ((Test-Path $result) -and ((Get-Content $result -Raw) -match 'PIPE_CREATE=ALLOWED')) { $ready=$true; break }
+              if ($proc.HasExited) { break }
+              Start-Sleep -Seconds 1
+            }
+            if ($ready) {
+              try {
+                $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
+                $client.Connect(10000)
+                $bytes=[Text.Encoding]::ASCII.GetBytes('PING')
+                $client.Write($bytes,0,$bytes.Length)
+                $client.Flush()
+                $reply=New-Object byte[] 4
+                $n=$client.Read($reply,0,4)
+                Write-Host "HOST_CLIENT=CONNECTED REPLY=$([Text.Encoding]::ASCII.GetString($reply,0,$n))"
+                $client.Dispose()
+              } catch { Write-Host "HOST_CLIENT=DENIED TYPE=$($_.Exception.GetType().Name) MESSAGE=$($_.Exception.Message)" }
+            } else { Write-Host 'HOST_CLIENT=NO_SERVER' }
+            $proc.WaitForExit(70000) | Out-Null
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+          Write-Host '=== ACTOR RESULT ==='
+          if (Test-Path $result) { Get-Content $result | Out-Host } else { Write-Host 'RESULT_ABSENT' }
+          Write-Host '=== EXECUTOR STDOUT ==='
+          if (Test-Path $out) { Get-Content $out | Out-Host }
+          Write-Host '=== EXECUTOR STDERR ==='
+          if (Test-Path $err) { Get-Content $err | Out-Host }
+          Write-Host "EXECUTOR_EXIT=$($proc.ExitCode) PROTECTED_CONTENT=$((Get-Content $protectedFile -Raw).Trim())"
