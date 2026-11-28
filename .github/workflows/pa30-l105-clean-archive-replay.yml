@@ -1,0 +1,32 @@
+name: EOP03 L105 clean archive replay
+on:
+  push:
+    branches: [pa30-rank01-l105-http-20261128]
+    paths:
+      - .github/workflows/pa30-l105-clean-archive-replay.yml
+      - .github/workflows/MSRC_EOP03-L105_PoC.zip
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Check exact archive and replay from clean extraction
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:GITHUB_WORKSPACE '.github/workflows/MSRC_EOP03-L105_PoC.zip'
+          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "REPORT_ZIP_SHA256=$digest"
+          $extract = Join-Path $env:RUNNER_TEMP 'EOP03-L105-clean-extract'
+          if (Test-Path $extract) { throw 'Extract directory is not fresh' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract
+          Set-Location $extract
+          Write-Host "RUN_PS1_SHA256=$((Get-FileHash '.\run.ps1' -Algorithm SHA256).Hash.ToLowerInvariant())"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File '.\run.ps1'
+          if ($LASTEXITCODE -ne 0) { throw "Extracted PoC failed: $LASTEXITCODE" }
