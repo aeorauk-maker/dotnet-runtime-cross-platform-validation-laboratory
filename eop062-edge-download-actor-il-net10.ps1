@@ -14,6 +14,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Medium sentinel label failed' }
 @'
 <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>
 '@ | Set-Content -Path $project -Encoding utf8
+'{"sdk":{"version":"10.0.404","rollForward":"disable"}}' | Set-Content -Path (Join-Path $lab 'global.json') -Encoding utf8
 @'
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -25,7 +26,7 @@ var who = Process.Start(new ProcessStartInfo("whoami.exe", "/groups /fo csv /nh"
 string groupText = who.StandardOutput.ReadToEnd();
 who.WaitForExit();
 var match = Regex.Match(groupText, @"S-1-16-(\d+)");
-Console.WriteLine($"USER={identity.User?.Value} OWNER={identity.Owner?.Value} IL_RID={(match.Success ? match.Groups[1].Value : "UNKNOWN")}");
+Console.WriteLine($"USER={identity.User?.Value} OWNER={identity.Owner?.Value} IL_RID={(match.Success ? match.Groups[1].Value : "UNKNOWN")} RUNTIME={Environment.Version}");
 try { File.AppendAllText(args[0], "changed"); Console.WriteLine("PROTECTED_WRITE=ALLOWED"); }
 catch (Exception e) { Console.WriteLine($"PROTECTED_WRITE=DENIED TYPE={e.GetType().Name}"); }
 try
@@ -75,9 +76,9 @@ server.listen(0,'127.0.0.1',async () => {
 });
 '@ | Set-Content -Path $nodeSource -Encoding utf8
 
-& dotnet build $project -c Release -v:q '-p:UseSharedCompilation=false' | Out-Host
-if ($LASTEXITCODE -ne 0) { throw 'Actor build failed' }
-$original = Join-Path $lab 'bin\Release\net10.0\Actor.exe'
+& dotnet publish $project -c Release -r win-x64 -v:q '-p:UseSharedCompilation=false' '-p:PublishSingleFile=true' '-p:SelfContained=false' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Actor publish failed' }
+$original = Join-Path $lab 'bin\Release\net10.0\win-x64\publish\Actor.exe'
 $downloaded = Join-Path $downloadDir 'eop062-actor.exe'
 Push-Location $lab
 try {
@@ -102,6 +103,7 @@ function Run-ActorCase([string]$label, [string]$executable) {
         try {
             $client = [IO.Pipes.NamedPipeClientStream]::new('.', $name, [IO.Pipes.PipeDirection]::InOut)
             $client.Connect(10000)
+            Start-Sleep -Milliseconds 1000
             $client.Dispose()
             'HOST_CONNECT=YES'
         } catch { 'HOST_CONNECT=NO TYPE=' + $_.Exception.GetType().Name }
