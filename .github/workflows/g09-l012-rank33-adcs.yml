@@ -1,0 +1,85 @@
+name: G09-L012 rank-33 AD CS issuer discriminator
+on:
+  push:
+    branches: [g09-l012-rank33-20261128]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  adcs-issuer:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Issue applicant CSRs with constrained standalone AD CS CA
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path lab -Force | Out-Null
+          [IO.File]::WriteAllBytes('lab/constrained-ca.pfx', [Convert]::FromBase64String('MIIFlAIBAzCCBUIGCSqGSIb3DQEHAaCCBTMEggUvMIIFKzCCA9oGCSqGSIb3DQEHBqCCA8swggPHAgEAMIIDwAYJKoZIhvcNAQcBMF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBC508TlXIg6IfB02zFrjLSCAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQHj9ZfbtyLSxmMgr4igDP64CCA1Djf14XHavefw0EhhQuPs4VoDFXWzUHIb3Q6E39Yyh+YlabfJEN1TRLpv5BADgj0qR6wrcRzi6cQVudpdp9ef0olwM2+c4Ompw2P66EkPEBLRNHMmageX1YMn2guAbAnUFDcEUyIh1Uw6jHhK4ydu5xg6Y8Ax5BGbXwipHit3hNmV+bg8N7wCraOgStxBBHx5bPkR8z49VbW0G/cN4cO7bZ5sOhDcmAPqE45EFI3axZL2WJglvXj5R9gUFeyePqqsb9BufRNqlEhBH3lc1EJHxEqGR4zmAAVm4mN6hdDoq493CyQve948Lp3DKWGbgqt6Bisvu0Ptuq+wDl1AuNxMECoYbUVjEH2UhNdsgQPs7lFKm8EfyT6ulsNPAybF98QvpcNUFBSMxlcVPGI6ar79DWgec0+IRVIjrg5RRXAK/D3gP/4d/o77oBWf80kK/uWRn1Y8aaoKwobcC1f7UoKtijFFCQPgTia6LGEpFkQnFompO1/1vzI0w/iCZ+wfho18Hd+J4D4UI1em0ww/5DrPFLf2NeF+wEHd7iVBc7h4GVwjspDJBAKbhvhRfvMWPwbgDgUnjcKnwg/gRsC1N253gMSpavhK2xdusUkAI+ld30ppvLuS8Sa5+OyqcAc7DR2X6ntc9Z+LWf4M1QkK4+WfppWg9mIdEA5Z10FfjskGnpOLy8PquHbZaq2x6WXy2F8tZnLXJY7i/PazdM/uuaF6UerlgIeyOlIeC4H4x37DIaRsM8o648g1fYQHMGcMJ1KGvFrQnziuqrGNDTWB2ajFOcwhMggYr3qnGQfP1l5yf5uMRSduK0Q/Lnn8RVORvrRdJauarY/4TaokTICo56mzrcVDqcHIuLPScaAFKcMI8FLBdKs/4a8F/yUlIf2SMpAGaOmYC1o+4/5ZSt8KbD8ChoszR9MXqfi9NydxeJ/mCbQNcb2mX3qBRNU3f39fznmg6FYtVwfn75xQ11/1PCSS1oJTq7hc/pSFDd/yDzIeLCVdFVi2IfjtI/MIbwsLHmgP1ENMf0PflqP5Lx+9Tmk8I9tkkeTGeN2Uo1qIK4I3sQYQ216ht9fWZR/f7Fu/gpjv4VOSSnhshlkTQwARJqcvnxWGCX1z+vvzy+KkHWc5prPDCCAUkGCSqGSIb3DQEHAaCCAToEggE2MIIBMjCCAS4GCyqGSIb3DQEMCgECoIH3MIH0MF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBBf30A2IpyMzX9Z2SvYpZNkAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQ5KDkLYIySsRTv9G2IWOBfQSBkPzFCMBJL+rKlypnxIieuWxeswB9/codf+rLaMzRM7T9MU8o8Sdwj337Ld7x0FKyxIGFZ5oVXEi0PVTrZj1HNBX4ddvA63+gC7nQa5jgJyjl8guKf6RqfBaxUfxUGcggS2KPbqHzIOWR3F3hCoDV6eNfJPII7gJZg/RP5SaywGzVAuMh+JxEMBddGSMBoWTk6DElMCMGCSqGSIb3DQEJFTEWBBRIFk3DVeXNvygoIdGn0B/X8N8PWDBJMDEwDQYJYIZIAWUDBAIBBQAEIAi/heP8qXA4x8lgNInG4sK+axq0/P8WwcPzTBXJ0EsUBBAo1RpC3z/X2gMT1VF0PO/4AgIIAA=='))
+          [IO.File]::WriteAllBytes('lab/allowed.csr.der', [Convert]::FromBase64String('MIIBAzCBqgIBADAeMRwwGgYDVQQDDBNHMDkgb3duZWQgYXBwbGljYW50MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtTXSyOmLykFmI++CMAqg+4M26ua9HVvzwzHcwUT8+nK5auPHAvRVPiGH/HxYSiWtgmH5z3suRvnLy4zNjOoOOaAqMCgGCSqGSIb3DQEJDjEbMBkwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQD3Y/SKxh0q5fMjy/HBu0PMprpWsVyPaSe7Sq6XGQTPygIgSvK3WTz69K+HxFsrh7TBjC6195sUma17CYz1sfGq4ho='))
+          [IO.File]::WriteAllBytes('lab/forbidden.csr.der', [Convert]::FromBase64String('MIIBBTCBrAIBADAeMRwwGgYDVQQDDBNHMDkgb3duZWQgYXBwbGljYW50MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtTXSyOmLykFmI++CMAqg+4M26ua9HVvzwzHcwUT8+nK5auPHAvRVPiGH/HxYSiWtgmH5z3suRvnLy4zNjOoOOaAsMCoGCSqGSIb3DQEJDjEdMBswGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwCgYIKoZIzj0EAwIDSAAwRQIgeYt7cn3SAylKFp0nVJ/XCzYzqVRq8SOu2QWeVMF0htoCIQD/SZgTQ/hO5tn5jKdlF1WJNN2oIJmLe2wweRbZJksUZg=='))
+          [IO.File]::WriteAllBytes('lab/duplicate.csr.der', [Convert]::FromBase64String('MIIBHTCBxQIBADAeMRwwGgYDVQQDDBNHMDkgb3duZWQgYXBwbGljYW50MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtTXSyOmLykFmI++CMAqg+4M26ua9HVvzwzHcwUT8+nK5auPHAvRVPiGH/HxYSiWtgmH5z3suRvnLy4zNjOoOOaBFMEMGCSqGSIb3DQEJDjE2MDQwGQYDVR0RBBIwEIIOZm9yYmlkZGVuLnRlc3QwFwYDVR0RBBAwDoIMYWxsb3dlZC50ZXN0MAoGCCqGSM49BAMCA0cAMEQCIBNtorkBfgHZwuyMTl9pDS9t2Ia1G85Diz1Ids2K8MHIAiAnh6m4w2qBwRNBJESWtKujpm3UtCTxgHXXR2v46D++TA=='))
+          $meta = [ordered]@{
+            runnerOS = $env:RUNNER_OS
+            imageOS = $env:ImageOS
+            imageVersion = $env:ImageVersion
+            os = [Environment]::OSVersion.VersionString
+            featureBefore = $null
+            installSuccess = $false
+            caConfig = $null
+            defaultRequestDisposition = $null
+            cases = @()
+          }
+          try {
+            $feature = Get-WindowsFeature ADCS-Cert-Authority
+            $meta.featureBefore = $feature.InstallState.ToString()
+            $installed = Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
+            $meta.installSuccess = [bool]$installed.Success
+            if (-not $installed.Success) { throw 'AD CS role installation failed' }
+            $password = ConvertTo-SecureString 'INERT-R33-ADCS' -AsPlainText -Force
+            Install-AdcsCertificationAuthority -CAType StandaloneSubordinateCA -CertFile (Resolve-Path 'lab/constrained-ca.pfx').Path -CertFilePassword $password -Force | Out-String | Set-Content lab/install.txt
+            Start-Service CertSvc
+            $config = "$env:COMPUTERNAME\G09 allowed.test delegated CA"
+            $meta.caConfig = $config
+            $meta.defaultRequestDisposition = ((certutil.exe -getreg Policy\RequestDisposition 2>&1) | Out-String)
+            foreach ($name in @('allowed', 'forbidden', 'duplicate')) {
+              $case = [ordered]@{ name=$name; submitExit=$null; submitText=$null; requestId=$null; resubmitExit=$null; retrieveExit=$null; issued=$false; sanExtensionCount=$null; derSha256=$null; error=$null }
+              try {
+                $submit = certreq.exe -submit -binary -config $config "lab/$name.csr.der" "lab/$name.der" 2>&1
+                $case.submitExit = $LASTEXITCODE
+                $case.submitText = ($submit | Out-String)
+                $m = [regex]::Match($case.submitText, 'RequestId:\s*(\d+)', 'IgnoreCase')
+                if ($m.Success) { $case.requestId = [int]$m.Groups[1].Value }
+                if (-not (Test-Path "lab/$name.der") -and $case.requestId) {
+                  $resubmit = certutil.exe -config $config -resubmit $case.requestId 2>&1
+                  $case.resubmitExit = $LASTEXITCODE
+                  ($resubmit | Out-String) | Set-Content "lab/$name.resubmit.txt"
+                  $retrieve = certreq.exe -retrieve -binary -config $config $case.requestId "lab/$name.der" 2>&1
+                  $case.retrieveExit = $LASTEXITCODE
+                  ($retrieve | Out-String) | Set-Content "lab/$name.retrieve.txt"
+                }
+                if (Test-Path "lab/$name.der") {
+                  $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2((Resolve-Path "lab/$name.der").Path)
+                  $case.issued = $true
+                  $case.sanExtensionCount = @($cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }).Count
+                  $case.derSha256 = (Get-FileHash "lab/$name.der" -Algorithm SHA256).Hash
+                  (certutil.exe -dump "lab/$name.der" 2>&1 | Out-String) | Set-Content "lab/$name.dump.txt"
+                }
+              } catch {
+                $case.error = $_.Exception.Message
+              }
+              $meta.cases += $case
+            }
+          } catch {
+            $meta.fatal = $_.Exception.Message
+          } finally {
+            $meta | ConvertTo-Json -Depth 8 | Set-Content lab/results.json
+            Get-Content lab/results.json
+          }
+      - name: Retain exact issued DER and control receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g09-l012-rank33-adcs-issuer
+          path: lab/*
+          if-no-files-found: warn
