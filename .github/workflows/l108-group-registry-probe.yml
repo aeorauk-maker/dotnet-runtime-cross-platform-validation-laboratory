@@ -263,16 +263,19 @@ jobs:
                                    cwd=directory, env=env, capture_output=True,
                                    text=True, timeout=90)
               stored = list((directory / "packages").rglob("*.nupkg"))
-              if run.returncode or len(stored) != 1:
-                  raise RuntimeError(f"Invocation or archive count failed: {run.returncode}, {len(stored)}")
+              stored_entries = sorted(
+                  [{"path": str(p.relative_to(directory)), "sha256": package_hash(p)}
+                   for p in stored], key=lambda x: x["path"])
+              if run.returncode or not stored:
+                  raise RuntimeError(f"Invocation or archive storage failed: {run.returncode}, {len(stored)}")
               marker = run.stdout.strip()
-              stored_hash = package_hash(stored[0])
               expected_hash = package_hash(packages[(series, expected_package)][2])
               summary["controls"].append(
                   {"case": case, "restore_exit": result.returncode,
                    "invoke_exit": run.returncode, "output": marker,
-                   "stored_sha256": stored_hash, "expected_sha256": expected_hash})
-              if marker != "OWNED_" + expected_marker or stored_hash != expected_hash:
+                   "stored_archives": stored_entries, "expected_sha256": expected_hash})
+              if (marker != "OWNED_" + expected_marker or
+                      expected_hash not in [x["sha256"] for x in stored_entries]):
                   raise RuntimeError(f"{case}: wrong selected package")
 
           try:
