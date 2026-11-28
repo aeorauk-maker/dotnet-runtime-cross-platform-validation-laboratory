@@ -606,10 +606,15 @@ try {
         if (-not [LowSelfNative]::OpenProcessToken([LowSelfNative]::GetCurrentProcess(), 0x88, [ref]$ownToken)) { throw "Self token open failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
         if (-not [LowSelfNative]::ConvertStringSidToSid('S-1-16-4096', [ref]$lowSid)) { throw 'Low SID conversion failed' }
         $headerLength = [Runtime.InteropServices.Marshal]::SizeOf([type][LowSelfNative+MandatoryLabel])
-        $labelLength = $headerLength + [int][LowSelfNative]::GetLengthSid($lowSid)
+        $sidLength = [int][LowSelfNative]::GetLengthSid($lowSid)
+        $labelLength = $headerLength + $sidLength
         $labelBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($labelLength)
+        $sidCopy = [IntPtr]::Add($labelBuffer, $headerLength)
+        $sidBytes = [byte[]]::new($sidLength)
+        [Runtime.InteropServices.Marshal]::Copy($lowSid, $sidBytes, 0, $sidLength)
+        [Runtime.InteropServices.Marshal]::Copy($sidBytes, 0, $sidCopy, $sidLength)
         $entry = [LowSelfNative+MandatoryLabel]::new()
-        $entry.Label.Sid = $lowSid
+        $entry.Label.Sid = $sidCopy
         $entry.Label.Attributes = 0x20
         [Runtime.InteropServices.Marshal]::StructureToPtr($entry, $labelBuffer, $false)
         if (-not [LowSelfNative]::SetTokenInformation($ownToken, 25, $labelBuffer, $labelLength)) { throw "Self low downgrade failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
