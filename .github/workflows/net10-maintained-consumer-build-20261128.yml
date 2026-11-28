@@ -31,6 +31,7 @@ jobs:
           ASPNETCORE_URLS: http://127.0.0.1:5860
           DisableHttps: 'true'
           RedisConfigurationOptions__ConnectionString: ''
+          DynamicConfigurationOptions__ProviderType: ''
           DataProtectionOptions__StorageKind: FileSystem
           DataProtectionOptions__StorageConnectionString: /tmp/r21-keys
           IdentityServerOptions__MutualTls__Enabled: 'false'
