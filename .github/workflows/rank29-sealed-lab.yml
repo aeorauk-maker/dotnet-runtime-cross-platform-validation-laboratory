@@ -28,10 +28,10 @@ jobs:
           set -euo pipefail
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/recipient-private.pem" 2>/dev/null
           openssl req -new -x509 -key "$RUNNER_TEMP/recipient-private.pem" -out "$RUNNER_TEMP/recipient.crt" -days 1 -subj '/CN=SealedFixture' 2>/dev/null
-          echo "RECIPIENT_CERT_BASE64=$(base64 -w0 "$RUNNER_TEMP/recipient.crt")"
+          base64 -w0 "$RUNNER_TEMP/recipient.crt" | fold -w 160 | awk '{ printf "RECIPIENT_CERT_PART_%02d=%s\n", NR, $0 }'
           received=0
-          for attempt in $(seq 1 120); do
-            url="https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/${REF_NAME}/sealed-input/bundle.cms?attempt=${attempt}"
+          for attempt in $(seq 1 360); do
+            url="https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/${REF_NAME}/bundle.cms?attempt=${attempt}"
             if curl --fail --silent --show-error --location "$url" -o "$RUNNER_TEMP/bundle.cms" 2>/dev/null; then
               received=1
               break
