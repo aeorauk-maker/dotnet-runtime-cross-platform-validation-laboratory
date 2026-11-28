@@ -603,3 +603,5 @@ try {
     if ($medium -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($medium) }
     if ($token -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($token) }
 }
+
+# Trigger isolated high-owner run after workflow registration.
