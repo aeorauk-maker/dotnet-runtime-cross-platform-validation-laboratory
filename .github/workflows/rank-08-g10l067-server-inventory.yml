@@ -30,3 +30,8 @@ jobs:
             $iface = Get-NetIPInterface -InterfaceIndex $id -AddressFamily IPv6
             Write-Output ('INTERFACE_INDEX={0};METRIC={1};CONNECTION_STATE={2}' -f $id,$iface.InterfaceMetric,$iface.ConnectionState)
           }
+          $distros = @(& wsl.exe --list --quiet 2>&1 | Where-Object { $_ -and $_ -notmatch 'no installed distributions' })
+          Write-Output ('WSL_DISTRO_COUNT={0};EXIT={1}' -f $distros.Count,$LASTEXITCODE)
+          try { $switches = @(Get-VMSwitch -ErrorAction Stop); Write-Output ('HYPERV_SWITCH_COUNT={0}' -f $switches.Count) } catch { Write-Output 'HYPERV_SWITCH_COUNT=UNAVAILABLE' }
+          $dockerVersion = & docker.exe info --format '{{.ServerVersion}}' 2>&1
+          Write-Output ('DOCKER_DAEMON_EXIT={0};VERSION={1}' -f $LASTEXITCODE,($dockerVersion -join ' '))
