@@ -51,6 +51,17 @@ jobs:
               New-NetIPAddress -InterfaceIndex $id -IPAddress $ip -PrefixLength 64 -SkipAsSource $true -ErrorAction Stop | Out-Null
               $added += $id
             }
+            $stage = 'wait-address'
+            foreach ($id in @($ids[0], $ids[1])) {
+              $state = 'Missing'
+              for ($n = 0; $n -lt 12; $n++) {
+                $found = Get-NetIPAddress -InterfaceIndex $id -IPAddress $ip -ErrorAction SilentlyContinue
+                if ($found) { $state = [string]$found.AddressState }
+                if ($state -eq 'Preferred') { break }
+                Start-Sleep -Milliseconds 500
+              }
+              Write-Output ('ADDRESS_STATE_' + $id + '=' + $state)
+            }
             $stage = 'parse-address'
             $a = [System.Net.IPAddress]::Parse($ip + '%' + $ids[0])
             $b = [System.Net.IPAddress]::Parse($ip + '%' + $ids[1])
