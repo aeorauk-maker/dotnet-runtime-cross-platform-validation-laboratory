@@ -1,0 +1,38 @@
+name: rank-14-eop062-gha-service-actor-net11
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-gha-service-actor-net11.py'
+      - 'eop062-fake-compiler.pl'
+      - '.github/workflows/rank-14-eop062-gha-service-actor-net11.yml'
+  workflow_dispatch:
+jobs:
+  service_actor:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [completed, malformed]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      sidecar:
+        image: mcr.microsoft.com/dotnet/sdk:11.0
+        entrypoint: sleep
+        command: infinity
+        options: --user 1001:1001 --cap-drop ALL --security-opt no-new-privileges
+        volumes:
+          - /tmp:/tmp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Join service actor to protected app action
+        env:
+          EOP062_MODE: ${{ matrix.mode }}
+          EOP062_SERVICE_ID: ${{ job.services.sidecar.id }}
+          EOP062_NATURAL_IDLE: '0'
+        run: python3 eop062-gha-service-actor-net11.py
