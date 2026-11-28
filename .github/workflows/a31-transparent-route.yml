@@ -85,7 +85,16 @@ jobs:
               isCA: false
               usages: [digital signature, server auth]
           EOF
-          kubectl apply -f policy.yaml
+          for attempt in $(seq 1 12); do
+            if kubectl apply -f policy.yaml; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo 'A31_POLICY_WEBHOOK_NOT_READY'
+              exit 1
+            fi
+            sleep 2
+          done
           kubectl wait --for=condition=Ready \
             certificaterequestpolicy/a31-split-name-policy --timeout=180s
           cat > policy-use.yaml <<'EOF'
