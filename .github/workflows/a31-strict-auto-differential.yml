@@ -48,7 +48,7 @@ jobs:
           cat > issuer.ext <<'EOF'
           basicConstraints=critical,CA:TRUE,pathlen:0
           keyUsage=critical,keyCertSign,cRLSign
-          nameConstraints=critical,permitted;DNS:allowed.test
+          nameConstraints=critical,excluded;DNS:forbidden.test
           EOF
           openssl x509 -req -sha256 -in issuer.csr -CA root.pem -CAkey root.key \
             -CAcreateserial -days 2 -out issuer.pem -extfile issuer.ext
