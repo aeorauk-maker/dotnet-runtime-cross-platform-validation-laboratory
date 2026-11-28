@@ -42,8 +42,8 @@ jobs:
                 "auth_baselines": [{k: r.get(k) for k in ("no_cookie_status", "no_owner_proof_status", "valid_status", "writes")} for r in rows if r.get("step") == "auth_baselines"],
                 "intercepts": [{"certificate": r.get("certificate"), "victim_status": r.get("victim_status"), "captured_cookie": bool(r.get("captured_cookie")), "writes": r.get("writes")} for r in rows if r.get("step") == "intercept"],
                 "raw_log_sha256": hashlib.sha256(raw.read_bytes()).hexdigest()}
-        print("A31_V9_SAFE_RESULT=" + json.dumps(safe, sort_keys=True), flush=True)
-        raise SystemExit(0)'''
+                  print("A31_V9_SAFE_RESULT=" + json.dumps(safe, sort_keys=True), flush=True)
+                  raise SystemExit(0)'''
               assert script.count(old)==1
               harness.write_text(script.replace(old,new))
               result=subprocess.run(['python3',str(harness)],cwd=root,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=180)
