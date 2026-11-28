@@ -1,0 +1,19 @@
+name: rank-14-eop062-sidecar-pid-guard-net11
+on:
+  workflow_dispatch:
+jobs:
+  sidecar:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [completed, malformed]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - name: Verify isolated PID sidecar and protected action
+        env:
+          EOP062_MODE: ${{ matrix.mode }}
+        run: python3 eop062-sidecar-pid-guard-net11.py
