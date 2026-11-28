@@ -1,40 +1,22 @@
-name: Rank03 Windows WSL readiness
+name: Rank03 Windows WSL boot
 on:
   push:
     branches: [pa30-rank03-winwsl-20261128]
 jobs:
   probe:
     runs-on: windows-2025
-    timeout-minutes: 12
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
-      - name: Report WSL and virtualization capability
+      - name: Install and start official Ubuntu WSL distro
         shell: pwsh
         run: |
-          Write-Host "OS=$([Environment]::OSVersion.VersionString)"
-          Write-Host "ADMIN=$(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
-          foreach ($name in @('Microsoft-Windows-Subsystem-Linux','VirtualMachinePlatform','Microsoft-Hyper-V-Hypervisor')) {
-            try {
-              $state = (Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction Stop).State
-              Write-Host "FEATURE:$name=$state"
-            } catch {
-              Write-Host "FEATURE:$name=UNAVAILABLE"
-            }
-          }
-          foreach ($name in @('vmcompute','LxssManager','WslService')) {
-            $service = Get-Service -Name $name -ErrorAction SilentlyContinue
-            if ($service) { Write-Host "SERVICE:$name=$($service.Status)" }
-            else { Write-Host "SERVICE:$name=ABSENT" }
-          }
-          if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
-            wsl.exe --version
-            Write-Host "WSL_VERSION_EXIT=$LASTEXITCODE"
-            wsl.exe --status
-            Write-Host "WSL_STATUS_EXIT=$LASTEXITCODE"
-            wsl.exe --list --verbose
-            Write-Host "WSL_LIST_EXIT=$LASTEXITCODE"
-          } else {
-            Write-Host 'WSL_COMMAND=ABSENT'
-          }
-          exit 0
+          wsl.exe --install --distribution Ubuntu-24.04 --no-launch --web-download
+          Write-Host "INSTALL_EXIT=$LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wsl.exe --list --verbose
+          Write-Host "LIST_EXIT=$LASTEXITCODE"
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec sh -lc 'printf "WSL_BOOTED=1\n"; uname -r; id -u; head -3 /etc/os-release'
+          Write-Host "BOOT_EXIT=$LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
