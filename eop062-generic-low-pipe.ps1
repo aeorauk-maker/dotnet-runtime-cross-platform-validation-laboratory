@@ -95,6 +95,7 @@ $lowLabelBuffer = [IntPtr]::Zero
 $proc = [MicNative+ProcessInfo]::new()
 $pipeProc = [MicNative+ProcessInfo]::new()
 $lowProc = [MicNative+ProcessInfo]::new()
+$lowCmdProc = [MicNative+ProcessInfo]::new()
 $mediumClientProc = [MicNative+ProcessInfo]::new()
 try {
     if (-not [MicNative]::OpenProcessToken([MicNative]::GetCurrentProcess(), 0xF01FF, [ref]$token)) {
@@ -316,6 +317,20 @@ try {
     [System.IO.File]::WriteAllText($lowScript, $lowContent)
     & icacls.exe $lowScript /grant:r "${runnerUser}:(R)" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Could not grant low script read' }
+    $lowCmdLine = [System.Text.StringBuilder]::new("`"$cmdExe`" /D /C echo LOW_CMD_READY > `"$lowResult`"")
+    if (-not [MicNative]::CreateProcessWithTokenW($low, 0, $cmdExe,
+        $lowCmdLine, 0, [IntPtr]::Zero,
+        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowCmdProc)) {
+        throw "Low cmd preflight launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    $lowCmdWait = [MicNative]::WaitForSingleObject($lowCmdProc.hProcess, 10000)
+    $lowCmdExit = [uint32]0
+    [void][MicNative]::GetExitCodeProcess($lowCmdProc.hProcess, [ref]$lowCmdExit)
+    Write-Host "low-cmd-wait=$lowCmdWait low-cmd-exit=$lowCmdExit low-cmd-result=$([System.IO.File]::ReadAllText($lowResult))"
+    if ($lowCmdWait -ne 0 -or -not ([System.IO.File]::ReadAllText($lowResult)).Contains('LOW_CMD_READY')) {
+        throw 'Low cmd could not write its low-integrity result file'
+    }
+    [System.IO.File]::WriteAllText($lowResult, '')
     $lowCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$lowScript`"")
     $lowLaunched = [MicNative]::CreateProcessAsUserW($low, $pwshExe, $lowCommand,
         [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero,
@@ -337,7 +352,7 @@ try {
     }
     Write-Host "low-server-pid=$($lowProc.dwProcessId)"
     $lowReady = $false
-    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+    for ($attempt = 0; $attempt -lt 300; $attempt++) {
         $status = [System.IO.File]::ReadAllText($lowResult)
         if ($status.Contains('LOW_PIPE_READY')) { $lowReady = $true; break }
         if ($status.Contains('LOW_ERROR')) { throw "Low server error: $status" }
@@ -403,6 +418,8 @@ try {
     if ($mediumClientProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($mediumClientProc.hProcess) }
     if ($lowProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($lowProc.hThread) }
     if ($lowProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($lowProc.hProcess) }
+    if ($lowCmdProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($lowCmdProc.hThread) }
+    if ($lowCmdProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($lowCmdProc.hProcess) }
     if ($pipeProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($pipeProc.hThread) }
     if ($pipeProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($pipeProc.hProcess) }
     if ($proc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($proc.hThread) }
