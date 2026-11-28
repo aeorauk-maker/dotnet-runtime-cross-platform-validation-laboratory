@@ -1,0 +1,129 @@
+name: PA30 rank03 LDAP reconnect control
+on:
+  push:
+    branches: [pa30-rank03-ldap-reconnect-20261128]
+permissions:
+  contents: read
+jobs:
+  ldap-reconnect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Probe released Linux LDAP connection reuse
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe
+          cd probe
+          cat > probe.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+            <ItemGroup><PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.15" /></ItemGroup>
+          </Project>
+          EOF
+          cat > Program.cs <<'EOF'
+          using System;
+          using System.DirectoryServices.Protocols;
+          using System.Net;
+          static LdapConnection Open() {
+              var c = new LdapConnection(new LdapDirectoryIdentifier("reconnect-control.local", 1389, true, false));
+              c.AuthType = AuthType.Anonymous;
+              c.SessionOptions.ProtocolVersion = 3;
+              c.Timeout = TimeSpan.FromSeconds(5);
+              c.Bind();
+              return c;
+          }
+          static string Query(LdapConnection c) {
+              try {
+                  var r = (SearchResponse)c.SendRequest(new SearchRequest("", "(objectClass=*)", SearchScope.Base, "dn"));
+                  return "ok:" + r.ResultCode;
+              } catch (Exception e) { return e.GetType().Name + ":" + e.Message; }
+          }
+          try {
+              using var c = Open();
+              Console.WriteLine("initial=" + Query(c));
+              Console.ReadLine();
+              Console.WriteLine("same_live=" + Query(c));
+              Console.ReadLine();
+              Console.WriteLine("same_after_failure=" + Query(c));
+              using var fresh = Open();
+              Console.WriteLine("fresh=" + Query(fresh));
+          } catch (Exception e) { Console.WriteLine("fatal=" + e); Environment.ExitCode = 1; }
+          EOF
+          dotnet build -c Release --nologo
+          cat > orchestrate.py <<'EOF'
+          import os, socket, socketserver, subprocess, threading, time
+          HOST='reconnect-control.local'
+          def tlv(tag, body):
+              n=len(body)
+              length=bytes([n]) if n<128 else bytes([0x82,n>>8,n&255])
+              return bytes([tag])+length+body
+          def exact(sock,n):
+              data=b''
+              while len(data)<n:
+                  part=sock.recv(n-len(data))
+                  if not part: raise EOFError()
+                  data+=part
+              return data
+          def message(sock):
+              if exact(sock,1)!=b'\x30': raise ValueError('LDAP sequence required')
+              first=exact(sock,1)[0]
+              if first<128: n=first
+              else: n=int.from_bytes(exact(sock,first&127),'big')
+              return exact(sock,n)
+          def parse(body):
+              if body[0]!=2: raise ValueError('message ID required')
+              n=body[1]; mid=body[:2+n]; op=body[2+n]
+              return mid,op
+          class Handler(socketserver.BaseRequestHandler):
+              def handle(self):
+                  s=self.request; self.server.clients.append(s)
+                  try:
+                      while True:
+                          mid,op=parse(message(s))
+                          if op==0x60: response=0x61
+                          elif op==0x63: response=0x65
+                          else: raise ValueError('unexpected LDAP operation '+hex(op))
+                          self.server.ops.append(op)
+                          s.sendall(tlv(0x30,mid+tlv(response,b'\x0a\x01\x00\x04\x00\x04\x00')))
+                  except (EOFError,OSError): pass
+          class Server(socketserver.ThreadingTCPServer):
+              allow_reuse_address=True
+              daemon_threads=True
+              def __init__(self,address):
+                  super().__init__((address,1389),Handler)
+                  self.clients=[]; self.ops=[]
+                  threading.Thread(target=self.serve_forever,daemon=True).start()
+              def stop(self):
+                  for c in self.clients:
+                      try: c.shutdown(socket.SHUT_RDWR); c.close()
+                      except OSError: pass
+                  self.shutdown(); self.server_close()
+          def hosts(ip):
+              path='/etc/hosts'; lines=open(path).readlines()
+              lines=[line for line in lines if HOST not in line]
+              lines.append(ip+' '+HOST+'\n')
+              open(path,'w').writelines(lines)
+          honest=Server('127.0.0.1'); other=Server('127.0.0.2')
+          hosts('127.0.0.1')
+          p=subprocess.Popen(['dotnet','bin/Release/net10.0/probe.dll'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
+          def line():
+              value=p.stdout.readline().strip(); print(value,flush=True)
+              if not value: raise RuntimeError('probe ended early')
+          try:
+              line()
+              hosts('127.0.0.2'); time.sleep(0.5)
+              p.stdin.write('\n'); p.stdin.flush(); line()
+              honest.stop()
+              p.stdin.write('\n'); p.stdin.flush(); line(); line()
+              p.wait(timeout=30)
+              print('honest_ops='+str(len(honest.ops))+' other_ops='+str(len(other.ops))+' exit='+str(p.returncode))
+              if p.returncode: raise RuntimeError('probe failed')
+          finally:
+              if p.poll() is None: p.kill()
+              other.stop()
+          EOF
+          sudo -E python3 orchestrate.py
