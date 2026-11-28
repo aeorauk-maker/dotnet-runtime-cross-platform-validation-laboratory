@@ -1,0 +1,27 @@
+name: Rank 14 EOP062 Windows live Roslyn pipe instance
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-live-roslyn-instance-net10.ps1
+      - .github/workflows/rank-14-eop062-live-roslyn-instance-net10.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-live-roslyn-instance-net10:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.404
+      - name: Test Low second instance against live released Roslyn
+        shell: pwsh
+        run: |
+          '{"sdk":{"version":"10.0.404","rollForward":"disable"}}' | Set-Content global.json
+          .\eop062-live-roslyn-instance-net10.ps1
