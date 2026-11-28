@@ -1,0 +1,62 @@
+name: Rank 29 distinct UID sealed validation
+
+on:
+  push:
+    branches:
+      - pa30-rank29-sealed-mail-20261128-34bd
+
+permissions:
+  contents: read
+
+jobs:
+  sealed-lab:
+    if: github.event.head_commit.message == 'Initialize rank29 distinct uid sealed lab'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare isolated SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Receive and run sealed fixture
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/recipient-private.pem" 2>/dev/null
+          openssl req -new -x509 -key "$RUNNER_TEMP/recipient-private.pem" -out "$RUNNER_TEMP/recipient.crt" -days 1 -subj '/CN=SealedFixture' 2>/dev/null
+          base64 -w0 "$RUNNER_TEMP/recipient.crt" | fold -w 160 | awk '{ printf "RECIPIENT_CERT_PART_%02d=%s\n", NR, $0 }'
+          received=0
+          for attempt in $(seq 1 360); do
+            url="https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/refs/heads/${REF_NAME}/bundle-uid.cms?attempt=${attempt}"
+            if curl --fail --silent --show-error --location "$url" -o "$RUNNER_TEMP/bundle.cms" 2>/dev/null; then
+              received=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$received" != 1 ]; then echo 'Sealed fixture did not arrive'; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/rank29-lab"
+          openssl cms -decrypt -inform DER -in "$RUNNER_TEMP/bundle.cms" -recip "$RUNNER_TEMP/recipient.crt" -inkey "$RUNNER_TEMP/recipient-private.pem" -out "$RUNNER_TEMP/bundle.tar.gz" 2>/dev/null
+          tar -xzf "$RUNNER_TEMP/bundle.tar.gz" -C "$RUNNER_TEMP/rank29-lab"
+          cd "$RUNNER_TEMP/rank29-lab"
+          status=0
+          (set -euo pipefail; bash work/run.sh) > "$RUNNER_TEMP/sealed-run.log" 2>&1 || status=$?
+          mkdir -p "$RUNNER_TEMP/sealed-result"
+          cp "$RUNNER_TEMP/sealed-run.log" "$RUNNER_TEMP/sealed-result/"
+          if [ -d work/evidence ]; then cp -R work/evidence "$RUNNER_TEMP/sealed-result/"; fi
+          tar -czf "$RUNNER_TEMP/result.tar.gz" -C "$RUNNER_TEMP/sealed-result" .
+          openssl cms -encrypt -aes256 -binary -in "$RUNNER_TEMP/result.tar.gz" -out "$RUNNER_TEMP/result.cms" -outform DER result-recipient.crt 2>/dev/null
+          echo "SEALED_RUN_STATUS=$status"
+          exit "$status"
+      - name: Preserve encrypted result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rank29-uid-sealed-result
+          path: ${{ runner.temp }}/result.cms
+          retention-days: 1
+          if-no-files-found: ignore
