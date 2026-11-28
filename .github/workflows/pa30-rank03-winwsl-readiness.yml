@@ -1,4 +1,4 @@
-name: Rank03 Windows WSL boot
+name: Rank03 Windows WSL Samba readiness
 on:
   push:
     branches: [pa30-rank03-winwsl-20261128]
@@ -9,14 +9,28 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Install and start official Ubuntu WSL distro
+      - name: Install official Ubuntu WSL distro
         shell: pwsh
         run: |
           wsl.exe --install --distribution Ubuntu-24.04 --no-launch --web-download
-          Write-Host "INSTALL_EXIT=$LASTEXITCODE"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          wsl.exe --list --verbose
-          Write-Host "LIST_EXIT=$LASTEXITCODE"
-          wsl.exe --distribution Ubuntu-24.04 --user root --exec sh -lc 'printf "WSL_BOOTED=1\n"; uname -r; id -u; head -3 /etc/os-release'
-          Write-Host "BOOT_EXIT=$LASTEXITCODE"
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec sh -lc 'printf "WSL_BOOTED=1\n"; uname -r; id -u'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install and provision disposable Samba domain
+        shell: pwsh
+        run: |
+          $install = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/tmp/rank03-apt-update.log 2>&1 && apt-get install -y -qq samba krb5-user dnsutils >/tmp/rank03-apt-install.log 2>&1; rc=$?; echo "APT_EXIT=$rc"; test $rc -eq 0; command -v samba-tool'
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $provision = 'set -eu; rm -f /etc/samba/smb.conf; pass=$(openssl rand -hex 20); printf "%s" "$pass" >/root/.rank03-admin-pass; chmod 600 /root/.rank03-admin-pass; if samba-tool domain provision --realm=LAB.EXAMPLE --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass="$pass" >/tmp/rank03-provision.log 2>&1; then echo PROVISION=OK; else echo PROVISION=FAILED; exit 19; fi; samba -D; sleep 3; pgrep -a samba | head -5; ss -lnt | grep -E ":(88|389|53)[[:space:]]" || true'
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $provision
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Measure Windows to WSL service reachability
+        shell: pwsh
+        run: |
+          foreach ($port in @(88,389)) {
+            $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+            Write-Host "LOOPBACK_PORT_${port}=$ok"
+          }
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc 'pass=$(cat /root/.rank03-admin-pass); printf "%s\n" "$pass" | KRB5_CONFIG=/var/lib/samba/private/krb5.conf kinit Administrator@LAB.EXAMPLE >/tmp/rank03-kinit.log 2>&1; rc=$?; echo "ADMIN_KINIT_EXIT=$rc"; exit $rc'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
