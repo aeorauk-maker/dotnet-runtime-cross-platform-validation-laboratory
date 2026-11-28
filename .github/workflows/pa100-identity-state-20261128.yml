@@ -1,0 +1,24 @@
+name: Isolated Identity state validation
+
+on:
+  push:
+    branches:
+      - pa100-identity-state-20261128-9a62f4
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check requests==2.32.3
+      - run: python runner_identity_state_deploy.py
