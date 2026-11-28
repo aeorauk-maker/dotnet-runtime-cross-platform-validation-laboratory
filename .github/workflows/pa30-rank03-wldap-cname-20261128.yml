@@ -1,0 +1,144 @@
+name: Rank03 Windows LDAP CNAME target trace
+on:
+  push:
+    branches: [pa30-rank03-wldap-cname-20261128]
+jobs:
+  cname-trace:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Build released client and synthetic DNS responder
+        shell: pwsh
+        run: |
+          dotnet new console -n probe -f net10.0 -o probe --no-restore
+          dotnet add probe/probe.csproj package System.DirectoryServices.Protocols --version 10.0.15
+          @'
+          using System;
+          using System.Collections.Generic;
+          using System.DirectoryServices.Protocols;
+          using System.IO;
+          using System.Net;
+          using System.Net.Sockets;
+          using System.Text;
+          using System.Threading;
+          using System.Threading.Tasks;
+
+          using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(18));
+          using var dns = new UdpClient(new IPEndPoint(IPAddress.Loopback, 53));
+          var dnsServer = Task.Run(async () => {
+              try {
+                  while (!deadline.IsCancellationRequested) {
+                      var packet = await dns.ReceiveAsync(deadline.Token);
+                      var response = Reply(packet.Buffer);
+                      if (response.Length != 0) await dns.SendAsync(response, packet.RemoteEndPoint, deadline.Token);
+                  }
+              } catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
+          });
+          var listener = new TcpListener(IPAddress.Loopback, 389);
+          listener.Start();
+          var accept = Task.Run(async () => {
+              try {
+                  using var peer = await listener.AcceptTcpClientAsync(deadline.Token);
+                  Console.WriteLine("LOOPBACK_TCP_ACCEPTED=YES");
+                  using var stream = peer.GetStream();
+                  var packet = new byte[8192];
+                  Console.WriteLine($"LDAP_FIRST_PACKET_BYTES={await stream.ReadAsync(packet, deadline.Token)}");
+                  byte[] invalidBind = { 0x30, 0x0C, 0x02, 0x01, 0x01, 0x61, 0x07, 0x0A, 0x01, 0x31, 0x04, 0x00, 0x04, 0x00 };
+                  await stream.WriteAsync(invalidBind, deadline.Token);
+              } catch (Exception ex) { Console.WriteLine($"LOOPBACK_SERVER_CLASS={ex.GetType().Name}"); }
+          });
+          try {
+              var lookup = Dns.GetHostEntry("lab.example");
+              Console.WriteLine($"FORWARD_CANONICAL={lookup.HostName}");
+              Console.WriteLine($"FORWARD_ADDRESSES={string.Join(',', lookup.AddressList)}");
+          } catch (Exception ex) { Console.WriteLine($"FORWARD_CLASS={ex.GetType().Name}"); }
+          try { Console.WriteLine($"REVERSE_CANONICAL={Dns.GetHostEntry(IPAddress.Loopback).HostName}"); }
+          catch (Exception ex) { Console.WriteLine($"REVERSE_CLASS={ex.GetType().Name}"); }
+          var identifier = new LdapDirectoryIdentifier("lab.example", true, false);
+          using var connection = new LdapConnection(identifier);
+          connection.SessionOptions.ProtocolVersion = 3;
+          connection.Timeout = TimeSpan.FromSeconds(8);
+          try { Console.WriteLine($"DNS_DOMAIN_OPTION={connection.SessionOptions.DomainName ?? "<null>"}"); }
+          catch (Exception ex) { Console.WriteLine($"DNS_DOMAIN_OPTION_CLASS={ex.GetType().Name}"); }
+          try { connection.Bind(); Console.WriteLine("BIND=SUCCESS"); }
+          catch (Exception ex) { Console.WriteLine($"BIND_CLASS={ex.GetType().Name}"); }
+          try { Console.WriteLine($"LDAP_HOST_OPTION={connection.SessionOptions.HostName}"); }
+          catch (Exception ex) { Console.WriteLine($"LDAP_HOST_OPTION_CLASS={ex.GetType().Name}"); }
+          listener.Stop(); deadline.Cancel();
+          try { await Task.WhenAll(accept, dnsServer); } catch { }
+
+          static byte[] Encode(string name) {
+              using var m = new MemoryStream();
+              foreach (var label in name.Split('.')) { var b = Encoding.ASCII.GetBytes(label); m.WriteByte((byte)b.Length); m.Write(b); }
+              m.WriteByte(0); return m.ToArray();
+          }
+          static void U16(Stream s, int v) { s.WriteByte((byte)(v >> 8)); s.WriteByte((byte)v); }
+          static void U32(Stream s, int v) { U16(s, v >> 16); U16(s, v); }
+          static void Answer(Stream s, byte[] owner, int type, byte[] data) {
+              s.Write(owner); U16(s, type); U16(s, 1); U32(s, 30); U16(s, data.Length); s.Write(data);
+          }
+          static byte[] Reply(byte[] q) {
+              if (q.Length < 17) return Array.Empty<byte>();
+              var labels = new List<string>(); int p = 12;
+              while (p < q.Length && q[p] != 0) {
+                  int n = q[p++]; if (n > 63 || p + n >= q.Length) return Array.Empty<byte>();
+                  labels.Add(Encoding.ASCII.GetString(q, p, n)); p += n;
+              }
+              if (p + 5 > q.Length) return Array.Empty<byte>();
+              string name = string.Join('.', labels).ToLowerInvariant();
+              int type = (q[p+1] << 8) | q[p+2]; int end = p + 5;
+              if (name is "lab.example" or "actor.lab.example" or "1.0.0.127.in-addr.arpa")
+                  Console.WriteLine($"DNS_QUERY={name} TYPE={type}");
+              bool alias = name == "lab.example" && type == 1;
+              bool actor = name == "actor.lab.example" && type == 1;
+              bool ptr = name == "1.0.0.127.in-addr.arpa" && type == 12;
+              using var m = new MemoryStream();
+              m.Write(q, 0, 2); U16(m, name.EndsWith("lab.example") || ptr ? 0x8180 : 0x8183);
+              U16(m, 1); U16(m, alias ? 2 : actor || ptr ? 1 : 0); U16(m, 0); U16(m, 0);
+              m.Write(q, 12, end - 12);
+              byte[] pointer = { 0xC0, 0x0C };
+              if (alias) { Answer(m, pointer, 5, Encode("actor.lab.example")); Answer(m, Encode("actor.lab.example"), 1, new byte[] {127, 0, 0, 1}); }
+              if (actor) Answer(m, pointer, 1, new byte[] {127, 0, 0, 1});
+              if (ptr) Answer(m, pointer, 12, Encode("actor.lab.example"));
+              return m.ToArray();
+          }
+          '@ | Set-Content -Path probe/Program.cs -Encoding utf8
+          dotnet build probe/probe.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'RELEASED_PACKAGE=System.DirectoryServices.Protocols/10.0.15'
+      - name: Trace CNAME and PTR effect on Wldap32 service name
+        shell: pwsh
+        run: |
+          $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface } | Select-Object -First 1
+          if ($null -eq $adapter) { throw 'No active hardware adapter' }
+          $index = $adapter.ifIndex
+          $original = @((Get-DnsClientServerAddress -InterfaceIndex $index -AddressFamily IPv4).ServerAddresses)
+          $traceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\ldap\Tracing\probe.exe'
+          New-Item -Path $traceKey -Force | Out-Null
+          $etl = Join-Path $env:RUNNER_TEMP 'eop090-cname.etl'
+          $txt = Join-Path $env:RUNNER_TEMP 'eop090-cname.txt'
+          logman create trace eop090-cname -ow -o $etl -p 'Microsoft-Windows-LDAP-Client' 0x18180380 0xff -ets | Out-Null
+          try {
+            Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses @('127.0.0.1')
+            ipconfig /flushdns | Out-Null
+            & './probe/bin/Release/net10.0/probe.exe'
+          } finally {
+            if ($original.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses $original }
+            else { Set-DnsClientServerAddress -InterfaceIndex $index -ResetServerAddresses }
+            logman stop eop090-cname -ets | Out-Null
+            Remove-Item -Path $traceKey -Force -ErrorAction SilentlyContinue
+          }
+          netsh trace convert "input=$etl" "output=$txt" | Out-Null
+          if (Test-Path $txt) {
+            $matches = Select-String -Path $txt -Pattern "make spn|servicename for bind|DnsSupplied|DomainName is|AREC_EXCLUSIVE|Connection->hostname" | Select-Object -First 20
+            foreach ($match in $matches) {
+              $safe = $match.Line -replace '[A-Fa-f0-9]{32,}', '[redacted]'
+              Write-Host "LDAP_TRACE=$safe"
+            }
+            Write-Host "LDAP_TRACE_MATCH_COUNT=$($matches.Count)"
+          } else { Write-Host 'LDAP_TRACE_CONVERT=MISSING' }
