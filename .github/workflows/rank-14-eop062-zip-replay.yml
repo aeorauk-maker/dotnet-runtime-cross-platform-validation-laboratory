@@ -1,0 +1,33 @@
+name: rank-14-eop062-zip-replay
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'MSRC_EOP02-EOP-062_PoC.zip'
+      - '.github/workflows/rank-14-eop062-zip-replay.yml'
+  workflow_dispatch:
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Clean extract and run valid, malformed, fresh-repeat matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' '688270e8802955c445b7b1cb868be69e7134599b2ff17daed486b9e4e84991e3' MSRC_EOP02-EOP-062_PoC.zip | sha256sum --check
+          unzip -t MSRC_EOP02-EOP-062_PoC.zip
+          test ! -e "$RUNNER_TEMP/eop062-clean-$GITHUB_RUN_ID"
+          mkdir "$RUNNER_TEMP/eop062-clean-$GITHUB_RUN_ID"
+          unzip -q MSRC_EOP02-EOP-062_PoC.zip -d "$RUNNER_TEMP/eop062-clean-$GITHUB_RUN_ID"
+          cd "$RUNNER_TEMP/eop062-clean-$GITHUB_RUN_ID"
+          dotnet --version
+          ./run.sh completed
+          ./run.sh malformed
+          ./run.sh completed
