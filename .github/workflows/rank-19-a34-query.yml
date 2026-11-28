@@ -1,0 +1,98 @@
+name: A34 isolated Windows query redirect validation
+on:
+  push:
+    branches: [rank-19-a34-winroute-20261128]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.100
+      - name: Run private owned fixture
+        shell: pwsh
+        env:
+          A34_FIXTURE_GZ_B64: ${{ secrets.A34_WINDOWS_QUERY_FIXTURE_GZ_B64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = Join-Path $env:RUNNER_TEMP 'a34-rank19-query'
+          New-Item -ItemType Directory -Path $state -Force | Out-Null
+          $ip = 'fe80::c0de:34'
+          $added = @()
+          $failed = $false
+          try {
+            if ([string]::IsNullOrWhiteSpace($env:A34_FIXTURE_GZ_B64)) { throw 'Private fixture secret missing' }
+            $compressed = [Convert]::FromBase64String($env:A34_FIXTURE_GZ_B64)
+            $inputStream = [IO.MemoryStream]::new($compressed)
+            $gzip = [IO.Compression.GzipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+            $reader = [IO.StreamReader]::new($gzip)
+            $source = $reader.ReadToEnd()
+            $reader.Dispose()
+            [IO.File]::WriteAllText((Join-Path $state 'Program.cs'), $source)
+            $project = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFrameworks>net10.0;net11.0</TargetFrameworks><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup></Project>'
+            [IO.File]::WriteAllText((Join-Path $state 'a34lab.csproj'), $project)
+            & dotnet --list-runtimes *> (Join-Path $state 'runtimes.log')
+            & dotnet build (Join-Path $state 'a34lab.csproj') -c Release --ignore-failed-sources *> (Join-Path $state 'build.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Private fixture build failed' }
+            $ids = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' } | Select-Object -ExpandProperty InterfaceIndex -Unique)
+            [IO.File]::WriteAllText((Join-Path $state 'interfaces.log'), "count=$($ids.Count); ids=$($ids -join ',')")
+            if ($ids.Count -lt 2) { throw 'Two distinct active link-local interfaces unavailable' }
+            foreach ($id in @($ids[0], $ids[1])) {
+              New-NetIPAddress -InterfaceIndex $id -IPAddress $ip -PrefixLength 64 -SkipAsSource $true -ErrorAction Stop | Out-Null
+              $added += $id
+            }
+            Start-Sleep -Seconds 8
+            $env:A34_TEST_IP = $ip
+            $env:A34_SCOPE_1 = [string]$ids[0]
+            $env:A34_SCOPE_2 = [string]$ids[1]
+            $env:DOTNET_ROLL_FORWARD = 'Disable'
+            foreach ($tfm in @('net10.0', 'net11.0')) {
+              $dll = Join-Path $state "bin/Release/$tfm/a34lab.dll"
+              $log = Join-Path $state "$tfm.log"
+              & dotnet $dll *> $log
+              if ($LASTEXITCODE -ne 0) { throw "Private fixture $tfm failed" }
+              if (-not (Select-String -Path $log -Pattern '^A34_WINDOWS_QUERY_RESULT=PASS$' -Quiet)) { throw "Private fixture $tfm result missing" }
+              Write-Output "A34_WINDOWS_$tfm=PASS"
+            }
+            Write-Output 'A34_WINDOWS_PRIVATE_RESULT=PASS'
+          }
+          catch {
+            [IO.File]::WriteAllText((Join-Path $state 'error.log'), $_.Exception.ToString())
+            $failed = $true
+            Write-Output 'A34_WINDOWS_PRIVATE_RESULT=FAIL'
+          }
+          finally {
+            foreach ($id in $added) { Remove-NetIPAddress -InterfaceIndex $id -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue }
+            if (-not [string]::IsNullOrWhiteSpace($env:A34_FIXTURE_GZ_B64)) {
+              $archive = Join-Path $env:RUNNER_TEMP 'a34-rank19-query.zip'
+              Compress-Archive -Path (Join-Path $state '*') -DestinationPath $archive -Force
+              $key = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($env:A34_FIXTURE_GZ_B64))
+              $nonce = [byte[]]::new(12)
+              [Security.Cryptography.RandomNumberGenerator]::Fill($nonce)
+              $plain = [IO.File]::ReadAllBytes($archive)
+              $cipher = [byte[]]::new($plain.Length)
+              $tag = [byte[]]::new(16)
+              $aes = [Security.Cryptography.AesGcm]::new($key, 16)
+              $aes.Encrypt($nonce, $plain, $cipher, $tag)
+              $aes.Dispose()
+              $payload = [byte[]]::new($nonce.Length + $tag.Length + $cipher.Length)
+              [Array]::Copy($nonce, 0, $payload, 0, $nonce.Length)
+              [Array]::Copy($tag, 0, $payload, $nonce.Length, $tag.Length)
+              [Array]::Copy($cipher, 0, $payload, $nonce.Length + $tag.Length, $cipher.Length)
+              [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'a34-rank19-query.enc'), $payload)
+            }
+          }
+          if ($failed) { throw 'Private Windows validation failed' }
+      - name: Save encrypted private evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a34-rank19-windows-query-evidence
+          path: ${{ runner.temp }}/a34-rank19-query.enc
+          if-no-files-found: warn
+          retention-days: 1
