@@ -2,7 +2,9 @@ name: Rank 14 EOP062 Edge downloaded actor integrity
 on:
   push:
     branches: [rank-14-eop062-pa30-20261128]
-    paths: [.github/workflows/rank-14-eop062-edge-download-actor-il-net10.yml]
+    paths:
+      - .github/workflows/rank-14-eop062-edge-download-actor-il-net10.yml
+      - eop062-edge-download-actor-il-net10.ps1
   workflow_dispatch:
 permissions:
   contents: read
