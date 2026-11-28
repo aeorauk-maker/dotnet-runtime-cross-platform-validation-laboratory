@@ -12,7 +12,7 @@ permissions:
 jobs:
   readiness:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     services:
       redis:
         image: redis:7
@@ -45,3 +45,12 @@ jobs:
               pass
           print("READY")
           PY
+      - name: Build pinned public Contacts source
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/mayafit/Contacts.git contacts
+          git -C contacts checkout --quiet c33e77130cbfaff787abc25c50197b16303d55e6
+          test "$(git -C contacts rev-parse HEAD)" = c33e77130cbfaff787abc25c50197b16303d55e6
+          dotnet restore contacts/ContactsApi/src/ContactsApi.WebApi/ContactsApi.WebApi.csproj --verbosity quiet
+          dotnet build contacts/ContactsApi/src/ContactsApi.WebApi/ContactsApi.WebApi.csproj -c Release --no-restore --verbosity quiet
+          echo PINNED_BUILD_OK
