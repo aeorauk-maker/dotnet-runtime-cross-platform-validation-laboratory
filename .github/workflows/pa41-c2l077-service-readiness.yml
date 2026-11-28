@@ -54,3 +54,9 @@ jobs:
           dotnet restore contacts/ContactsApi/src/ContactsApi.WebApi/ContactsApi.WebApi.csproj --verbosity quiet
           dotnet build contacts/ContactsApi/src/ContactsApi.WebApi/ContactsApi.WebApi.csproj -c Release --no-restore --verbosity quiet
           echo PINNED_BUILD_OK
+      - name: Build and run same-process token lab
+        run: |
+          set -euo pipefail
+          dotnet restore pat-lab/PatLab.csproj --verbosity quiet
+          dotnet build pat-lab/PatLab.csproj -c Release --no-restore --verbosity quiet
+          python3 pat-lab/drive.py
