@@ -2,20 +2,15 @@ name: G09-L016 clean ZIP replay
 on:
   push:
     branches: [pa30-rank10-g09l016-archive-20261128-h1]
-  workflow_dispatch:
-    inputs:
-      package_b64:
-        description: Base64 of inert owned archive; consumed from event file, never printed
-        required: true
-        type: string
 jobs:
   replay:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event.head_commit.message == 'Run exact G09-L016 archive replay'
     runs-on: macos-15
     timeout-minutes: 20
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -27,17 +22,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import base64
           import hashlib
-          import json
           import os
           from pathlib import Path
           import subprocess
           import zipfile
+          import json
 
           expected = '798dcdccad32bc56b237ff36f9e921a49e5335c8700bee1742b4d96c3b88d440'
-          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-          raw = base64.b64decode(event['inputs']['package_b64'], validate=True)
+          raw = (Path(os.environ['GITHUB_WORKSPACE']) / 'MSRC_G09-L016_PoC.zip').read_bytes()
           digest = hashlib.sha256(raw).hexdigest()
           assert digest == expected, 'exact archive digest mismatch'
           base = Path(os.environ['RUNNER_TEMP']) / 'g09-l016-clean-replay'
