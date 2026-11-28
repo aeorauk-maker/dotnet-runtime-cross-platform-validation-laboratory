@@ -1,0 +1,34 @@
+name: Rank 21 container limit check
+
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-fd-capacity-20261128
+    paths:
+      - .github/workflows/rank21-container-limits-20261128.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  limits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Observe current container and dotnet limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet new web -f net11.0 -o "$RUNNER_TEMP/r21limits" --no-restore >/dev/null
+          dotnet build "$RUNNER_TEMP/r21limits/r21limits.csproj" -c Release --nologo -v:q >/dev/null
+          docker version --format 'engine={{.Server.Version}}'
+          for mode in default explicit4096; do
+            if [ "$mode" = explicit4096 ]; then opts='--ulimit nofile=4096:4096'; else opts=''; fi
+            echo "mode=$mode"
+            docker run --rm --network none $opts -e ASPNETCORE_URLS=http://127.0.0.1:5117 -v "$RUNNER_TEMP/r21limits/bin/Release/net11.0:/app:ro" --entrypoint /bin/sh mcr.microsoft.com/dotnet/aspnet:11.0 -c 'echo "entry_soft=$(ulimit -Sn)"; echo "entry_hard=$(ulimit -Hn)"; dotnet /app/r21limits.dll >/dev/null 2>&1 & pid=$!; sleep 3; grep "Max open files" /proc/$pid/limits; kill "$pid"; wait "$pid" || true'
+          done
