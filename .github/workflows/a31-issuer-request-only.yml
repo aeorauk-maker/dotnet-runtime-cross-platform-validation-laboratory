@@ -134,4 +134,13 @@ jobs:
             exit 1
           fi
           openssl x509 -in denied-issued.pem -noout -text | grep -q 'DNS:forbidden.test'
+          mkdir -p "${RUNNER_TEMP}/a31-public-fixture"
+          cp root.pem issuer.pem actor-leaf.key allowed-issued.pem attack-issued.pem denied-issued.pem \
+            "${RUNNER_TEMP}/a31-public-fixture/"
           echo 'A31_REQUEST_ONLY_CLUSTER_ISSUANCE_PASS'
+      - name: Export short-lived owned test fixture
+        uses: actions/upload-artifact@v4
+        with:
+          name: a31-public-test-fixture
+          path: ${{ runner.temp }}/a31-public-fixture/
+          retention-days: 1
