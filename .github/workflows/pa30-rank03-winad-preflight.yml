@@ -1,0 +1,32 @@
+name: PA30 rank03 Windows AD DS preflight
+on:
+  push:
+    branches:
+      - pa30-rank03-winad-preflight-20261128
+permissions:
+  contents: read
+jobs:
+  winad-preflight:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check Windows AD DS role availability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output ('OS=' + (Get-CimInstance Win32_OperatingSystem).Caption)
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          Write-Output ('Admin=' + $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+          $feature = Get-WindowsFeature -Name AD-Domain-Services
+          Write-Output ('ADFeatureAvailable=' + [bool]$feature)
+          if (-not $feature) { exit 2 }
+          Write-Output ('ADFeatureInstalledBefore=' + $feature.Installed)
+          if (-not $feature.Installed) {
+            $result = Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
+            Write-Output ('InstallSuccess=' + $result.Success)
+            Write-Output ('RestartNeeded=' + $result.RestartNeeded)
+            if (-not $result.Success) { exit 3 }
+          }
+          $after = Get-WindowsFeature -Name AD-Domain-Services
+          Write-Output ('ADFeatureInstalledAfter=' + $after.Installed)
