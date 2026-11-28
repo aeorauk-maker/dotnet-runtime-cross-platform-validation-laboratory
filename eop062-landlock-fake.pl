@@ -2,7 +2,7 @@ use strict;
 use warnings;
 use Digest::SHA qw(sha256_hex);
 use Encode qw(encode);
-use Errno qw(ECONNREFUSED EPERM);
+use Errno qw(ECONNREFUSED EPERM ESRCH);
 use IO::Socket::INET;
 use IO::Socket::UNIX;
 use Socket qw(SOCK_STREAM);
@@ -55,15 +55,18 @@ for my $probe (
     print "$label=DENIED errno=" . (0 + $!) . " message=$!\n";
 }
 my $host_pid = $ENV{EOP062_HOST_PID} // die "host pid missing\n";
+die "host pid does not match parent process\n" unless getppid() == $host_pid;
+my $target_visible = kill(0, $host_pid) ? 1 : 0;
+die "host parent absent before ptrace probe\n" unless $target_visible;
+print "PTRACE_TARGET_IS_PARENT=1 SIGNAL_PARENT_PROBE_ALLOWED=$target_visible\n";
 # x86_64 Ubuntu runner: ptrace syscall 101, PTRACE_ATTACH=16, DETACH=17.
 my $attach = syscall(101, 16, $host_pid, 0, 0);
 if ($attach == 0) {
     syscall(101, 17, $host_pid, 0, 0);
     die "PTRACE_PARENT_ALLOWED; authority split invalid\n";
 }
-die "PTRACE_PARENT unexpected errno=$!\n" unless $! == EPERM;
-print "PTRACE_PARENT_DENIED errno=" . (0 + $!) . "\n";
-print "SIGNAL_PARENT_PROBE_ALLOWED=" . (kill(0, $host_pid) ? 1 : 0) . "\n";
+die "PTRACE_PARENT unexpected errno=$!\n" unless $! == EPERM || $! == ESRCH;
+print "PTRACE_PARENT_DENIED errno=" . (0 + $!) . " target_visible_by_signal=$target_visible\n";
 
 mkdir($local_dir, 0700) unless -d $local_dir;
 die "local_dir owner mismatch\n" unless (stat($local_dir))[4] == $<;
