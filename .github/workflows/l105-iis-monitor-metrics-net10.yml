@@ -196,9 +196,18 @@ jobs:
           $noFilterTrace = Get-Content $attackTrace -Raw
           $noFilterReceived = $noFilterTrace -match 'FIRST_BYTE=' -or $noFilterTrace -match 'PROTECTED_WRITE=True'
           Write-Host "NO_FILTER_MONITOR_ALIVE=$(-not $noFilterMonitor.HasExited) NO_FILTER_RECEIVED=$noFilterReceived"
+          $noFilterAlive = -not $noFilterMonitor.HasExited
           if (-not $noFilterMonitor.HasExited) { Stop-Process -Id $noFilterMonitor.Id -Force }
-          if ($noFilterReceived) { throw 'No-filter monitor unexpectedly contacted the forged pipe' }
+          if (-not $noFilterAlive -or $noFilterReceived) { throw 'No-filter monitor did not remain alive and off the forged pipe' }
           $env:DotnetMonitor_DefaultProcess__Filters__0__ProcessName = 'w3wp'
+          $metricsOffMonitor = Start-Process -FilePath $monitorTool -ArgumentList @('collect','--urls','http://127.0.0.1:52407','--metricUrls','http://127.0.0.1:52408','--metrics','false','--temp-apikey') -PassThru -RedirectStandardOutput (Join-Path $root 'monitor-metrics-off.out') -RedirectStandardError (Join-Path $root 'monitor-metrics-off.err')
+          Start-Sleep -Seconds 7
+          $metricsOffTrace = Get-Content $attackTrace -Raw
+          $metricsOffAlive = -not $metricsOffMonitor.HasExited
+          $metricsOffReceived = $metricsOffTrace -match 'FIRST_BYTE=' -or $metricsOffTrace -match 'PROTECTED_WRITE=True'
+          Write-Host "METRICS_OFF_MONITOR_ALIVE=$metricsOffAlive METRICS_OFF_RECEIVED=$metricsOffReceived"
+          if ($metricsOffAlive) { Stop-Process -Id $metricsOffMonitor.Id -Force }
+          if (-not $metricsOffAlive -or $metricsOffReceived) { throw 'Configured metrics-disabled monitor did not remain alive and off the forged pipe' }
           $configuredMonitor = Start-Process -FilePath $monitorTool -ArgumentList @('collect','--urls','http://127.0.0.1:52405','--metricUrls','http://127.0.0.1:52406','--temp-apikey') -PassThru -RedirectStandardOutput (Join-Path $root 'monitor-configured.out') -RedirectStandardError (Join-Path $root 'monitor-configured.err')
           $fakeReceived = $false
           for ($i=0; $i -lt 90; $i++) {
