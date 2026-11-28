@@ -188,6 +188,55 @@ try {
         if ($stdHost -ne 'HOST_CONNECT=YES') { throw 'Host did not see standard actor pipe' }
         Write-Host 'EOP062_STANDARD_EDGE_DOWNLOAD_MEDIUM_CONFIRMED'
     } finally { Remove-Job $hostJob -Force -ErrorAction SilentlyContinue }
+
+    # Public Internet-zone comparison. Inspect the downloaded Microsoft executable; do not execute it.
+    $publicNodeSource = Join-Path $lab 'public-download.js'
+    @'
+const fs = require('fs');
+const path = require('path');
+const profile = process.argv[2], target = process.argv[3];
+process.env.USERPROFILE = profile;
+process.env.LOCALAPPDATA = path.join(profile, 'AppData', 'Local');
+process.env.APPDATA = path.join(profile, 'AppData', 'Roaming');
+process.env.TEMP = path.dirname(target);
+process.env.TMP = process.env.TEMP;
+const { chromium } = require('playwright');
+(async () => {
+  let browser;
+  try {
+    browser = await chromium.launch({channel:'msedge',headless:true});
+    const context = await browser.newContext({acceptDownloads:true});
+    const page = await context.newPage();
+    await page.goto('https://live.sysinternals.com/tools/');
+    const downloadPromise = page.waitForEvent('download',{timeout:30000});
+    await page.getByRole('link',{name:/^sigcheck\.exe$/i}).click();
+    const download = await downloadPromise;
+    fs.renameSync(await download.path(), target);
+    console.log('PUBLIC_EDGE_DOWNLOAD=COMPLETE SUGGESTED=' + download.suggestedFilename());
+  } catch (e) {
+    console.log('PUBLIC_EDGE_DOWNLOAD=FAILED TYPE=' + e.name + ' MESSAGE=' + String(e.message).replace(/\r?\n/g,' | ').slice(0,1500));
+    process.exitCode = 2;
+  } finally {
+    if (browser) await browser.close();
+  }
+})();
+'@ | Set-Content -Path $publicNodeSource -Encoding utf8
+    $publicTarget = Join-Path $stdDir 'sigcheck-public.exe'
+    $publicOut = Join-Path $lab 'public-node-out.txt'
+    $publicErr = Join-Path $lab 'public-node-err.txt'
+    $publicRun = Start-Process -FilePath $nodeExe -Credential $stdCredential -LoadUserProfile -ArgumentList @($publicNodeSource, $stdProfile, $publicTarget) -RedirectStandardOutput $publicOut -RedirectStandardError $publicErr -PassThru -Wait
+    Write-Host "PUBLIC_EDGE_EXIT=$($publicRun.ExitCode) NODE_OUT=$(([IO.File]::ReadAllText($publicOut)).Trim()) NODE_ERR=$(([IO.File]::ReadAllText($publicErr)).Trim())"
+    if ($publicRun.ExitCode -eq 0 -and (Test-Path $publicTarget)) {
+        Write-Host "PUBLIC_FILE_ACL=$((& icacls.exe $publicTarget) -join ';')"
+        $publicStreams = @(Get-Item -LiteralPath $publicTarget -Stream * | ForEach-Object Stream)
+        Write-Host "PUBLIC_FILE_STREAMS=$($publicStreams -join ',')"
+        if ($publicStreams -contains 'Zone.Identifier') {
+            Write-Host "PUBLIC_FILE_ZONE=$((Get-Content -LiteralPath $publicTarget -Stream Zone.Identifier) -join ';')"
+        }
+        $publicSig = Get-AuthenticodeSignature -LiteralPath $publicTarget
+        Write-Host "PUBLIC_FILE_SIGNATURE=$($publicSig.Status) SIGNER=$($publicSig.SignerCertificate.Subject)"
+        Write-Host 'EOP062_PUBLIC_INTERNET_ZONE_CONTROL_COMPLETE'
+    } else { Write-Host 'EOP062_PUBLIC_INTERNET_ZONE_CONTROL_UNAVAILABLE' }
 } finally {
     & net.exe user $stdName /delete | Out-Null
 }
