@@ -448,7 +448,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not label lab directory medium' }
     $project = Join-Path $labRoot 'AdminApp.csproj'
     $source = Join-Path $labRoot 'Program.cs'
-    [System.IO.File]::WriteAllText($project, '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>')
+    [System.IO.File]::WriteAllText($project, '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework><UseAppHost>false</UseAppHost></PropertyGroup></Project>')
     [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("SECURE_BUILD_EXPECTED");')
     $dotnetExe = (Get-Command dotnet).Source
     & $dotnetExe restore $project --ignore-failed-sources | Out-Host
