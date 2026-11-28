@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 11.0.100
-      - name: Verify exact archive and replay twice from clean extraction
+      - name: Verify exact archive and replay original plus expiry fallback
         shell: bash
         run: |
           set -euo pipefail
@@ -59,6 +59,12 @@ jobs:
                   print(f'A31_CLEAN_RUN_{number}_FAILED_EXIT={result.returncode}')
                   print('A31_FAILED_STDOUT_SHA256=' + hashlib.sha256(result.stdout.encode()).hexdigest())
                   print('A31_FAILED_STDERR_SHA256=' + hashlib.sha256(result.stderr.encode()).hexdigest())
+                  if generated and not result.stdout:
+                      safe = [line[:200] for line in result.stderr.splitlines()
+                              if any(term in line.lower() for term in
+                                     ('error', 'unknown option', 'invalid', 'unable',
+                                      'verification failed', 'no such file', 'usage:'))]
+                      print('A31_GENERATOR_SAFE_ERROR=' + repr(safe[:8]))
                   raise SystemExit(1)
               proof = json.loads(result.stdout)
               assert proof['result'] == 'pass'
