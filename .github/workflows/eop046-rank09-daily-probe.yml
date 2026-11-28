@@ -1,0 +1,78 @@
+name: EOP046 rank-09 patched SDK probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - eop046-rank09-daily-20261128-h
+
+permissions:
+  contents: read
+
+jobs:
+  daily-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official 11.0.2xx daily SDK and verify archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=https://aka.ms/dotnet/11.0.2xx/daily/dotnet-sdk-linux-x64.tar.gz
+          curl -fsSL --retry 3 "$url" -o "$RUNNER_TEMP/eop046-daily-sdk.tar.gz"
+          curl -fsSL --retry 3 "$url.sha512" -o "$RUNNER_TEMP/eop046-daily-sdk.sha512"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, re
+          base=pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive=base/'eop046-daily-sdk.tar.gz'
+          want=(base/'eop046-daily-sdk.sha512').read_text().strip().split()[0].lower()
+          actual=hashlib.sha512(archive.read_bytes()).hexdigest()
+          print('daily_sdk_archive_bytes=',archive.stat().st_size)
+          print('daily_sdk_sha512_match=',want==actual)
+          assert re.fullmatch('[0-9a-f]{128}',want) and want==actual
+          PY
+          mkdir -p "$RUNNER_TEMP/eop046-daily-sdk"
+          tar -xzf "$RUNNER_TEMP/eop046-daily-sdk.tar.gz" -C "$RUNNER_TEMP/eop046-daily-sdk"
+          echo "$RUNNER_TEMP/eop046-daily-sdk" >> "$GITHUB_PATH"
+          echo "DOTNET_ROOT=$RUNNER_TEMP/eop046-daily-sdk" >> "$GITHUB_ENV"
+      - name: Verify patched SDK target and watch binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet --version
+          dotnet --info
+          watch=$(find "$DOTNET_ROOT/sdk" -path '*/DotnetTools/dotnet-watch/*/dotnet-watch.dll' -print -quit)
+          test -n "$watch"
+          sha256sum "$watch"
+          targets=$(find "$DOTNET_ROOT/sdk" -name Microsoft.NET.Sdk.targets -print -quit)
+          test -n "$targets"
+          rg -n '_GenerateHotReloadWebSocketKey|DOTNET_WATCH_HOTRELOAD_WEBSOCKET_KEY' "$targets"
+          mkdir -p eop046-console
+          cat > eop046-console/eop046-console.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><TargetFramework>net11.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup>
+            <ItemGroup><ProjectCapability Include="HotReloadWebSockets" /></ItemGroup>
+          </Project>
+          EOF
+          printf 'System.Console.WriteLine("INERT_EOP046_BASELINE");\n' > eop046-console/Program.cs
+          dotnet build eop046-console/eop046-console.csproj --nologo
+          dotnet msbuild eop046-console/eop046-console.csproj -target:_GenerateHotReloadWebSocketKey -property:TargetFramework=net11.0 -nologo
+          find eop046-console/obj -path '*/HotReload/websocket-key.public.json' -printf 'generated_public_key=%p bytes=%s\n'
+          test -n "$(find eop046-console/obj -path '*/HotReload/websocket-key.public.json' -print -quit)"
+      - name: Probe daily Android workload availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet workload list
+          sudo -H env -u XDG_RUNTIME_DIR DOTNET_ROOT="$DOTNET_ROOT" DOTNET_CLI_HOME="$RUNNER_TEMP/eop046-root-dotnet" "$DOTNET_ROOT/dotnet" workload install android --source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json
+          dotnet workload list
+      - name: Preserve probe facts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eop046-daily-probe-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            eop046-console/obj/Debug/net11.0/HotReload/websocket-key.public.json
