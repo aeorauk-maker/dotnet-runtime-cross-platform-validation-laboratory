@@ -1,0 +1,26 @@
+name: NU001 owned inert build terminal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nu001-build-terminal-20261128.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nu001-build-terminal-20261128
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run isolated inert build-target chain
+        run: python3 runner_nu001_v7.py
