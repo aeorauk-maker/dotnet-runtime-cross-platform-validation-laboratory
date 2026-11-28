@@ -1,0 +1,63 @@
+name: Rank 32 eShop native private victim controls
+on:
+  push:
+    branches: [rank-32-g06l016-private-victim-20261128]
+    paths:
+      - '.github/workflows/rank-32-g06l016-native.yml'
+      - 'private_victim_*.py'
+      - 'native_*.py'
+      - 'runner_discover.py'
+      - 'query.sql'
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Prepare pinned stock eShop
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/dotnet/eshop.git "$RUNNER_TEMP/eshop"
+          cd "$RUNNER_TEMP/eshop"
+          git checkout --quiet 3c6e531a6063676ece317644f72172fb42a935b3
+          test "$(git rev-parse HEAD)" = 3c6e531a6063676ece317644f72172fb42a935b3
+          dotnet build src/eShop.AppHost/eShop.AppHost.csproj -c Release --nologo -v:q
+          python3 -m venv "$RUNNER_TEMP/g06-venv"
+          "$RUNNER_TEMP/g06-venv/bin/pip" -q install requests
+          echo "$RUNNER_TEMP/g06-venv/bin" >> "$GITHUB_PATH"
+      - name: Start isolated stock AppHost
+        shell: bash
+        env:
+          ESHOP_USE_HTTP_ENDPOINTS: '1'
+          DOTNET_SYSTEM_NET_DISABLEIPV6: '1'
+        run: |
+          cd "$RUNNER_TEMP/eshop"
+          nohup dotnet run --project src/eShop.AppHost/eShop.AppHost.csproj -c Release --no-build --launch-profile https > "$RUNNER_TEMP/g06-apphost.log" 2>&1 &
+          echo "G06_APPHOST_PID=$!" >> "$GITHUB_ENV"
+      - name: Discover owned endpoints
+        shell: bash
+        run: python3 runner_discover.py
+      - name: Execute private victim and adverse controls
+        shell: bash
+        run: python3 -u private_victim_run.py
+      - name: Read independent ordering state
+        shell: bash
+        run: |
+          docker exec -i "$G06_POSTGRES_CONTAINER" sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d orderingdb -At' < query.sql
+      - name: Summarize AppHost failure if needed
+        if: failure()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/g06-apphost.log"; then
+            sed -E 's/(login\?t=)[^ ]+/\1[redacted]/g' "$RUNNER_TEMP/g06-apphost.log" | tail -100
+          fi
+      - name: Stop owned AppHost
+        if: always()
+        shell: bash
+        run: |
+          if test -n "${G06_APPHOST_PID:-}"; then kill "$G06_APPHOST_PID" 2>/dev/null || true; fi
