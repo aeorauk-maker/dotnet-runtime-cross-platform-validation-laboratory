@@ -216,7 +216,8 @@ const { chromium } = require('playwright');
     if (directUrl) {
       downloadPromise = page.waitForEvent('download',{timeout:30000});
       await page.goto(directUrl).catch(e => {
-        if (!String(e.message).includes('ERR_ABORTED')) throw e;
+        const message = String(e.message);
+        if (!message.includes('ERR_ABORTED') && !message.includes('Download is starting')) throw e;
       });
     } else {
       await page.goto('https://live.sysinternals.com/tools/');
