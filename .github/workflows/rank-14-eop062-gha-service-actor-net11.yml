@@ -34,5 +34,6 @@ jobs:
         env:
           EOP062_MODE: ${{ matrix.mode }}
           EOP062_SERVICE_ID: ${{ job.services.sidecar.id }}
-          EOP062_NATURAL_IDLE: '0'
+          EOP062_NATURAL_IDLE: '1'
+          EOP062_WITHDRAW: '0'
         run: python3 eop062-gha-service-actor-net11.py
