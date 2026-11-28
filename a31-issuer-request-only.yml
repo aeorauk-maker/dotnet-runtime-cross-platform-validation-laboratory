@@ -1,0 +1,137 @@
+name: A31 isolated request-only CA issuer test
+on:
+  push:
+    branches: [pa30-rank10-a31-windows-20261128]
+  workflow_dispatch:
+jobs:
+  issuer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: helm/kind-action@v1.15.2
+      - name: Prove scoped actor issuance in owned cluster
+        shell: bash
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          
+          lab_dir="${RUNNER_TEMP}/a31-request-only"
+          mkdir -p "$lab_dir"
+          cd "$lab_dir"
+          
+          helm version --short
+          kubectl version --client
+          helm install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+            --version v1.21.1 --namespace cert-manager --create-namespace \
+            --set crds.enabled=true --wait --timeout 6m
+          
+          openssl ecparam -name prime256v1 -genkey -noout -out root.key
+          openssl req -x509 -new -sha256 -key root.key -subj '/CN=A31 owned root' \
+            -days 2 -out root.pem \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign'
+          openssl ecparam -name prime256v1 -genkey -noout -out issuer.key
+          openssl req -new -sha256 -key issuer.key -subj '/CN=A31 constrained issuer' -out issuer.csr
+          cat > issuer.ext <<'EOF'
+          basicConstraints=critical,CA:TRUE,pathlen:0
+          keyUsage=critical,keyCertSign,cRLSign
+          nameConstraints=critical,permitted;DNS:allowed.test
+          EOF
+          openssl x509 -req -sha256 -in issuer.csr -CA root.pem -CAkey root.key \
+            -CAcreateserial -days 2 -out issuer.pem -extfile issuer.ext
+          openssl verify -CAfile root.pem issuer.pem
+          cat issuer.pem root.pem > issuer-chain.pem
+          
+          kubectl -n cert-manager create secret tls a31-ca-key \
+            --cert=issuer-chain.pem --key=issuer.key
+          cat > clusterissuer.yaml <<'EOF'
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: a31-constrained
+          spec:
+            ca:
+              secretName: a31-ca-key
+          EOF
+          kubectl apply -f clusterissuer.yaml
+          kubectl wait --for=condition=Ready clusterissuer/a31-constrained --timeout=180s
+          
+          kubectl create namespace a31-tenant
+          kubectl -n a31-tenant create serviceaccount actor
+          kubectl -n a31-tenant create rolebinding actor-edit \
+            --clusterrole=edit --serviceaccount=a31-tenant:actor
+          actor='system:serviceaccount:a31-tenant:actor'
+          test "$(kubectl auth can-i create certificaterequests.cert-manager.io \
+            --as="$actor" -n a31-tenant)" = yes
+          test "$(kubectl auth can-i get certificaterequests.cert-manager.io \
+            --as="$actor" -n a31-tenant)" = yes
+          test "$(kubectl auth can-i get secret/a31-ca-key \
+            --as="$actor" -n cert-manager)" = no
+          if kubectl --as="$actor" -n cert-manager get secret a31-ca-key \
+            -o name >/dev/null 2>&1; then
+            echo 'A31_UNEXPECTED_CA_SECRET_ACCESS'
+            exit 1
+          fi
+          
+          openssl ecparam -name prime256v1 -genkey -noout -out actor-leaf.key
+          make_request() {
+            label="$1"
+            cn="$2"
+            san="$3"
+            if [ -n "$san" ]; then
+              openssl req -new -sha256 -key actor-leaf.key -subj "/CN=$cn" \
+                -addext "subjectAltName=DNS:$san" -out "$label.csr"
+            else
+              openssl req -new -sha256 -key actor-leaf.key -subj "/CN=$cn" -out "$label.csr"
+            fi
+            csr_b64="$(base64 -w0 < "$label.csr")"
+            cat > "$label-request.yaml" <<EOF
+          apiVersion: cert-manager.io/v1
+          kind: CertificateRequest
+          metadata:
+            name: a31-$label
+            namespace: a31-tenant
+          spec:
+            request: $csr_b64
+            issuerRef:
+              group: cert-manager.io
+              kind: ClusterIssuer
+              name: a31-constrained
+            usages:
+              - digital signature
+              - server auth
+          EOF
+            kubectl --as="$actor" -n a31-tenant create -f "$label-request.yaml"
+            kubectl -n a31-tenant wait --for=condition=Approved \
+              "certificaterequest/a31-$label" --timeout=180s
+            kubectl -n a31-tenant wait --for=condition=Ready \
+              "certificaterequest/a31-$label" --timeout=180s
+            kubectl --as="$actor" -n a31-tenant get certificaterequest "a31-$label" \
+              -o jsonpath='{.status.certificate}' | base64 -d > "$label-issued.pem"
+            test -s "$label-issued.pem"
+            openssl x509 -in "$label-issued.pem" -noout -subject -fingerprint -sha256
+          }
+          
+          make_request allowed allowed.test allowed.test
+          make_request attack forbidden.test ''
+          make_request denied forbidden.test forbidden.test
+          
+          openssl verify -CAfile root.pem -untrusted issuer.pem allowed-issued.pem
+          if openssl verify -CAfile root.pem -untrusted issuer.pem attack-issued.pem; then
+            echo 'A31_LINUX_OPENSSL_ATTACK_CHAIN_ACCEPTED'
+          else
+            echo 'A31_LINUX_OPENSSL_ATTACK_CHAIN_DENIED'
+          fi
+          if openssl verify -CAfile root.pem -untrusted issuer.pem denied-issued.pem; then
+            echo 'A31_UNEXPECTED_FORBIDDEN_SAN_CHAIN_VALID'
+            exit 1
+          fi
+          echo 'A31_LINUX_OPENSSL_FORBIDDEN_SAN_CHAIN_DENIED'
+          if openssl x509 -in attack-issued.pem -noout -text | grep -q 'X509v3 Subject Alternative Name'; then
+            echo 'A31_UNEXPECTED_ATTACK_SAN'
+            exit 1
+          fi
+          openssl x509 -in denied-issued.pem -noout -text | grep -q 'DNS:forbidden.test'
+          echo 'A31_REQUEST_ONLY_CLUSTER_ISSUANCE_PASS'
