@@ -1,0 +1,6 @@
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends perl libdigest-sha-perl && rm -rf /var/lib/apt/lists/*
+COPY eop062-autostart-fake.pl /opt/eop062-autostart-fake.pl
+COPY service-entry.sh /opt/service-entry.sh
+RUN chmod 0755 /opt/service-entry.sh && chmod 0644 /opt/eop062-autostart-fake.pl
+ENTRYPOINT ["/bin/bash", "/opt/service-entry.sh"]
