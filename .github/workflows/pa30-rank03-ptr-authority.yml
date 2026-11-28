@@ -39,11 +39,19 @@ jobs:
           export KRB5_CONFIG=/tmp/rank03-krb5.conf
           nohup samba -i -d 1 >/tmp/rank03-samba.log 2>&1 </dev/null &
           samba_pid=$!
-          sleep 8
+          sleep 12
           if kill -0 "$samba_pid" 2>/dev/null; then echo SAMBA_PROC=LIVE; else echo SAMBA_PROC=EXITED; tail -20 /tmp/rank03-samba.log; exit 3; fi
+          ip -4 -brief addr
+          testparm -s 2>/dev/null | grep -E 'interfaces|bind interfaces only|server role|server services' | head -8 || true
           ss -lntup | grep -E ':(53|88|389) ' | head -18 || true
-          printf '%s\n' "$pass" | kinit Administrator@LAB.EXAMPLE >/tmp/rank03-admin-kinit.log 2>&1
-          echo ADMIN_KINIT=OK
+          grep -Ei 'error|failed|unable|bind|listen' /tmp/rank03-samba.log | tail -12 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
+          if printf '%s\n' "$pass" | kinit Administrator@LAB.EXAMPLE >/tmp/rank03-admin-kinit.log 2>&1; then
+            echo ADMIN_KINIT=OK
+          else
+            echo ADMIN_KINIT=FAILED
+            sed -n '1,8p' /tmp/rank03-admin-kinit.log | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g'
+            exit 4
+          fi
           export PASSWD="$pass"
           zone='113.0.203.in-addr.arpa'
           samba-tool dns zonecreate "$dc_ip" "$zone" -U Administrator >/tmp/rank03-zone.log 2>&1
