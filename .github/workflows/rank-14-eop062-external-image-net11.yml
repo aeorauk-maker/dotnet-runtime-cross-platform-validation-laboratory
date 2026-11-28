@@ -1,0 +1,80 @@
+name: rank-14-eop062-external-image-net11
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-external-Dockerfile'
+      - 'eop062-external-service-entry.sh'
+      - 'eop062-external-autostart-fake.pl'
+      - 'EOP062_EXTERNAL_TRUSTED_FIXTURE.zip'
+      - '.github/workflows/rank-14-eop062-external-image-net11.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  image_supplier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+          persist-credentials: false
+      - name: Build inert actor image without consumer project
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/eop062-fixed-consumer"
+          test "$(sha256sum eop062-external-Dockerfile | cut -d ' ' -f 1)" = c5eb5e65dae9c10638bac4e5d72ad9dced6999ba821ced01a61632dfb34d9480
+          test "$(sha256sum eop062-external-service-entry.sh | cut -d ' ' -f 1)" = 5da5025cc3eb74f2b16411607b12c709c84a64d8910b55dcf9f95b69d9ac5611
+          test "$(sha256sum eop062-external-autostart-fake.pl | cut -d ' ' -f 1)" = fd39097bc4d88cb8dbaba73c3a53e7ef448b0c8bc7fa43f842458861f3f29799
+          mkdir "$RUNNER_TEMP/eop062-image-build"
+          cp eop062-external-Dockerfile "$RUNNER_TEMP/eop062-image-build/Dockerfile"
+          cp eop062-external-service-entry.sh "$RUNNER_TEMP/eop062-image-build/service-entry.sh"
+          cp eop062-external-autostart-fake.pl "$RUNNER_TEMP/eop062-image-build/eop062-autostart-fake.pl"
+          docker build --quiet --tag eop062-r14-external-actor:fixed "$RUNNER_TEMP/eop062-image-build" >/dev/null
+          docker save eop062-r14-external-actor:fixed | gzip -1 > "$RUNNER_TEMP/eop062-actor-image.tar.gz"
+          echo "ACTOR_ARCHIVE_BYTES=$(stat -c %s "$RUNNER_TEMP/eop062-actor-image.tar.gz")"
+          echo "ACTOR_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/eop062-actor-image.tar.gz" | cut -d ' ' -f 1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eop062-actor-image
+          path: ${{ runner.temp }}/eop062-actor-image.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  fixed_consumer:
+    needs: image_supplier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - uses: actions/download-artifact@v4
+        with:
+          name: eop062-actor-image
+          path: ${{ runner.temp }}/eop062-image-input
+      - name: Load external image and clean-extract fixed host fixture
+        run: |
+          set -euo pipefail
+          test "$(dotnet --version)" = 11.0.100
+          gzip -dc "$RUNNER_TEMP/eop062-image-input/eop062-actor-image.tar.gz" | docker load
+          docker image inspect eop062-r14-external-actor:fixed >/dev/null
+          curl --fail --silent --show-error --location \
+            https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/rank-14-eop062-pa30-20261128/EOP062_EXTERNAL_TRUSTED_FIXTURE.zip \
+            --output "$RUNNER_TEMP/EOP062_EXTERNAL_TRUSTED_FIXTURE.zip"
+          echo '4f9ab649fe86f23462a28aa939cb5017275f22f2e5db6676d76919e69b6c32f2  '"$RUNNER_TEMP/EOP062_EXTERNAL_TRUSTED_FIXTURE.zip" | sha256sum -c -
+          unzip -t "$RUNNER_TEMP/EOP062_EXTERNAL_TRUSTED_FIXTURE.zip"
+          mkdir "$RUNNER_TEMP/eop062-fixed-consumer"
+          unzip -q "$RUNNER_TEMP/EOP062_EXTERNAL_TRUSTED_FIXTURE.zip" -d "$RUNNER_TEMP/eop062-fixed-consumer"
+          test -x "$RUNNER_TEMP/eop062-fixed-consumer/run.sh"
+          test ! -e "$RUNNER_TEMP/eop062-fixed-consumer/poc/Dockerfile"
+          test ! -e "$RUNNER_TEMP/eop062-fixed-consumer/poc/eop062-autostart-fake.pl"
+          echo FIXED_CONSUMER_HAS_NO_ACTOR_SOURCE=PASS
+      - name: Same fixed consumer with valid, malformed and fresh repeat
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/eop062-fixed-consumer"
+          ./run.sh completed
+          ./run.sh malformed
+          ./run.sh completed
+          echo EXTERNAL_IMAGE_CHAIN=PASS
