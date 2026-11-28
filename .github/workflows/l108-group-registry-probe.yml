@@ -66,6 +66,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import datetime
+          import base64
           import hashlib
           import json
           import os
@@ -86,10 +87,13 @@ jobs:
                      "sdk": subprocess.check_output(["dotnet", "--version"], text=True).strip(),
                      "controls": []}
 
-          def request(method, path, data=None, token=None):
+          def request(method, path, data=None, token=None, basic=None):
               headers = {}
               if token:
                   headers["PRIVATE-TOKEN"] = token
+              if basic:
+                  headers["Authorization"] = "Basic " + base64.b64encode(
+                      (basic[0] + ":" + basic[1]).encode()).decode()
               body = None
               if data is not None:
                   headers["Content-Type"] = "application/json"
@@ -161,6 +165,12 @@ jobs:
           summary["controls"].append({"case": "reader_get_trusted_a", "http": reader_get})
           if reader_get != 200:
               raise RuntimeError("Reader cannot access trusted A project")
+          basic_index, _ = request(
+              "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
+              basic=(users["reader"]["username"], tokens["reader"]))
+          summary["controls"].append({"case": "reader_basic_group_index", "http": basic_index})
+          if basic_index != 200:
+              raise RuntimeError(f"Reader Basic auth failed on group index: {basic_index}")
 
           def make_package(series, marker):
               package_id = f"Owned.RegistryProbe.{suffix}.{series}"
@@ -225,7 +235,8 @@ jobs:
                   '<?xml version="1.0"?><configuration><packageSources><clear/>'
                   '<add key="ownedgroup" value="' + base + f'/api/v4/groups/{gid}/-/packages/nuget/index.json" '
                   'protocolVersion="3" allowInsecureConnections="true"/></packageSources>'
-                  '<packageSourceCredentials><ownedgroup><add key="Username" value="reader"/>'
+                  '<packageSourceCredentials><ownedgroup><add key="Username" value="' +
+                  users["reader"]["username"] + '"/>'
                   '<add key="ClearTextPassword" value="' + escape(password) +
                   '"/></ownedgroup></packageSourceCredentials></configuration>')
               os.chmod(config, 0o600)
@@ -264,32 +275,39 @@ jobs:
               if marker != "OWNED_" + expected_marker or stored_hash != expected_hash:
                   raise RuntimeError(f"{case}: wrong selected package")
 
-          push("Primary", "A", a["id"], root_token)
-          restore("Primary", "primary_a_only", "A", "A")
-          restore("Primary", "wrong_reader_credential", None, "A",
-                  password="invalid-l108-owned-token")
-          push("Primary", "B", a["id"], tokens["publisher"], expect_success=False)
-          push("Primary", "B", b["id"], tokens["publisher"])
-          restore("Primary", "primary_b_newer", "B", "B")
-          restore("Primary", "primary_b_repeat", "B", "B")
-          push("Reverse", "B", b["id"], tokens["publisher"])
-          restore("Reverse", "reverse_b_only", "B", "B")
-          push("Reverse", "A", a["id"], root_token)
-          restore("Reverse", "reverse_a_newer", "A", "A")
+          try:
+              push("Primary", "A", a["id"], root_token)
+              restore("Primary", "primary_a_only", "A", "A")
+              restore("Primary", "wrong_reader_credential", None, "A",
+                      password="invalid-l108-owned-token")
+              push("Primary", "B", a["id"], tokens["publisher"], expect_success=False)
+              push("Primary", "B", b["id"], tokens["publisher"])
+              restore("Primary", "primary_b_newer", "B", "B")
+              restore("Primary", "primary_b_repeat", "B", "B")
+              push("Reverse", "B", b["id"], tokens["publisher"])
+              restore("Reverse", "reverse_b_only", "B", "B")
+              push("Reverse", "A", a["id"], root_token)
+              restore("Reverse", "reverse_a_newer", "A", "A")
 
-          index_code, index = request(
-              "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
-              token=tokens["reader"])
-          summary["group_index_http"] = index_code
-          if index_code == 200:
-              summary["index_resource_types"] = sorted(
-                  str(x.get("@type")) for x in index.get("resources", []))
-          else:
-              raise RuntimeError("Reader cannot retrieve group service index")
-
-          out = pathlib.Path("l108-result.json")
-          out.write_text(json.dumps(summary, indent=2) + "\n")
-          print("RESULT_SUMMARY=" + json.dumps(summary, separators=(",", ":")))
+              index_code, index = request(
+                  "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
+                  token=tokens["reader"])
+              summary["group_index_http"] = index_code
+              if index_code == 200:
+                  summary["index_resource_types"] = sorted(
+                      str(x.get("@type")) for x in index.get("resources", []))
+              else:
+                  raise RuntimeError("Reader cannot retrieve group service index")
+          except Exception as error:
+              redacted = str(error)
+              for secret in [root_token, *tokens.values()]:
+                  redacted = redacted.replace(secret, "[masked]")
+              summary["error"] = redacted[:800]
+              raise
+          finally:
+              out = pathlib.Path("l108-result.json")
+              out.write_text(json.dumps(summary, indent=2) + "\n")
+              print("RESULT_SUMMARY=" + json.dumps(summary, separators=(",", ":")))
           PY
 
       - name: Upload redacted registry result
