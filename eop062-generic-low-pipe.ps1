@@ -343,7 +343,16 @@ try {
         if ($status.Contains('LOW_ERROR')) { throw "Low server error: $status" }
         Start-Sleep -Milliseconds 100
     }
-    if (-not $lowReady) { throw "Low server not ready: $([System.IO.File]::ReadAllText($lowResult))" }
+    if (-not $lowReady) {
+        $lowWaitState = [MicNative]::WaitForSingleObject($lowProc.hProcess, 0)
+        $lowExitCode = [uint32]0
+        [void][MicNative]::GetExitCodeProcess($lowProc.hProcess, [ref]$lowExitCode)
+        $lowProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($lowProc.dwProcessId)" -ErrorAction SilentlyContinue
+        Write-Host "low-wait-state=$lowWaitState low-exit-code=$lowExitCode low-process=$($lowProcess.Name)"
+        & icacls.exe $lowResult | Out-Host
+        & icacls.exe (Split-Path $lowResult -Parent) | Out-Host
+        throw "Low server not ready: $([System.IO.File]::ReadAllText($lowResult))"
+    }
 
     $mediumClientScript = Join-Path $env:PUBLIC 'Documents\eop062-medium-client.ps1'
     $mediumClientContent = @'
