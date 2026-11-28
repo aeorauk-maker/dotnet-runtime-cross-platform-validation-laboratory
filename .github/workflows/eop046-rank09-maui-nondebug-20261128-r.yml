@@ -1,0 +1,217 @@
+name: EOP046 official MAUI nondebug peer watch control
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - eop046-rank09-maui-nondebug-20261128-r
+
+permissions:
+  contents: read
+
+jobs:
+  maui-template-watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize isolated inert lab
+        shell: bash
+        run: |
+          cat <<'EOP046_MAUI_LAB_BASE64' | base64 --decode | tar -xz -C .
+          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
+          EOP046_MAUI_LAB_BASE64
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install pinned MAUI Android workload and SDK image
+        shell: bash
+        run: |
+          test "$(dotnet --version)" = 11.0.100
+          sudo -H env -u XDG_RUNTIME_DIR ANDROID_HOME="$ANDROID_HOME" DOTNET_CLI_HOME="$RUNNER_TEMP/eop046-root-dotnet" "$(command -v dotnet)" workload install maui-android --version 11.0.100.1
+          dotnet workload list
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKMANAGER" --install 'system-images;android-35;google_apis;x86_64' 'platforms;android-37.0' 'build-tools;37.0.0' 'platform-tools'
+          set -o pipefail
+          test -d "$ANDROID_HOME/system-images/android-35/google_apis/x86_64"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+      - name: Generate official MAUI app and build both app identities
+        shell: bash
+        working-directory: labs/eop046
+        run: |
+          python3 prepare_maui.py
+          dotnet build MauiWatch046/MauiWatch046.csproj -f net11.0-android -c Debug --nologo
+          dotnet build peer/peer046.csproj -c Release --nologo -p:AndroidPackageFormat=apk -p:DebugSymbols=false -p:AndroidEnableFastDeployment=false
+          AVD_HOME="$RUNNER_TEMP/eop046-maui-avds"
+          mkdir -p "$AVD_HOME"
+          echo "ANDROID_AVD_HOME=$AVD_HOME" >> "$GITHUB_ENV"
+          echo no | ANDROID_AVD_HOME="$AVD_HOME" "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n eop046_maui_android35 -k 'system-images;android-35;google_apis;x86_64' -p "$AVD_HOME/eop046_maui_android35.avd" --force
+          test -f "$AVD_HOME/eop046_maui_android35.ini"
+      - name: Boot owned Android 35 emulator
+        shell: bash
+        run: |
+          test -e /dev/kvm
+          test -f "$ANDROID_AVD_HOME/eop046_maui_android35.ini"
+          sudo chown "$USER" /dev/kvm
+          nohup "$ANDROID_HOME/emulator/emulator" -avd eop046_maui_android35 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -accel on > "$RUNNER_TEMP/eop046-maui-emulator.log" 2>&1 &
+          timeout 300 adb wait-for-device
+          for attempt in $(seq 1 150); do
+            if [ "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1 ] && adb -s emulator-5554 shell cmd package list packages -3 >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          test "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1
+      - name: Test genuine MAUI watch with separate Android app UID
+        shell: bash
+        run: |
+          mapfile -t peer_apks < <(find labs/eop046/peer/bin/Release/net11.0-android -maxdepth 4 -type f -name "*-Signed.apk" -print)
+          if [ "${#peer_apks[@]}" -eq 0 ]; then
+            mapfile -t peer_apks < <(find labs/eop046/peer/bin/Release/net11.0-android -maxdepth 4 -type f -name "*.apk" -print)
+          fi
+          test "${#peer_apks[@]}" -eq 1
+          if "$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "${peer_apks[0]}" | grep -q "^application-debuggable"; then
+            echo "Peer APK unexpectedly debuggable" >&2
+            exit 1
+          fi
+          adb -s emulator-5554 install -r "${peer_apks[0]}"
+          python3 labs/eop046/check_android_crossapp_full_delta.py
+      - name: Preserve redacted evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eop046-maui-template-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            labs/eop046/template-metadata.json
+            labs/eop046/crossapp-*.json
+            ${{ runner.temp }}/eop046-maui-emulator.log
