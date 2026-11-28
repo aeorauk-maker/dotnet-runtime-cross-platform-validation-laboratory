@@ -167,6 +167,8 @@ try:
          "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
          "-p", f"127.0.0.1:{PORT}:{PORT}",
          "-v", f"{SRC}:/src/admin:rw", "-v", f"{VOLUME}:/tmp",
+         "-e", "HOME=/src/admin", "-e", "DOTNET_CLI_HOME=/src/admin/.dotnet",
+         "-e", "NUGET_PACKAGES=/src/admin/.nuget/packages",
          "-e", f"EOP062_OWNER_TOKEN={OWNER}", "-e", f"EOP062_LOW_TOKEN={LOW}",
          "-e", "EOP062_ROLE=/src/admin/role.txt", "-e", "EOP062_MARKER=/src/admin/protected-admin-marker.txt",
          IMAGE, "bash", "-lc", "sleep infinity"])
