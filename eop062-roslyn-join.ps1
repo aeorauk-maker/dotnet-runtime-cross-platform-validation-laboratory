@@ -490,7 +490,12 @@ try {
         if ($buildProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($buildProc.hProcess) }
         $buildLog = if (Test-Path $logFile) { [System.IO.File]::ReadAllText($logFile) } else { '<no log>' }
         Write-Host "MEDIUM_BUILD label=$label wait=$waitResult exit=$buildExit dll=$((Test-Path $outputDll))"
-        Write-Host "MEDIUM_BUILD_LOG_BEGIN $label`n$buildLog`nMEDIUM_BUILD_LOG_END $label"
+        if ($label -eq 'valid') {
+            $interesting = $buildLog -split "`r?`n" | Select-String -Pattern 'MSB3883|Access is denied|Exception|Csc|CoreCompile|ToolPath|Task Parameter|UsingTask' -Context 2,2 | Select-Object -Last 25
+            Write-Host "MEDIUM_BUILD_DIAGNOSTIC_BEGIN $label`n$($interesting | Out-String)`nMEDIUM_BUILD_DIAGNOSTIC_END $label"
+        } else {
+            Write-Host "MEDIUM_BUILD_LOG_BEGIN $label`n$buildLog`nMEDIUM_BUILD_LOG_END $label"
+        }
         if ($waitResult -ne 0) { throw "Medium build timed out: $label" }
         return $buildExit
     }
@@ -580,11 +585,17 @@ try {
     Write-Host "ROSLYN_LOW_LOG_BEGIN`n$([System.IO.File]::ReadAllText($actorResult))`nROSLYN_LOW_LOG_END"
     if ($roslynActorProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($roslynActorProc.hThread) }
     if ($roslynActorProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($roslynActorProc.hProcess) }
-    $validExit = Invoke-MediumBuild 'valid' ''
+    $validExit = Invoke-MediumBuild 'valid' '-v:diag'
     $validExists = Test-Path $outputDll
     $validHash = if ($validExists) { (Get-FileHash $outputDll -Algorithm SHA256).Hash } else { '<absent>' }
     Write-Host "VALID_RESULT exit=$validExit dll=$validExists hash=$validHash"
     if ($validExists) { Write-Host "VALID_OUTPUT=$((& $dotnetExe $outputDll | Out-String).Trim())" }
+    if ($validExit -ne 0) {
+        & $dotnetExe build $project --no-restore -v:minimal '-p:UseSharedCompilation=false' | Out-Host
+        $highControlExit = $LASTEXITCODE
+        $highControlOutput = if (Test-Path $outputDll) { (& $dotnetExe $outputDll | Out-String).Trim() } else { '<absent>' }
+        Write-Host "HIGH_SECURE_CONTROL exit=$highControlExit output=$highControlOutput"
+    }
     if ($forgedExit -ne 0 -or -not $forgedExists -or $forgedHash -ne $oldHash -or $validExit -ne 0 -or -not $validExists -or $validHash -eq $oldHash) {
         throw 'Released Roslyn stale-output discriminator did not pass'
     }
