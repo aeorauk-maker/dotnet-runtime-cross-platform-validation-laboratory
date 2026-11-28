@@ -22,7 +22,7 @@ jobs:
           $install = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/tmp/rank03-apt-update.log 2>&1 && apt-get install -y -qq samba krb5-user dnsutils >/tmp/rank03-apt-install.log 2>&1; rc=$?; echo "APT_EXIT=$rc"; test $rc -eq 0; command -v samba-tool'
           wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $provision = 'set -eu; rm -f /etc/samba/smb.conf; pass=$(openssl rand -hex 20); printf "%s" "$pass" >/root/.rank03-admin-pass; chmod 600 /root/.rank03-admin-pass; if samba-tool domain provision --realm=LAB.EXAMPLE --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass="$pass" >/tmp/rank03-provision.log 2>&1; then echo PROVISION=OK; else echo PROVISION=FAILED; exit 19; fi; samba -D; sleep 3; pgrep -a samba | head -5; ss -lnt | grep -E ":(88|389|53)[[:space:]]" || true'
+          $provision = 'set -eu; rm -f /etc/samba/smb.conf; pass=$(openssl rand -hex 20); printf "%s" "$pass" >/root/.rank03-admin-pass; chmod 600 /root/.rank03-admin-pass; if samba-tool domain provision --realm=LAB.EXAMPLE --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass="$pass" >/tmp/rank03-provision.log 2>&1; then echo PROVISION=OK; else echo PROVISION=FAILED; grep -Ei "error|exception|failed|traceback" /tmp/rank03-provision.log | tail -8 | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g"; exit 19; fi; samba -D; sleep 3; pgrep -a samba | head -5; ss -lnt | grep -E ":(88|389|53)[[:space:]]" || true'
           wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $provision
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Measure Windows to WSL service reachability
