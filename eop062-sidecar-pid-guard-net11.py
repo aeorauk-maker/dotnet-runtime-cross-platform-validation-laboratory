@@ -159,7 +159,7 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 
 try:
     print(f"MODE={MODE} IMAGE={IMAGE}", flush=True)
-    (SRC / "AdminApp.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>\n')
+    (SRC / "AdminApp.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net11.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>\n')
     write_source(False)
     run(["docker", "volume", "create", VOLUME])
     uid, gid = os.getuid(), os.getgid()
