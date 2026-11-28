@@ -347,22 +347,44 @@ jobs:
               ["openssl", "x509", "-in", str(certificate), "-outform", "DER"])
           certificate_fingerprint = hashlib.sha256(cert_der).hexdigest().upper()
           summary["author_certificate_sha256"] = certificate_fingerprint
+          attacker_certificate = certificate_dir / "other-author.pem"
+          attacker_key = certificate_dir / "other-author.key"
+          attacker_pfx = certificate_dir / "other-author.pfx"
+          attacker_pfx_password = secrets.token_urlsafe(32)
+          subprocess.run(
+              ["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256",
+               "-nodes", "-keyout", str(attacker_key), "-out", str(attacker_certificate),
+               "-days", "2", "-subj", "/CN=Owned-L108-Other-Author"],
+              check=True, capture_output=True, timeout=60)
+          subprocess.run(
+              ["openssl", "pkcs12", "-export", "-out", str(attacker_pfx),
+               "-inkey", str(attacker_key), "-in", str(attacker_certificate),
+               "-passout", "pass:" + attacker_pfx_password],
+              check=True, capture_output=True, timeout=30)
+          attacker_cert_der = subprocess.check_output(
+              ["openssl", "x509", "-in", str(attacker_certificate), "-outform", "DER"])
+          attacker_fingerprint = hashlib.sha256(attacker_cert_der).hexdigest().upper()
+          summary["other_author_certificate_sha256"] = attacker_fingerprint
           signer_xml = (
               '<config><add key="signatureValidationMode" value="require"/></config>'
               '<trustedSigners><author name="OwnedL108Author"><certificate fingerprint="' +
               certificate_fingerprint +
               '" hashAlgorithm="SHA256" allowUntrustedRoot="true"/></author></trustedSigners>')
           for series in ("Impact", "ImpactReverse"):
-              package = packages[(series, "A")][2]
-              signed = subprocess.run(
-                  ["dotnet", "nuget", "sign", str(package),
-                   "--certificate-path", str(pfx),
-                   "--certificate-password", pfx_password,
-                   "--allow-untrusted-root", "--overwrite", "--verbosity", "quiet"],
-                  capture_output=True, text=True, timeout=120)
-              if signed.returncode:
-                  raise RuntimeError("Owned A signing failed: " +
-                                     (signed.stdout + signed.stderr).replace(pfx_password, "[masked]")[-600:])
+              for marker in ("A", "B"):
+                  package = packages[(series, marker)][2]
+                  signer_pfx = pfx if marker == "A" else attacker_pfx
+                  signer_password = pfx_password if marker == "A" else attacker_pfx_password
+                  signed = subprocess.run(
+                      ["dotnet", "nuget", "sign", str(package),
+                       "--certificate-path", str(signer_pfx),
+                       "--certificate-password", signer_password,
+                       "--allow-untrusted-root", "--overwrite", "--verbosity", "quiet"],
+                      capture_output=True, text=True, timeout=120)
+                  if signed.returncode:
+                      raise RuntimeError("Owned " + marker + " signing failed: " +
+                                         (signed.stdout + signed.stderr).replace(
+                                             signer_password, "[masked]")[-600:])
           verification_config = temp / "signed-policy.config"
           verification_config.write_text(
               '<?xml version="1.0"?><configuration><packageSources><clear/></packageSources>' +
@@ -377,11 +399,30 @@ jobs:
               summary["controls"].append(
                   {"case": "direct_verify_impact_" + marker, "exit": checked.returncode,
                    "nu3004": "NU3004" in output, "nu3008": "NU3008" in output,
+                   "nu3034": "NU3034" in output, "nu3018": "NU3018" in output,
                    "package_sha256": hashlib.sha256(package.read_bytes()).hexdigest()})
               if (marker == "A" and checked.returncode != 0) or (
-                      marker == "B" and (checked.returncode == 0 or "NU3004" not in output)):
+                      marker == "B" and checked.returncode == 0):
                   raise RuntimeError("Direct signing control failed for " + marker +
                                      ": " + output[-700:])
+          other_author_config = temp / "other-author-policy.config"
+          other_author_config.write_text(
+              '<?xml version="1.0"?><configuration><packageSources><clear/></packageSources>'
+              '<config><add key="signatureValidationMode" value="require"/></config>'
+              '<trustedSigners><author name="OwnedL108OtherAuthor"><certificate fingerprint="' +
+              attacker_fingerprint +
+              '" hashAlgorithm="SHA256" allowUntrustedRoot="true"/></author></trustedSigners>'
+              '</configuration>')
+          other_checked = subprocess.run(
+              ["dotnet", "nuget", "verify", "--all", str(packages[("Impact", "B")][2]),
+               "--configfile", str(other_author_config)],
+              capture_output=True, text=True, timeout=120)
+          summary["controls"].append(
+              {"case": "direct_verify_impact_B_with_other_author_trusted",
+               "exit": other_checked.returncode})
+          if other_checked.returncode:
+              raise RuntimeError("Other author's B signature was invalid: " +
+                                 (other_checked.stdout + other_checked.stderr)[-700:])
 
           def package_hash(package):
               return hashlib.sha256(package.read_bytes()).hexdigest()
@@ -452,6 +493,7 @@ jobs:
               env["NUGET_HTTP_CACHE_PATH"] = str(directory / "http-cache")
               env["DOTNET_NOLOGO"] = "1"
               env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+              env["DOTNET_NUGET_SIGNATURE_VERIFICATION"] = "true"
               command_line = ["dotnet", "tool", "restore",
                               "--tool-manifest", str(directory / ".config" / "dotnet-tools.json"),
                               "--configfile", str(config), "--no-cache", "--verbosity", "minimal"]
