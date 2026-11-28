@@ -1,0 +1,23 @@
+name: G10-L067 Windows stock-server inventory
+on:
+  push:
+    branches: [rank-08-g10l067-pwshwin-20261128]
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - name: Check local server availability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @(
+            'C:\Program Files\IIS Express\iisexpress.exe',
+            'C:\Program Files (x86)\IIS Express\iisexpress.exe',
+            'C:\Apache24\bin\httpd.exe'
+          )
+          foreach ($p in $paths) { Write-Output ("SERVER_PATH={0};EXISTS={1}" -f $p, (Test-Path -LiteralPath $p)) }
+          $feature = Get-WindowsFeature -Name Web-Basic-Auth,Web-DAV-Publishing -ErrorAction SilentlyContinue
+          foreach ($f in $feature) { Write-Output ("FEATURE={0};INSTALLED={1}" -f $f.Name, $f.Installed) }
