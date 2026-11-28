@@ -1,5 +1,7 @@
 name: G09-L016 clean ZIP replay
 on:
+  push:
+    branches: [pa30-rank10-g09l016-archive-20261128-h1]
   workflow_dispatch:
     inputs:
       package_b64:
@@ -8,6 +10,7 @@ on:
         type: string
 jobs:
   replay:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     timeout-minutes: 20
     permissions:
