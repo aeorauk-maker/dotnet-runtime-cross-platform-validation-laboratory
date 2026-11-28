@@ -43,6 +43,9 @@ catch (Exception e) { Console.WriteLine($"PIPE_CREATE_OR_CONNECT=DENIED TYPE={e.
 @'
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
+process.env.TEMP = path.dirname(process.argv[3]);
+process.env.TMP = process.env.TEMP;
 const { chromium } = require('playwright');
 const source = process.argv[2], target = process.argv[3];
 const body = fs.readFileSync(source);
