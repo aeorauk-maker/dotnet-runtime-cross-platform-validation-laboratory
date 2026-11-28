@@ -330,6 +330,16 @@ jobs:
           for ($i=0; $i -lt 40 -and (Get-Process -Id $idleProcessId -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
           $workerGone = -not [bool](Get-Process -Id $idleProcessId -ErrorAction SilentlyContinue)
           $serviceBefore = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+          $scmTrace = Get-Content $attackTrace -Raw
+          Write-Host "SCM_ATTACK_TRACE=$($scmTrace.Replace("`r"," ").Replace("`n"," | "))"
+          $earlyProbeLogPath = Join-Path $attack 'serviceprobe/probe.log'
+          $earlyProbeLog = if (Test-Path $earlyProbeLogPath) { Get-Content $earlyProbeLogPath -Raw } else { '<missing>' }
+          Write-Host "EARLY_SERVICE_PROBE_LOG=$($earlyProbeLog.Replace("`r"," ").Replace("`n"," | "))"
+          sc.exe queryex $serviceName | Out-Host
+          sc.exe qc $serviceName | Out-Host
+          Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; StartTime=$timerWaitStart} -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'Pa30L105ScmProof' } |
+            Select-Object -First 8 TimeCreated,Id,Message | Format-List | Out-Host
           $servicePersistent = $serviceBefore.State -eq 'Running' -and $serviceBefore.StartMode -eq 'Auto' -and $serviceBefore.StartName -eq 'LocalSystem' -and $serviceBefore.ProcessId -gt 0
           Write-Host "WORKER_GONE_BEFORE_DELAYED_MARKER=$workerGone SERVICE_RUNNING_AFTER_WORKER_STOP=$servicePersistent SERVICE_START_MODE=$($serviceBefore.StartMode) SERVICE_ACCOUNT=$($serviceBefore.StartName) SERVICE_PID=$($serviceBefore.ProcessId)"
           if (-not $workerGone -or -not $servicePersistent) { throw 'Service did not outlive monitor and worker' }
