@@ -1,0 +1,425 @@
+name: G09-L012 external-chain CA v23
+
+on:
+  push:
+    branches:
+      - pa30-rank11-g09l012-calogs-20261128
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g09-l012-dogtag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  issuer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SHARED: /tmp/workdir/pki
+    steps:
+      - name: Create isolated test CA and directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          DS_PASSWORD="$(openssl rand -hex 16)"
+          echo "::add-mask::$DS_PASSWORD"
+          echo "DS_PASSWORD=$DS_PASSWORD" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/dogtagpki/pki.git /tmp/pki-src
+          docker network create g09l012
+          /tmp/pki-src/tests/bin/ds-create.sh \
+            --image=quay.io/389ds/dirsrv:latest \
+            --hostname=ds.example.com \
+            --network=g09l012 \
+            --network-alias=ds.example.com \
+            --password="$DS_PASSWORD" \
+            ds-g09l012 >/tmp/ds-setup.log 2>&1 || { tail -n 60 /tmp/ds-setup.log | sed "s/$DS_PASSWORD/[masked]/g"; exit 1; }
+          mkdir -p certs conf logs private issued
+          # Use the official image's documented /certs/server.p12 import path.
+          # The CA signing certificate has the constraint BEFORE Dogtag starts
+          # and before any applicant CSR is submitted. All keys stay on runner.
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout private/bridge-root.key -out issued/bridge-root.pem -days 3 \
+            -subj '/CN=G09-L012 Inert Constrained Root' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout private/issuer.key -out private/issuer.csr \
+            -subj '/CN=CA Signing Certificate' >/dev/null 2>&1
+          cp private/issuer.csr certs/ca_signing.csr
+          cat > issuer.cnf <<'ISSUER_CONFIG'
+          [v3_ca]
+          basicConstraints=critical,CA:TRUE,pathlen:0
+          keyUsage=critical,keyCertSign,cRLSign
+          nameConstraints=critical,permitted;DNS:allowed.test
+          subjectKeyIdentifier=hash
+          authorityKeyIdentifier=keyid,issuer
+          ISSUER_CONFIG
+          openssl x509 -req -in private/issuer.csr \
+            -CA issued/bridge-root.pem -CAkey private/bridge-root.key \
+            -days 2 -extfile issuer.cnf -extensions v3_ca \
+            -out certs/ca_signing.crt >/dev/null 2>&1
+          openssl pkcs12 -export -inkey private/issuer.key \
+            -in certs/ca_signing.crt -certfile issued/bridge-root.pem \
+            -name ca_signing -caname bridge-root \
+            -passout pass:Secret.123 -out certs/server.p12
+          cp issued/bridge-root.pem certs/bridge-root.pem
+          # Dogtag external-CA installer imports this chain into its validating NSS DB.
+          # Patch only the two supported pkispawn options in a copy of the
+          # official entry point; preserve its certificate generation and startup.
+          python3 - <<'PYENTRY'
+          from pathlib import Path
+          src=Path('/tmp/pki-src/base/ca/bin/pki-ca-run').read_text()
+          needle='OPTIONS+=(-D pki_import_system_certs=False)'+chr(10)
+          assert src.count(needle)==1
+          extra=('OPTIONS+=(-D pki_cert_chain_path=/certs/bridge-root.pem)'+chr(10)
+                 +'OPTIONS+=(-D pki_cert_chain_nickname=bridge-root)'+chr(10))
+          text=src.replace(needle,needle+extra)
+          csr_anchor='if [ -f /certs/ca_signing.csr ]'+chr(10)
+          assert text.count(csr_anchor)==1
+          trust='''echo "INFO: Establishing external root trust in /conf/alias"
+          if pki -d /conf/alias -f /conf/password.conf nss-cert-show bridge-root > /dev/null 2>&1; then
+              certutil -M -d /conf/alias -f /conf/password.conf -n bridge-root -t CT,C,C
+          else
+              pki -d /conf/alias -f /conf/password.conf nss-cert-import --cert /certs/bridge-root.pem --trust CT,C,C bridge-root
+          fi
+          pki -d /conf/alias -f /conf/password.conf nss-cert-verify --cert-usage SSLCA ca_signing
+          '''
+          Path('certs/g09-ca-run').write_text(text.replace(csr_anchor,trust+csr_anchor))
+          PYENTRY
+          echo "Official source entry SHA256=$(sha256sum /tmp/pki-src/base/ca/bin/pki-ca-run | cut -d' ' -f1)"
+          echo "External-chain entry point SHA256=$(sha256sum certs/g09-ca-run | cut -d' ' -f1)"
+          openssl x509 -in certs/ca_signing.crt -noout -subject -issuer -ext nameConstraints
+          docker run --detach \
+            --name ca-g09l012 \
+            --hostname ca.example.com \
+            --network g09l012 \
+            --network-alias ca.example.com \
+            -p 127.0.0.1:18443:8443 \
+            -v "$PWD/certs:/certs" \
+            -v "$PWD/conf:/conf" \
+            -v "$PWD/logs:/logs" \
+            -e PKI_DS_URL=ldap://ds.example.com:3389 \
+            -e PKI_DS_PASSWORD="$DS_PASSWORD" \
+            quay.io/dogtagpki/pki-ca:latest \
+            /bin/sh -ec 'echo Image-entry-SHA256=$(sha256sum /usr/share/pki/ca/bin/pki-ca-run | cut -d" " -f1); exec /bin/sh /certs/g09-ca-run' >/dev/null
+          ready=false
+          for i in $(seq 1 45); do
+            if curl -ksS --max-time 2 -o /dev/null https://127.0.0.1:18443/ca/; then ready=true; break; fi
+            state="$(docker inspect -f '{{.State.Status}}' ca-g09l012 2>/dev/null || true)"
+            if [ "$state" = exited ] || [ "$state" = dead ]; then break; fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "CA startup status: $(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' ca-g09l012 2>/dev/null || true)"
+            docker logs --tail 180 ca-g09l012 2>&1 \
+              | sed "s/$DS_PASSWORD/[masked]/g" \
+              | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g' \
+              | grep -Ei 'error|fail|exception|invalid|import|pkcs|cert|nss|trust|pkispawn|password|Image-entry-SHA256' \
+              | tail -n 65 || true
+            exit 2
+          fi
+          docker exec ca-g09l012 sha256sum /usr/share/pki/ca/bin/pki-ca-run
+          echo "Copied entry-point header and syntax before first restart:"
+          docker exec ca-g09l012 sh -c "sed -n '1,8p' /certs/g09-ca-run; sh -n /certs/g09-ca-run; sha256sum /certs/g09-ca-run"
+          echo "Installer log file inventory:"
+          docker exec ca-g09l012 find /logs -maxdepth 4 -type f -printf '%p %s bytes\n' | head -n 35
+          echo "Installer first CA signing-unit messages:"
+          docker exec ca-g09l012 sh -c "find /logs -maxdepth 4 -type f -print0 | xargs -0 -r grep -h -E 'CertificateAuthority: Initializing cert signing unit|CASigningUnit.init|SigningUnit: Loading|SigningUnit: cert chain|CA signing key and cert not|CMSCORE_CA_SIGNING|Certificate not found|Private key not found|certificate chain|buildCertificateChain' 2>/dev/null | head -n 100" \
+            | sed "s/$DS_PASSWORD/[masked]/g" \
+            | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g' || true
+          set +e
+          docker exec ca-g09l012 pki -d /conf/alias -f /conf/password.conf nss-cert-verify --cert-usage SSLCA ca_signing
+          signer_verify_rc=$?
+          set -e
+          echo "Installer NSS signer verify rc=$signer_verify_rc"
+          docker exec ca-g09l012 pki -d /conf/alias -f /conf/password.conf nss-key-find --nickname ca_signing --output-format json > /tmp/g09-keyfind-before.json
+          python3 - <<'PYKEY1'
+          import json
+          j=json.load(open('/tmp/g09-keyfind-before.json'))
+          print('Installer NSS key association total=',j.get('total'),'fields=',sorted(j))
+          PYKEY1
+          docker exec ca-g09l012 sh -c "grep -E '^ca.signing.(nickname|certnickname|tokenname|defaultSigningAlgorithm|cert)=' /conf/ca/CS.cfg | sed -E 's/(^ca.signing.cert=).*/\1[public-cert-redacted]/'" || true
+          docker exec ca-g09l012 pki-server ca-db-init -v >/tmp/ca-db-init.log 2>&1
+          docker exec ca-g09l012 pki-server ca-db-index-add -v >/tmp/ca-index.log 2>&1
+          docker exec ca-g09l012 pki-server ca-db-index-rebuild -v >/tmp/ca-rebuild.log 2>&1
+          docker exec ca-g09l012 pki-server cert-export --cert-file /conf/certs/ca_signing.crt ca_signing
+          mkdir -p issued
+          sudo install -m 0644 conf/certs/ca_signing.crt issued/dogtag-ca-original.pem
+          openssl x509 -in issued/dogtag-ca-original.pem -noout -subject -issuer
+          docker exec ca-g09l012 pki-server ca-cert-import \
+            --cert /conf/certs/ca_signing.crt \
+            --csr /conf/certs/ca_signing.csr \
+            --profile /usr/share/pki/ca/conf/caCert.profile >/tmp/ca-import.log 2>&1
+          echo "CA import bootstrap diagnostics:"
+          sed -n '1,22p' /tmp/ca-import.log | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g'
+          echo "CA initialized; legacy policy before change:"
+          docker exec ca-g09l012 grep '^ca.Policy.enable=' /conf/ca/CS.cfg
+          docker exec ca-g09l012 pki-server ca-config-set ca.Policy.enable true
+          docker exec ca-g09l012 pki-server ca-config-set ca.Policy.systemPolicies.enable false
+          # The distributed deprecated-policy configuration still names its
+          # pre-move Java packages. Repoint registrations to the unmodified
+          # packaged policy classes; preserve all rules and predicates.
+          docker exec ca-g09l012 sed -i \
+            -e 's/com\.netscape\.cms\.policy\.constraints\./org.dogtagpki.legacy.server.policy.constraints./g' \
+            -e 's/com\.netscape\.cms\.policy\.extensions\./org.dogtagpki.legacy.server.policy.extensions./g' \
+            /conf/ca/CS.cfg
+          # Only repair the missing static legacy response page. Use the
+          # current official source checkout; preserve signer and policies.
+          template=/tmp/pki-src/base/ca/shared/webapps/ca/ee/ca/EnrollSuccess.template
+          test -s "$template"
+          docker exec ca-g09l012 mkdir -p /usr/share/pki/ca/webapps/ca/ca
+          docker cp "$template" ca-g09l012:/usr/share/pki/ca/webapps/ca/ca/EnrollSuccess.template
+          echo "Repaired legacy static template SHA256=$(sha256sum "$template" | cut -d' ' -f1)"
+          docker restart ca-g09l012 >/dev/null
+          for i in $(seq 1 90); do
+            if curl -ksS --max-time 2 -o /dev/null https://127.0.0.1:18443/ca/; then break; fi
+            sleep 2
+          done
+          echo "Copied entry-point header after restart:"
+          docker exec ca-g09l012 sh -c "sed -n '1,8p' /certs/g09-ca-run; sh -n /certs/g09-ca-run; sha256sum /certs/g09-ca-run"
+          echo "Post-restart log file inventory:"
+          docker exec ca-g09l012 find /logs -maxdepth 4 -type f -printf '%p %s bytes\n' | head -n 35
+          echo "Post-restart first CA signing-unit messages:"
+          docker exec ca-g09l012 sh -c "find /logs -maxdepth 4 -type f -print0 | xargs -0 -r grep -h -E 'CertificateAuthority: Initializing cert signing unit|CASigningUnit.init|SigningUnit: Loading|SigningUnit: cert chain|CA signing key and cert not|CMSCORE_CA_SIGNING|Certificate not found|Private key not found|certificate chain|buildCertificateChain' 2>/dev/null | head -n 150" \
+            | sed "s/$DS_PASSWORD/[masked]/g" \
+            | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g' || true
+          echo "Post-restart startup console first CA messages:"
+          docker logs ca-g09l012 2>&1 \
+            | sed "s/$DS_PASSWORD/[masked]/g" \
+            | grep -Ei 'CertificateAuthority: Initializing|CASigningUnit.init|SigningUnit: Loading|SigningUnit: cert chain|CA signing key and cert not|CMSCORE_CA_SIGNING|Certificate not found|Private key not found|certificate chain|buildCertificateChain|g09-ca-run: line' \
+            | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g' \
+            | head -n 140 || true
+          echo "Sanitized startup log slices (first/last relevant lines):"
+          docker exec ca-g09l012 sh -c 'cat /logs/ca/debug.*.log' > /tmp/g09-ca-debug.log
+          python3 - <<'PYLOG'
+          import pathlib,re,os
+          secret=os.environ.get('DS_PASSWORD','')
+          paths=[pathlib.Path('/tmp/g09-ca-debug.log')]+sorted(pathlib.Path('logs/pki').glob('debug*.log'))
+          for p in paths:
+              lines=p.read_text(errors='replace').splitlines()
+              hits=[(i,x) for i,x in enumerate(lines,1) if re.search(r'(?i)warn|error|exception|sign|chain|cert|init|CAEngine|SecurityDomain|pre-op',x)]
+              chosen=hits[:100]+hits[-70:]
+              print('LOG',p,'line_count',len(lines),'matched',len(hits))
+              seen=set()
+              for i,line in chosen:
+                  if i in seen: continue
+                  seen.add(i)
+                  if re.search(r'(?i)password|secret|private.key|credential',line):
+                      line='[sensitive line redacted]'
+                  if secret: line=line.replace(secret,'[masked]')
+                  line=re.sub(r'[A-Za-z0-9+/=]{80,}','[long-value-redacted]',line)
+                  print(f'{i}: {line[:450]}')
+          PYLOG
+          echo "Post-restart signer configuration:"
+          docker exec ca-g09l012 sh -c "grep -E '^ca.signing.(nickname|certnickname|tokenname|defaultSigningAlgorithm|cert)=' /conf/ca/CS.cfg | sed -E 's/(^ca.signing.cert=).*/\1[public-cert-redacted]/'" || true
+          set +e
+          docker exec ca-g09l012 pki -d /conf/alias -f /conf/password.conf nss-cert-verify --cert-usage SSLCA ca_signing
+          signer_post_rc=$?
+          set -e
+          echo "Post-restart NSS signer verify rc=$signer_post_rc"
+          docker exec ca-g09l012 pki -d /conf/alias -f /conf/password.conf nss-key-find --nickname ca_signing --output-format json > /tmp/g09-keyfind-after.json
+          python3 - <<'PYKEY2'
+          import json
+          j=json.load(open('/tmp/g09-keyfind-after.json'))
+          print('Post-restart NSS key association total=',j.get('total'),'fields=',sorted(j))
+          PYKEY2
+          echo "Legacy policy after change:"
+          docker exec ca-g09l012 grep -E '^ca.Policy.enable=|^ca.Policy.systemPolicies.enable=|^ca.Policy.rule.SubjectAltNameExt.predicate=' /conf/ca/CS.cfg
+          docker exec ca-g09l012 grep '^ca.Policy.impl.AttributePresentConstraints.class=' /conf/ca/CS.cfg
+          echo "Source and image versions:"
+          git -C /tmp/pki-src rev-parse HEAD
+          docker image inspect quay.io/dogtagpki/pki-ca:latest --format '{{.Id}}'
+
+      - name: Generate signed, inert CSR controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save --silent node-forge@1.3.1
+          mkdir -p private
+          cat > /tmp/make-csrs.js <<'JS'
+          const forge = require(process.cwd() + '/node_modules/node-forge');
+          const fs = require('fs');
+          const pki = forge.pki;
+          const keys = pki.rsa.generateKeyPair(2048);
+          fs.writeFileSync('private/leaf.key',pki.privateKeyToPem(keys.privateKey));
+          function make(label, names) {
+            const csr = pki.createCertificationRequest();
+            csr.publicKey = keys.publicKey;
+            csr.setSubject([{name:'commonName',value:'allowed.test'}]);
+            csr.setAttributes([{name:'extensionRequest',extensions:names.map(n => ({name:'subjectAltName',altNames:[{type:2,value:n}]}))}]);
+            csr.sign(keys.privateKey,forge.md.sha256.create());
+            if (!csr.verify()) throw new Error('CSR signature invalid');
+            fs.writeFileSync('private/' + label + '.pem',pki.certificationRequestToPem(csr));
+          }
+          make('duplicate-first',['forbidden.test','allowed.test']);
+          make('duplicate-reversed',['allowed.test','forbidden.test']);
+          make('allowed-single',['allowed.test']);
+          make('forbidden-single',['forbidden.test']);
+          JS
+          node /tmp/make-csrs.js
+          for csr in private/*.pem; do openssl req -in "$csr" -verify -noout; done
+          echo "Signed controls created locally on disposable runner; keys and CSR bodies withheld from logs."
+
+      - name: Submit through applicant-facing legacy endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p responses
+          submit() {
+            label="$1"; type="$2"; csr="$3"
+            code="$(curl -ksS --max-time 30 -o "responses/$label.html" -w '%{http_code}' \
+              --data-urlencode "certType=$type" \
+              --data-urlencode "pkcs10Request@private/$csr.pem" \
+              https://127.0.0.1:18443/ca/enrollment || true)"
+            echo "$label HTTP=$code bytes=$(wc -c <"responses/$label.html")"
+          }
+          submit duplicate-cep CEP-Request duplicate-first
+          submit duplicate-client client duplicate-first
+          submit reversed-cep CEP-Request duplicate-reversed
+          submit allowed-cep CEP-Request allowed-single
+          submit forbidden-cep CEP-Request forbidden-single
+          python3 - <<'PY'
+          import html,re,pathlib
+          for path in sorted(pathlib.Path('responses').glob('*.html')):
+              s=html.unescape(path.read_text(errors='replace'))
+              ids=sorted(set(re.findall(r'(?i)(?:request\s*id|requestId)[^0-9]{0,30}(\d{1,64})',s)))
+              state=sorted(set(re.findall(r'(?i)\b(?:pending|complete|rejected|failed|error|approved)\b',s)))
+              certs=len(re.findall(r'BEGIN CERTIFICATE',s))
+              print(f'{path.stem}: request_ids={ids} states={state} pem_certificates={certs}')
+          PY
+
+      - name: Record redacted error class and CA diagnostics
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PYDIAG'
+          import html,pathlib,re
+          for path in sorted(pathlib.Path('responses').glob('*.html')):
+              s=html.unescape(path.read_text(errors='replace'))
+              lines=[line for line in s.splitlines() if 'errorDetails' in line or 'errorDescription' in line]
+              safe=[]
+              for line in lines[:4]:
+                  line=re.sub(r'[A-Za-z0-9+/=]{80,}','[long-value-redacted]',line)
+                  line=re.sub(r'(?i)(password|token|secret)\s*[:=]\s*[^\s,;]+',r'\1=[redacted]',line)
+                  safe.append(line[:350])
+              print(path.stem,'error-fields:',safe)
+              short=re.sub(r'[A-Za-z0-9+/=]{80,}','[long-value-redacted]',s)
+              short=re.sub(r'(?i)(password|token|secret)\s*[:=]\s*[^\s,;]+',r'\1=[redacted]',short)
+              print(path.stem,'response:',short[:650])
+          PYDIAG
+          docker exec ca-g09l012 sh -c "grep -h -E 'CertificateAuthority:|CAMissing|SigningUnit:|CASigningUnit|CMSCORE_CA_SIGNING|not.*present|cert.*not found|key.*not found' /var/lib/pki/pki-tomcat/logs/ca/debug* 2>/dev/null | head -n 110" \
+            | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g' || true
+          docker logs --tail 650 ca-g09l012 2>&1 \
+            | sed "s/$DS_PASSWORD/[masked]/g" \
+            | grep -Ei 'CertificateAuthority:|CAMissing|SigningUnit:|CASigningUnit|signing key|signing cert|private key|not.*present|cert.*not found|key.*not found' \
+            | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g' \
+            | head -n 90 || true
+
+      - name: Extract auto-issued DER without logging CSR or key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p issued
+          python3 - <<'PYEXTRACT'
+          import html,json,pathlib,re,subprocess,hashlib
+          rows={}
+          for path in sorted(pathlib.Path('responses').glob('*.html')):
+              s=html.unescape(path.read_text(errors='replace'))
+              normalized=s.replace('\\n','\n').replace('\\r','\r').replace('\\/','/')
+              matches=re.findall(r'-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----',normalized)
+              row={'response_bytes':path.stat().st_size,'complete':bool(re.search(r'(?i)enrollment success|certificate has been issued|request is submitted and approved',s)),'pem_count':len(matches)}
+              for i,pem in enumerate(matches):
+                  label=f'{path.stem}-{i}'
+                  target=pathlib.Path('issued')/f'{label}.pem'
+                  target.write_text(pem+'\n')
+                  der=pathlib.Path('issued')/f'{label}.der'
+                  subprocess.run(['openssl','x509','-in',str(target),'-outform','DER','-out',str(der)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                  row.setdefault('der_sha256',[]).append(hashlib.sha256(der.read_bytes()).hexdigest())
+                  output=subprocess.run(['openssl','x509','-in',str(target),'-noout','-text'],check=True,capture_output=True,text=True).stdout
+                  row.setdefault('san_extension_count',[]).append(output.count('X509v3 Subject Alternative Name:'))
+                  san_lines=[line.strip() for line in output.splitlines() if 'DNS:' in line]
+                  row.setdefault('san_lines',[]).append(san_lines)
+                  asn1=subprocess.run(['openssl','asn1parse','-inform','DER','-in',str(der)],check=True,capture_output=True,text=True).stdout
+                  row.setdefault('san_oid_count',[]).append(asn1.count('X509v3 Subject Alternative Name'))
+              rows[path.stem]=row
+          pathlib.Path('issued/summary.json').write_text(json.dumps(rows,indent=2,sort_keys=True))
+          for label,row in rows.items(): print(label,row)
+          for label,row in rows.items():
+              if row['pem_count'] != 1: continue
+              pem=pathlib.Path('issued')/(label+'-0.pem')
+              csr_label={'duplicate-cep':'duplicate-first','duplicate-client':'duplicate-first','reversed-cep':'duplicate-reversed','allowed-cep':'allowed-single','forbidden-cep':'forbidden-single'}[label]
+              csr=pathlib.Path('private')/(csr_label+'.pem')
+              def run(*args):
+                  return subprocess.run(args,check=True,capture_output=True).stdout
+              cert_key=run('openssl','x509','-in',str(pem),'-pubkey','-noout')
+              csr_key=run('openssl','req','-in',str(csr),'-pubkey','-noout')
+              row['csr_spki_match']=cert_key==csr_key
+              verify=subprocess.run(['openssl','verify','-CAfile','issued/dogtag-ca-original.pem',str(pem)],capture_output=True,text=True)
+              row['ca_signature_valid']=verify.returncode==0
+              print(label,'csr_spki_match=',row['csr_spki_match'],'ca_signature_valid=',row['ca_signature_valid'])
+              print(label,'SAN lines:',[line.strip() for line in run('openssl','x509','-in',str(pem),'-noout','-text').decode().splitlines() if 'Subject Alternative Name' in line or 'DNS:' in line])
+          pathlib.Path('issued/summary.json').write_text(json.dumps(rows,indent=2,sort_keys=True))
+          if not all(row['complete'] and row['pem_count']==1 and row.get('csr_spki_match') for row in rows.values()):
+              raise SystemExit('One or more controls did not yield exactly one issued certificate')
+          PYEXTRACT
+
+      - name: Verify issuer-time constraint and encrypt applicant key
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > recipient.pem <<'RECEIVER_CERT'
+          -----BEGIN CERTIFICATE-----
+          MIIDOTCCAiGgAwIBAgIUG1ZQ6nmlOo8PPMSScXjiG60ahIEwDQYJKoZIhvcNAQEL
+          BQAwLDEqMCgGA1UEAwwhRzA5LUwwMTIgSW5lcnQgQXJ0aWZhY3QgUmVjaXBpZW50
+          MB4XDTI2MTEyODEwMTkwMFoXDTI2MTEzMDEwMTkwMFowLDEqMCgGA1UEAwwhRzA5
+          LUwwMTIgSW5lcnQgQXJ0aWZhY3QgUmVjaXBpZW50MIIBIjANBgkqhkiG9w0BAQEF
+          AAOCAQ8AMIIBCgKCAQEAuVV1sf1ANWrUtIPKSQAoCPE4/enEY6AtnHcGr0nCIRkZ
+          l3nNX8GwjJAC+r2JMYkzV3+NbA1leOzm44FCtSA8+Vd/hmZici1M95e+4CmBMr5W
+          ATApxoY/CGT7m61eW3fFK4JOo21kRpTXJ4OkHe1XaTDrzOTHh0kOFg/PoO0oleYF
+          LtMQDRQesGgIwEcsxh4rn1FCyll/FBnCXdJ61FMVqx5AEAsSYdrdycQM0KJwEh0W
+          Aj8DHgzBkJs/Ezz6lf2wwIv2erRNhE828e88RoqIIi91slHQd3nlf0Xrw7/iJP9P
+          yTaOprl4FCqAFvlkXIoH1KXPKPlb6nXNXoGUc1+JZwIDAQABo1MwUTAdBgNVHQ4E
+          FgQUFjHYk1bznPpoo+SIOLFhfBfYkk4wHwYDVR0jBBgwFoAUFjHYk1bznPpoo+SI
+          OLFhfBfYkk4wDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAfPLM
+          8ywI6agq8O23cSK0Cp6WYwGE4/TW7jakNsh9L/opZMXyl2CHODutGclfthkOj8A/
+          J9H7ylPRsVs1iPmu5jEImGmDSg3KF675UelPdqzEXYPMv1dge65rQUWUBhsbNJ5F
+          itXAJLwuI5kLSR2fmB4x8fknXbE3LwmxD/ATqGdH9nC0nxiVhJqVUfWvy9qGyV0W
+          c6pKbsy35xzCM2P4oChrEXnHV6/7JGnlFANetvHXqN4LXktm3ewtoRsuF33046fZ
+          D1+WAMkSoJlC/jcEBaTmV/tk9I6p0ewd8K4M3vGWWXfhLk4m4hsdC0DDSgIKDfvY
+          RxDKWww5jSzDRk4xDA==
+          -----END CERTIFICATE-----
+          RECEIVER_CERT
+          cmp <(openssl x509 -in certs/ca_signing.crt -outform DER) <(openssl x509 -in issued/dogtag-ca-original.pem -outform DER)
+          openssl x509 -in issued/dogtag-ca-original.pem -noout -subject -issuer -ext nameConstraints
+          openssl verify -CAfile issued/bridge-root.pem issued/dogtag-ca-original.pem
+          for label in allowed-cep duplicate-cep duplicate-client forbidden-cep reversed-cep; do
+            set +e
+            openssl verify -CAfile issued/bridge-root.pem -untrusted issued/dogtag-ca-original.pem "issued/$label-0.pem" >"issued/$label-constrained-verify.txt" 2>&1
+            verify_rc=$?
+            set -e
+            echo "$label constrained_verify=$verify_rc"
+            sed -n '1,3p' "issued/$label-constrained-verify.txt" | sed -E 's/[A-Za-z0-9+\/=]{80,}/[long-value-redacted]/g'
+          done
+          openssl cms -encrypt -aes256 -binary \
+            -in private/leaf.key -out issued/applicant-leaf.key.cms \
+            -outform DER recipient.pem
+          test -s issued/applicant-leaf.key.cms
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g09-l012-dogtag-externalchain-v23
+          path: |
+            issued/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Dispose isolated CA and directory
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f ca-g09l012 ds-g09l012 >/dev/null 2>&1 || true
+          docker network rm g09l012 >/dev/null 2>&1 || true
