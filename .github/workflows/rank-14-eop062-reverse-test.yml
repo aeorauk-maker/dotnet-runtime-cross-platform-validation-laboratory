@@ -1,0 +1,29 @@
+name: rank-14-eop062-reverse-test
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'MSRC_EOP02-EOP-062_reverse_test.zip'
+      - '.github/workflows/rank-14-eop062-reverse-test.yml'
+  workflow_dispatch:
+jobs:
+  reverse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Recheck exact ZIP and builder-first reverse order
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' '6e0d4044af745657bfc57ef01792654d1519cfc0eb1be402e72973f92e30c41d' MSRC_EOP02-EOP-062_reverse_test.zip | sha256sum --check
+          unzip -t MSRC_EOP02-EOP-062_reverse_test.zip
+          mkdir "$RUNNER_TEMP/eop062-reverse-$GITHUB_RUN_ID"
+          unzip -q MSRC_EOP02-EOP-062_reverse_test.zip -d "$RUNNER_TEMP/eop062-reverse-$GITHUB_RUN_ID"
+          cd "$RUNNER_TEMP/eop062-reverse-$GITHUB_RUN_ID"
+          EOP062_REVERSE=1 ./run.sh completed
