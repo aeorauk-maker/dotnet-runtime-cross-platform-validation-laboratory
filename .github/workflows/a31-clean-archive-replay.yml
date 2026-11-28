@@ -29,7 +29,7 @@ jobs:
           import zipfile
           import json
 
-          expected = '99467330ca9c0e2d047ef1573ad79af66a3aa8c6bd37350dcf061beaa034aa32'
+          expected = '1589383828348e4fb2f7152b627d74c1148adb74e7b01debd717ce0c2960a319'
           raw = (Path(os.environ['GITHUB_WORKSPACE']) / 'MSRC_G09-L016_PoC.zip').read_bytes()
           digest = hashlib.sha256(raw).hexdigest()
           assert digest == expected, 'exact archive digest mismatch'
