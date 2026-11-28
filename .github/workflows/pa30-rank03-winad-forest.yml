@@ -1,0 +1,45 @@
+name: PA30 rank03 Windows AD forest diagnostic
+on:
+  push:
+    branches: [pa30-rank03-winad-forest-20261128]
+permissions:
+  contents: read
+jobs:
+  forest:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Promote disposable local forest without reboot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Output ('OS=' + (Get-CimInstance Win32_OperatingSystem).Caption)
+          Write-Output ('Admin=' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+          $feature = Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
+          Write-Output ('FeatureInstalled=' + $feature.Success)
+          Write-Output ('FeatureRestartNeeded=' + $feature.RestartNeeded)
+          if (-not $feature.Success) { exit 2 }
+          $bytes = New-Object byte[] 24
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          $rng.GetBytes($bytes)
+          $rng.Dispose()
+          $password = [Convert]::ToBase64String($bytes) + 'aA1!'
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          Remove-Variable password
+          Write-Output 'PromotionStart=True'
+          try {
+            Install-ADDSForest -DomainName 'lab.example' -DomainNetbiosName 'LAB' -InstallDns -NoDnsOnNetwork -NoRebootOnCompletion -SafeModeAdministratorPassword $secure -Force -Confirm:$false -WarningAction SilentlyContinue | Out-Null
+            Write-Output 'PromotionReturned=True'
+          } catch {
+            Write-Output ('PromotionErrorType=' + $_.Exception.GetType().FullName)
+            Write-Output ('PromotionErrorId=' + $_.FullyQualifiedErrorId)
+            Write-Output ('PromotionErrorMessage=' + $_.Exception.Message)
+          }
+          Get-Service NTDS,KDC,Netlogon,DNS -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ('Service_' + $_.Name + '=' + $_.Status) }
+          try {
+            $domain = Get-ADDomain -ErrorAction Stop
+            Write-Output ('DomainQuery=' + $domain.DNSRoot)
+          } catch {
+            Write-Output ('DomainQueryError=' + $_.Exception.GetType().Name)
+          }
