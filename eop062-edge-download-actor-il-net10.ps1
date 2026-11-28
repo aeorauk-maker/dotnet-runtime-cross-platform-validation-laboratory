@@ -146,8 +146,8 @@ Write-Host 'EOP062_EDGE_DOWNLOAD_ACTOR_DIAGNOSTIC_COMPLETE'
 
 # Separate ordinary-standard-account check: the previous download used the High runner account.
 $stdName = 'eop062b' + [guid]::NewGuid().ToString('N').Substring(0, 6)
-$stdPass = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(18)) + 'aA1!'
-& net.exe user $stdName $stdPass /add /y | Out-Null
+$stdPass = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(18)) + 'aA1!'
+& net.exe user $stdName $stdPass /add /y 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Standard account creation failed' }
 try {
     $stdIdentity = "$env:COMPUTERNAME\$stdName"
