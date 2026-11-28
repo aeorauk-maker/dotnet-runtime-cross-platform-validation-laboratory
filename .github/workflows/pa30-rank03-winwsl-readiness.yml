@@ -20,7 +20,7 @@ jobs:
       - name: Install and provision disposable Samba domain
         shell: pwsh
         run: |
-          $install = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/tmp/rank03-apt-update.log 2>&1 && apt-get install -y -qq samba-ad-dc winbind krb5-user dnsutils >/tmp/rank03-apt-install.log 2>&1; rc=$?; echo "APT_EXIT=$rc"; test $rc -eq 0; command -v samba-tool'
+          $install = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/tmp/rank03-apt-update.log 2>&1 && apt-get install -y -qq samba-ad-dc winbind krb5-user dnsutils tcpdump >/tmp/rank03-apt-install.log 2>&1; rc=$?; echo "APT_EXIT=$rc"; test $rc -eq 0; command -v samba-tool'
           wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $provision = 'set -eu; rm -f /etc/samba/smb.conf; pass="Aa1!$(openssl rand -hex 20)"; printf "%s" "$pass" >/root/.rank03-admin-pass; chmod 600 /root/.rank03-admin-pass; if samba-tool domain provision --realm=LAB.EXAMPLE --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass="$pass" >/tmp/rank03-provision.log 2>&1; then echo PROVISION=OK; else echo PROVISION=FAILED; grep -Ei "error|exception|failed|traceback" /tmp/rank03-provision.log | tail -8 | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g"; exit 19; fi; sed -i "/^\[global\]/a interfaces = lo eth0" /etc/samba/smb.conf; sed -i "/^\[global\]/a bind interfaces only = yes" /etc/samba/smb.conf; sed -i "/^\[global\]/a server services = -dns, -s3fs, -winbindd" /etc/samba/smb.conf; printf "127.0.0.1 dc.lab.example\n" >>/etc/hosts; printf "[libdefaults]\n default_realm = LAB.EXAMPLE\n dns_lookup_kdc = false\n[realms]\n LAB.EXAMPLE = {\n  kdc = 127.0.0.1\n }\n" >/root/.rank03-krb5.conf; chmod 600 /root/.rank03-krb5.conf; echo BIND_CONFIG=OK; echo POST_PROVISION=YES'
@@ -145,8 +145,26 @@ jobs:
           try {
             Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses @('127.0.0.1')
             ipconfig /flushdns | Out-Null
+            $capStart = 'nohup tcpdump -i any -s 0 -w /tmp/rank03-ldap.pcap tcp port 389 >/tmp/rank03-tcpdump.log 2>&1 </dev/null & echo $! >/tmp/rank03-tcpdump.pid; sleep 1; if kill -0 $(cat /tmp/rank03-tcpdump.pid) 2>/dev/null; then echo LDAP_CAPTURE=LIVE; else echo LDAP_CAPTURE=FAILED; fi'
+            wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $capStart
             & './bindprobe/bin/Release/net10.0/bindprobe.exe'
           } finally {
+            $capStop = @'
+          if test -f /tmp/rank03-tcpdump.pid; then kill $(cat /tmp/rank03-tcpdump.pid) 2>/dev/null || true; fi
+          sleep 1
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/rank03-ldap.pcap')
+          if not p.exists():
+              print('LDAP_CAPTURE=MISSING')
+          else:
+              b = p.read_bytes()
+              print('LDAP_CAPTURE_BYTES=' + str(len(b)))
+              print('LDAP_NTLMSSP_PRESENT=' + str(b'NTLMSSP' in b))
+              print('LDAP_KERBEROS_OID_PRESENT=' + str(bytes.fromhex('06092a864886f712010202') in b))
+          PY
+          '@
+            wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $capStop
             if ($saved.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses $saved }
             else { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ResetServerAddresses }
             Remove-Item Env:PA30_BIND_PASS -ErrorAction SilentlyContinue
