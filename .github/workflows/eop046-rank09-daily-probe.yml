@@ -47,7 +47,7 @@ jobs:
           sha256sum "$watch"
           targets=$(find "$DOTNET_ROOT/sdk" -name Microsoft.NET.Sdk.targets -print -quit)
           test -n "$targets"
-          rg -n '_GenerateHotReloadWebSocketKey|DOTNET_WATCH_HOTRELOAD_WEBSOCKET_KEY' "$targets"
+          grep -nE '_GenerateHotReloadWebSocketKey|DOTNET_WATCH_HOTRELOAD_WEBSOCKET_KEY' "$targets"
           mkdir -p eop046-console
           cat > eop046-console/eop046-console.csproj <<'EOF'
           <Project Sdk="Microsoft.NET.Sdk">
