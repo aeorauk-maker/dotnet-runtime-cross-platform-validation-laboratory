@@ -114,10 +114,12 @@ jobs:
       - name: Trace CNAME and PTR effect on Wldap32 service name
         shell: pwsh
         run: |
-          $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface } | Select-Object -First 1
-          if ($null -eq $adapter) { throw 'No active hardware adapter' }
-          $index = $adapter.ifIndex
-          $original = @((Get-DnsClientServerAddress -InterfaceIndex $index -AddressFamily IPv4).ServerAddresses)
+          $dnsClients = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop)
+          $dnsClient = $dnsClients | Where-Object { $_.ServerAddresses.Count -gt 0 -and $_.InterfaceAlias -notmatch 'Loopback' } | Select-Object -First 1
+          if ($null -eq $dnsClient) { Write-Host 'DNS_FIXTURE=NO_SUITABLE_CLIENT'; exit 0 }
+          $index = $dnsClient.InterfaceIndex
+          $original = @($dnsClient.ServerAddresses)
+          Write-Host "DNS_INTERFACE=$($dnsClient.InterfaceAlias)"
           $traceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\ldap\Tracing\probe.exe'
           New-Item -Path $traceKey -Force | Out-Null
           $etl = Join-Path $env:RUNNER_TEMP 'eop090-cname.etl'
