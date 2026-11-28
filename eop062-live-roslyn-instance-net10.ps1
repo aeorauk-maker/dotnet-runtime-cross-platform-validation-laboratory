@@ -161,7 +161,7 @@ try {
     [System.IO.File]::Copy($PSCommandPath, $sharedScript)
     [System.IO.File]::Copy($cmdExe, $lowCmdExe)
     [System.IO.File]::WriteAllText((Join-Path $labRoot 'global.json'), '{"sdk":{"version":"10.0.404","rollForward":"disable"}}')
-    [System.IO.File]::WriteAllText($project, '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><UseAppHost>false</UseAppHost></PropertyGroup></Project>')
+    [System.IO.File]::WriteAllText($project, '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><UseAppHost>false</UseAppHost></PropertyGroup></Project>')
     [System.IO.File]::WriteAllText($sourcePath, 'System.Console.WriteLine("EOP062_INERT");')
     & $dotnetExe restore $project --ignore-failed-sources | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Owned project restore failed' }
