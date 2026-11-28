@@ -21,7 +21,12 @@ def child(script, env_extra=None):
     env = os.environ.copy()
     env.update(env_extra or {})
     proc = subprocess.run([sys.executable, str(HERE / script)], env=env,
-                          capture_output=True, text=True, check=True, timeout=90)
+                          capture_output=True, text=True, timeout=90)
+    if proc.returncode:
+        # Child stdout can hold fixture metadata; only a bounded stderr tail is
+        # safe to emit into a public runner log. No plaintext password is logged.
+        tail = " | ".join(proc.stderr.strip().splitlines()[-2:])[:700]
+        raise RuntimeError(f"{script} exited {proc.returncode}: {tail}")
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 

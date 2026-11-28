@@ -31,8 +31,13 @@ def psql(sql):
     proc = subprocess.run(
         ["docker", "exec", "-i", container, "sh", "-c",
          'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -v ON_ERROR_STOP=1 -qAt -U "$POSTGRES_USER" -d identitydb'],
-        input=sql, capture_output=True, text=True, check=True, timeout=20,
+        input=sql, capture_output=True, text=True, timeout=20,
     )
+    if proc.returncode:
+        # psql may echo the SQL (which contains a password hash) on later
+        # lines. Keep only its first error category line in public logs.
+        first = proc.stderr.strip().splitlines()[:1]
+        raise RuntimeError(f"identitydb psql exit {proc.returncode}: {first[0][:160] if first else 'no stderr'}")
     return proc.stdout.strip()
 
 
