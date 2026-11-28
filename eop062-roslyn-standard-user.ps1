@@ -1,3 +1,4 @@
+# Standard-account no-actor control, then low-integrity compiler preclaim.
 $ErrorActionPreference = 'Stop'
 
 $resultPath = Join-Path $env:RUNNER_TEMP 'mic-child-result.txt'
