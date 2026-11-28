@@ -41,8 +41,8 @@ jobs:
             $ids = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' } | Select-Object -ExpandProperty InterfaceIndex -Unique | Sort-Object)
             [IO.File]::WriteAllText((Join-Path $state 'interfaces.log'), "count=$($ids.Count); ids=$($ids -join ',')")
             if ($ids.Count -lt 2) { throw 'Two distinct active link-local interfaces unavailable' }
-            $a = [int]$ids[0]
-            $b = [int]$ids[1]
+            $a = [int]$ids[1]
+            $b = [int]$ids[0]
             New-NetIPAddress -InterfaceIndex $a -IPAddress $ip -PrefixLength 64 -SkipAsSource $true -ErrorAction Stop | Out-Null
             $added += $a
             Start-Sleep -Seconds 2
