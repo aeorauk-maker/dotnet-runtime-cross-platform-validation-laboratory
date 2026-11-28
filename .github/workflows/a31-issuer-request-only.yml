@@ -178,3 +178,27 @@ jobs:
       - name: Prove exact actor leaf through normal SDK build
         shell: bash
         run: python3 a31_exact_build.py
+  exact_build_net10:
+    needs: issuer
+    runs-on: macos-15
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 20
+    env:
+      A31_TFM: net10.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.404
+      - uses: actions/download-artifact@v4
+        with:
+          name: a31-public-test-fixture
+          path: fixture
+      - name: Prove exact actor leaf through normal LTS build
+        shell: bash
+        run: python3 a31_exact_build.py
