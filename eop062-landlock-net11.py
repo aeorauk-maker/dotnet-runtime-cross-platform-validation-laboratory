@@ -275,6 +275,8 @@ try:
     assert "DIRECT_MARKER_WRITE=DENIED errno=13" in log
     assert "DIRECT_ROLE_WRITE=DENIED errno=13" in log
     assert "DIRECT_OWNER_ENV_READ=DENIED errno=13" in log
+    assert "PTRACE_PARENT_DENIED errno=1" in log
+    assert "SIGNAL_PARENT_PROBE_ALLOWED=1" in log
     assert_eq("FAKE_PIPE_TARGET_AFTER_ENTRY", os.readlink(f"/tmp/{pipe_name}"), f"/tmp/eop062-rank20-sidecar/{pipe_name}")
     print("LANDLOCKED_ACTOR_READY", flush=True)
     launch_app("single-dotnet-run-with-preclaimed-pipe")
