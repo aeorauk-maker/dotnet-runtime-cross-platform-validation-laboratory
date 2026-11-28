@@ -26,7 +26,7 @@ jobs:
           cd "$RUNNER_TEMP/eshop"
           git checkout --quiet 3c6e531a6063676ece317644f72172fb42a935b3
           test "$(git rev-parse HEAD)" = 3c6e531a6063676ece317644f72172fb42a935b3
-          dotnet build src/eShop.AppHost/eShop.AppHost.csproj -c Release --nologo -v:q
+          dotnet build src/eShop.AppHost/eShop.AppHost.csproj -c Debug --nologo -v:q
           python3 -m venv "$RUNNER_TEMP/g06-venv"
           "$RUNNER_TEMP/g06-venv/bin/pip" -q install requests
           echo "$RUNNER_TEMP/g06-venv/bin" >> "$GITHUB_PATH"
@@ -37,7 +37,7 @@ jobs:
           DOTNET_SYSTEM_NET_DISABLEIPV6: '1'
         run: |
           cd "$RUNNER_TEMP/eshop"
-          nohup dotnet run --project src/eShop.AppHost/eShop.AppHost.csproj -c Release --no-build --launch-profile https > "$RUNNER_TEMP/g06-apphost.log" 2>&1 &
+          nohup dotnet run --project src/eShop.AppHost/eShop.AppHost.csproj -c Debug --no-build --launch-profile https > "$RUNNER_TEMP/g06-apphost.log" 2>&1 &
           echo "G06_APPHOST_PID=$!" >> "$GITHUB_ENV"
       - name: Discover owned endpoints
         shell: bash
