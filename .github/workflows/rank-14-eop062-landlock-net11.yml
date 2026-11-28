@@ -1,0 +1,43 @@
+name: rank-14-eop062-landlock-net11
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-landlock-net11.py'
+      - 'eop062-landlock-fake.pl'
+      - 'eop062-landlock-launch.c'
+      - '.github/workflows/rank-14-eop062-landlock-net11.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  same_uid_confined_actor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Verify fixture and compile unprivileged Landlock launcher
+        run: |
+          set -euo pipefail
+          test "$(dotnet --version)" = 11.0.100
+          test "$(sha256sum eop062-landlock-net11.py | cut -d ' ' -f 1)" = 6b114d494fbc69bc1a9baedc271d30a2ffba8240ee3ac7da220b8b7a9c431362
+          test "$(sha256sum eop062-landlock-fake.pl | cut -d ' ' -f 1)" = 718c20db4b31501a52f08197146e153aa8cc27c15896b47d913de57d6750e6aa
+          test "$(sha256sum eop062-landlock-launch.c | cut -d ' ' -f 1)" = 9cf4a46b27cdf7fe4480b9f6d24d9cc2de2ae72149c447450a818adf1441d55b
+          python3 -m py_compile eop062-landlock-net11.py
+          perl -c eop062-landlock-fake.pl
+          cc -O2 -Wall -Wextra -o landlock-launch eop062-landlock-launch.c
+          echo "PTRACE_SCOPE=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || printf unknown)"
+          ./landlock-launch /usr/bin/id -u
+      - name: Valid, malformed, valid under same-UID file confinement
+        run: |
+          set -euo pipefail
+          EOP062_MODE=completed python3 eop062-landlock-net11.py
+          EOP062_MODE=malformed python3 eop062-landlock-net11.py
+          EOP062_MODE=completed python3 eop062-landlock-net11.py
+          echo LANDLOCK_CHAIN=PASS
