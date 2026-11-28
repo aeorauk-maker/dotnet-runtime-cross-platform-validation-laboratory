@@ -1,0 +1,38 @@
+name: rank-14-eop062-gha-autostart-net11
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-gha-autostart-net11.py'
+      - 'eop062-autostart-fake.pl'
+      - 'eop062-service-entry.sh'
+      - '.github/workflows/rank-14-eop062-gha-autostart-net11.yml'
+  workflow_dispatch:
+jobs:
+  autostart_actor:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [completed, malformed]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      sidecar:
+        image: mcr.microsoft.com/dotnet/sdk:11.0
+        entrypoint: bash
+        command: -lc 'curl --fail --silent --show-error --location https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/20c3a8172941027a57d2a21bbd0d7279e02b02f1/eop062-service-entry.sh | bash'
+        options: --user 1001:1001 --cap-drop ALL --security-opt no-new-privileges
+        volumes:
+          - /tmp:/tmp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Join service-entry actor to protected app action
+        env:
+          EOP062_MODE: ${{ matrix.mode }}
+          EOP062_SERVICE_ID: ${{ job.services.sidecar.id }}
+        run: python3 eop062-gha-autostart-net11.py
