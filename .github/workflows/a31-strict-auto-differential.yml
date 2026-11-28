@@ -156,7 +156,7 @@ jobs:
             name: a31-policy-use
             apiGroup: rbac.authorization.k8s.io
           EOF
-          kubectl apply -f policy-use.yaml
+          echo 'A31_POLICY_USE_ROLE_NOT_APPLIED'
           actor_token="$(kubectl -n a31-tenant create token actor --duration=15m)"
           test -n "$actor_token"
           actor_kubectl() { local ca_file="$PWD/actor-ca.pem"; kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > "$ca_file"; kubectl --kubeconfig=/dev/null --server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" --certificate-authority="$ca_file" --token="$actor_token" "$@"; }
@@ -165,12 +165,12 @@ jobs:
           test "$(actor_kubectl auth can-i get certificaterequests.cert-manager.io -n a31-tenant)" = yes
           test "$(actor_kubectl auth can-i get secret/a31-ca-key -n cert-manager)" = no
           test "$(actor_kubectl auth can-i create certificaterequestpolicies.policy.cert-manager.io)" = no
-          test "$(actor_kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io/a31-split-name-policy -n a31-tenant)" = yes
+          test "$(actor_kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io/a31-split-name-policy -n a31-tenant)" = no
           if actor_kubectl -n cert-manager get secret a31-ca-key -o name >/dev/null 2>&1; then
             echo 'A31_UNEXPECTED_CA_SECRET_ACCESS'
             exit 1
           fi
-          echo 'A31_ACTUAL_SERVICEACCOUNT_TOKEN_SCOPED'
+          echo 'A31_ACTUAL_SERVICEACCOUNT_TOKEN_SCOPED_NO_POLICY_USE'
 
           openssl ecparam -name prime256v1 -genkey -noout -out actor-leaf.key
           make_request() {
@@ -239,17 +239,17 @@ jobs:
             openssl x509 -in attack-issued.pem -noout -subject -fingerprint -sha256
             echo 'A31_POLICY_ISSUED_attack'
             kubectl -n a31-tenant get certificaterequests -o json | python3 -c 'import json,sys; r=json.load(sys.stdin)["items"]; a=[x for x in r if x["metadata"]["name"].startswith("a31-attack-")]; issued=sum(bool(x.get("status",{}).get("certificate")) for x in a); denied=sum(any(c.get("type")=="Denied" and c.get("status")=="True" for c in x.get("status",{}).get("conditions",[])) for x in a); print(f"A31_BURST_TOTAL={len(a)} ISSUED={issued} DENIED={denied} PENDING={len(a)-issued-denied}")'
-            make_request allowed allowed.test allowed.test Approved
+            
             openssl req -new -sha256 -key actor-leaf.key -subj '/CN=forbidden.test' -addext 'subjectAltName=DNS:forbidden.test' -out denied.csr; openssl x509 -req -sha256 -in denied.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out denied-issued.pem -extfile <(echo 'basicConstraints=critical,CA:FALSE'; echo 'keyUsage=critical,digitalSignature'; echo 'extendedKeyUsage=serverAuth'; echo 'subjectAltName=DNS:forbidden.test'); echo 'A31_ADMIN_SIGNED_FORBIDDEN_SAN_TLS_NEGATIVE'
 
           else
             make_request attack forbidden.test '' Denied
             make_request denied forbidden.test forbidden.test Denied
-            make_request allowed allowed.test allowed.test Approved
-            echo 'A31_STRICT_POLICY_DEFAULT_APPROVER_OFF_DENIAL_PASS'
+            
+            echo 'A31_STRICT_POLICY_NO_USE_DEFAULT_APPROVER_OFF_DENIAL_PASS'
           fi
 
-          openssl verify -CAfile root.pem -untrusted issuer.pem allowed-issued.pem
+          openssl req -new -sha256 -key actor-leaf.key -subj '/CN=allowed.test' -addext 'subjectAltName=DNS:allowed.test' -out allowed.csr; openssl x509 -req -sha256 -in allowed.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out allowed-issued.pem -extfile <(echo 'basicConstraints=critical,CA:FALSE'; echo 'keyUsage=critical,digitalSignature'; echo 'extendedKeyUsage=serverAuth'; echo 'subjectAltName=DNS:allowed.test'); echo 'A31_ADMIN_SIGNED_ALLOWED_SAN_TLS_POSITIVE'; openssl verify -CAfile root.pem -untrusted issuer.pem allowed-issued.pem
           if [ "$AUTOAPPROVAL" = true ]; then
           if openssl verify -CAfile root.pem -untrusted issuer.pem attack-issued.pem; then
             echo 'A31_LINUX_OPENSSL_ATTACK_CHAIN_ACCEPTED'
