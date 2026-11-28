@@ -550,8 +550,12 @@ try {
         [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("PUBLIC_OLD");')
         & $dotnetExe build $project --no-restore -v:minimal '-p:UseSharedCompilation=false' | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'Could not reseed public baseline after no-actor control' }
-        & icacls.exe $labRoot /setintegritylevel M /T | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw 'Could not relabel reseeded lab medium' }
+        & icacls.exe $labRoot /setintegritylevel '(OI)(CI)M' | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Could not relabel reseeded lab root medium' }
+        foreach ($protectedPath in @($source, $project, $outputDll, (Join-Path $labRoot 'obj\Debug\net11.0\AdminApp.dll'))) {
+            & icacls.exe $protectedPath /setintegritylevel M | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Could not relabel reseeded protected path: $protectedPath" }
+        }
         $oldHash = (Get-FileHash $outputDll -Algorithm SHA256).Hash
         [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("SECURE_NEW");')
         Write-Host "RESEEDED_PUBLIC hash=$oldHash"
