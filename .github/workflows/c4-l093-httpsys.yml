@@ -1,0 +1,230 @@
+name: C4 L093 HTTPsys status only challenge
+on:
+  push:
+    branches:
+      - c4-l093-httpsys-20261127
+    paths:
+      - .github/workflows/c4-l093-httpsys.yml
+  workflow_dispatch:
+jobs:
+  reproduce:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Run isolated HTTPsys and YARP loopback fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $projectDir = Join-Path $env:RUNNER_TEMP 'C4L093HttpSys'
+          New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
+          $project = Join-Path $projectDir 'HttpSysReplay.csproj'
+          @'
+          <Project Sdk="Microsoft.NET.Sdk.Web">
+            <PropertyGroup>
+              <TargetFramework>net11.0</TargetFramework>
+              <Nullable>enable</Nullable>
+              <ImplicitUsings>enable</ImplicitUsings>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+            </ItemGroup>
+          </Project>
+          '@ | Set-Content -Path $project -Encoding utf8
+          @'
+          using System.Collections.Concurrent;
+          using System.Net;
+          using System.Reflection;
+          using System.Security.Cryptography;
+          using System.Text.Json;
+          using Microsoft.AspNetCore.Server.HttpSys;
+          using Microsoft.AspNetCore.Server.Kestrel.Core;
+          using Yarp.ReverseProxy.Configuration;
+          using HttpSysAuthenticationSchemes = Microsoft.AspNetCore.Server.HttpSys.AuthenticationSchemes;
+
+          if (!OperatingSystem.IsWindows())
+          {
+              Console.Error.WriteLine("This fixture requires Windows HTTP.sys and an HTTPS certificate binding.");
+              return;
+          }
+
+          var thumbprint = Environment.GetEnvironmentVariable("C4_TEST_THUMBPRINT")
+              ?? throw new InvalidOperationException("C4_TEST_THUMBPRINT is required");
+          var httpsPort = int.Parse(Environment.GetEnvironmentVariable("C4_TEST_PORT") ?? "53491");
+          var frontUrl = $"https://127.0.0.1:{httpsPort}";
+          var visits = new ConcurrentDictionary<string, ConcurrentQueue<string>>();
+          var frontVisits = new ConcurrentDictionary<string, ConcurrentQueue<string>>();
+          var events = new ConcurrentQueue<object>();
+          long sequence = 0;
+
+          var lowerBuilder = WebApplication.CreateBuilder(args);
+          lowerBuilder.Logging.ClearProviders();
+          lowerBuilder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+          var lower = lowerBuilder.Build();
+          lower.MapPost("/{**path}", (HttpContext context) =>
+          {
+              var id = context.Request.Query["id"].ToString();
+              var mode = context.Request.Query["mode"].ToString();
+              var history = visits.GetOrAdd(id, _ => new ConcurrentQueue<string>());
+              history.Enqueue(context.Request.Protocol);
+              var count = history.Count;
+              events.Enqueue(new
+              {
+                  Sequence = Interlocked.Increment(ref sequence),
+                  Role = "lower",
+                  Id = id,
+                  Count = count,
+                  Protocol = context.Request.Protocol,
+                  Status = mode == "challenge" && count == 1 ? 401 : 200,
+                  ChallengeHeaderSetByLower = context.Response.Headers.ContainsKey("WWW-Authenticate"),
+              });
+              if (mode == "challenge" && count == 1)
+              {
+                  // The lower response deliberately supplies only a status, never a challenge header.
+                  return Results.StatusCode(401);
+              }
+              return Results.Text("lower-ok");
+          });
+          await lower.StartAsync();
+          var lowerUrl = lower.Urls.Single();
+
+          var frontBuilder = WebApplication.CreateBuilder(args);
+          frontBuilder.Logging.ClearProviders();
+          frontBuilder.WebHost.UseHttpSys(options =>
+          {
+              options.UrlPrefixes.Add(frontUrl + "/");
+              options.Authentication.Schemes = HttpSysAuthenticationSchemes.Negotiate | HttpSysAuthenticationSchemes.NTLM;
+              options.Authentication.AllowAnonymous = true;
+          });
+          frontBuilder.Services.AddReverseProxy().LoadFromMemory(
+              [new RouteConfig { RouteId = "all", ClusterId = "lower", Match = new RouteMatch { Path = "/{**catch-all}" } }],
+              [new ClusterConfig
+              {
+                  ClusterId = "lower",
+                  Destinations = new Dictionary<string, DestinationConfig>
+                  {
+                      ["lower"] = new() { Address = lowerUrl + "/" },
+                  },
+              }]);
+          var front = frontBuilder.Build();
+          front.Use(async (context, next) =>
+          {
+              var id = context.Request.Query["id"].ToString();
+              frontVisits.GetOrAdd(id, _ => new ConcurrentQueue<string>()).Enqueue(context.Request.Protocol);
+              events.Enqueue(new
+              {
+                  Sequence = Interlocked.Increment(ref sequence),
+                  Role = "front",
+                  Id = id,
+                  Protocol = context.Request.Protocol,
+                  HasAuthorization = context.Request.Headers.ContainsKey("Authorization"),
+              });
+              await next();
+          });
+          front.MapReverseProxy();
+          await front.StartAsync();
+
+          var cases = new[]
+          {
+              (Id: "no-challenge", Mode: "ok", Body: false, Policy: HttpVersionPolicy.RequestVersionOrLower),
+              (Id: "challenge-one", Mode: "challenge", Body: false, Policy: HttpVersionPolicy.RequestVersionOrLower),
+              (Id: "challenge-two", Mode: "challenge", Body: false, Policy: HttpVersionPolicy.RequestVersionOrLower),
+              (Id: "body", Mode: "challenge", Body: true, Policy: HttpVersionPolicy.RequestVersionOrLower),
+              (Id: "exact", Mode: "challenge", Body: false, Policy: HttpVersionPolicy.RequestVersionExact),
+          };
+          var results = new List<object>();
+          var responses = new Dictionary<string, (int Status, string Version, string[] Challenges)>();
+          foreach (var item in cases)
+          {
+              using var handler = new HttpClientHandler
+              {
+                  UseProxy = false,
+                  UseDefaultCredentials = false,
+                  AllowAutoRedirect = false,
+                  ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
+                      string.Equals(certificate?.Thumbprint, thumbprint, StringComparison.OrdinalIgnoreCase),
+              };
+              using var client = new HttpClient(handler);
+              using var request = new HttpRequestMessage(HttpMethod.Post, $"{frontUrl}/probe?id={item.Id}&mode={item.Mode}")
+              {
+                  Version = HttpVersion.Version20,
+                  VersionPolicy = item.Policy,
+                  Content = item.Body ? new StringContent("inert") : null,
+              };
+              using var response = await client.SendAsync(request);
+              var challengeSchemes = response.Headers.WwwAuthenticate.Select(h => h.Scheme).ToArray();
+              responses[item.Id] = ((int)response.StatusCode, response.Version.ToString(), challengeSchemes);
+              results.Add(new
+              {
+                  item.Id,
+                  item.Mode,
+                  item.Body,
+                  Policy = item.Policy.ToString(),
+                  Status = (int)response.StatusCode,
+                  ResponseVersion = response.Version.ToString(),
+                  Challenges = challengeSchemes,
+                  FrontProtocols = frontVisits.GetValueOrDefault(item.Id)?.ToArray() ?? [],
+                  LowerProtocols = visits.GetValueOrDefault(item.Id)?.ToArray() ?? [],
+              });
+          }
+
+          var snapshot = events.ToArray();
+          var resultJson = JsonSerializer.Serialize(new
+          {
+              Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+              OperatingSystem = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+              ProductHashes = new
+              {
+                  Http = Hash(typeof(HttpClient).Assembly),
+                  HttpSys = Hash(typeof(HttpSysOptions).Assembly),
+                  Yarp = Hash(Assembly.Load("Yarp.ReverseProxy")),
+              },
+              Results = results,
+              Events = snapshot,
+          });
+          Console.WriteLine("C4_L093_RESULT=" + resultJson);
+
+          var checks = new Dictionary<string, bool>
+          {
+              ["no-challenge-once-h2"] = frontVisits.GetValueOrDefault("no-challenge")?.SequenceEqual(["HTTP/2"]) == true
+                  && visits.GetValueOrDefault("no-challenge")?.Count == 1 && responses["no-challenge"].Status == 200,
+              ["status-only-challenge-replays-h1"] = frontVisits.GetValueOrDefault("challenge-one")?.SequenceEqual(["HTTP/2", "HTTP/1.1"]) == true
+                  && visits.GetValueOrDefault("challenge-one")?.Count == 2 && responses["challenge-one"].Status == 200,
+              ["independent-repeat"] = frontVisits.GetValueOrDefault("challenge-two")?.SequenceEqual(["HTTP/2", "HTTP/1.1"]) == true
+                  && visits.GetValueOrDefault("challenge-two")?.Count == 2 && responses["challenge-two"].Status == 200,
+              ["body-not-replayed"] = frontVisits.GetValueOrDefault("body")?.SequenceEqual(["HTTP/2"]) == true
+                  && visits.GetValueOrDefault("body")?.Count == 1 && responses["body"].Status == 401,
+              ["exact-h2-not-replayed"] = frontVisits.GetValueOrDefault("exact")?.SequenceEqual(["HTTP/2"]) == true
+                  && visits.GetValueOrDefault("exact")?.Count == 1 && responses["exact"].Status == 401,
+              ["httpsys-adds-challenge"] = responses["exact"].Challenges.Contains("Negotiate")
+                  && responses["exact"].Challenges.Contains("NTLM"),
+          };
+          Console.WriteLine("C4_L093_CHECKS=" + JsonSerializer.Serialize(checks));
+          if (checks.Values.Any(passed => !passed)) Environment.ExitCode = 2;
+
+          await front.StopAsync();
+          await lower.StopAsync();
+
+          static object Hash(Assembly assembly) => new
+          {
+              Assembly = assembly.GetName().Name,
+              Version = assembly.GetName().Version?.ToString(),
+              Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))),
+          };
+          '@ | Set-Content -Path (Join-Path $projectDir 'Program.cs') -Encoding utf8
+          $cert = New-SelfSignedCertificate -DnsName 'localhost' -Type SSLServerAuthentication -CertStoreLocation 'Cert:\LocalMachine\My' -KeyExportPolicy Exportable -NotAfter (Get-Date).AddHours(1)
+          $port = 53491
+          netsh http add sslcert ipport=127.0.0.1:$port certhash=$($cert.Thumbprint) appid='{f20b3028-3e32-4fb3-9288-b270fa702093}' certstorename=MY | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'HTTPS binding failed' }
+          try {
+            $env:C4_TEST_THUMBPRINT = $cert.Thumbprint
+            $env:C4_TEST_PORT = $port.ToString()
+            dotnet run --project $project -c Release --no-launch-profile
+            if ($LASTEXITCODE -ne 0) { throw "Fixture returned exit code $LASTEXITCODE" }
+          } finally {
+            netsh http delete sslcert ipport=127.0.0.1:$port | Out-Host
+            Remove-Item -Path "Cert:\LocalMachine\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+          }
