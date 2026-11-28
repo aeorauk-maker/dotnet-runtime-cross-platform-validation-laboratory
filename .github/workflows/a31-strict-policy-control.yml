@@ -1,0 +1,192 @@
+name: G09-L016 strict CN policy denial control
+on:
+  push:
+    branches: [pa30-rank10-g09l016-strict-policy-20261128-d4]
+  workflow_dispatch:
+jobs:
+  issuer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: helm/kind-action@v1.15.2
+      - name: Prove scoped actor issuance in owned cluster
+        shell: bash
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          
+          lab_dir="${RUNNER_TEMP}/a31-request-only"
+          mkdir -p "$lab_dir"
+          cd "$lab_dir"
+          
+          helm version --short
+          kubectl version --client
+          helm install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+            --version v1.21.1 --namespace cert-manager --create-namespace \
+            --set crds.enabled=true --set disableAutoApproval=true --wait --timeout 6m
+          
+          helm install a31-approver oci://quay.io/jetstack/charts/cert-manager-approver-policy \
+            --version v0.27.0 --namespace cert-manager --wait --timeout 6m
+          openssl ecparam -name prime256v1 -genkey -noout -out root.key
+          openssl req -x509 -new -sha256 -key root.key -subj '/CN=A31 owned root' \
+            -days 2 -out root.pem \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign'
+          openssl ecparam -name prime256v1 -genkey -noout -out issuer.key
+          openssl req -new -sha256 -key issuer.key -subj '/CN=A31 constrained issuer' -out issuer.csr
+          cat > issuer.ext <<'EOF'
+          basicConstraints=critical,CA:TRUE,pathlen:0
+          keyUsage=critical,keyCertSign,cRLSign
+          nameConstraints=critical,permitted;DNS:allowed.test
+          EOF
+          openssl x509 -req -sha256 -in issuer.csr -CA root.pem -CAkey root.key \
+            -CAcreateserial -days 2 -out issuer.pem -extfile issuer.ext
+          openssl verify -CAfile root.pem issuer.pem
+          cat issuer.pem root.pem > issuer-chain.pem
+          
+          kubectl -n cert-manager create secret tls a31-ca-key \
+            --cert=issuer-chain.pem --key=issuer.key
+          cat > clusterissuer.yaml <<'EOF'
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: a31-constrained
+          spec:
+            ca:
+              secretName: a31-ca-key
+          EOF
+          kubectl apply -f clusterissuer.yaml
+          kubectl wait --for=condition=Ready clusterissuer/a31-constrained --timeout=180s
+          
+          kubectl create namespace a31-tenant
+          kubectl -n a31-tenant create serviceaccount actor
+          kubectl -n a31-tenant create rolebinding actor-edit \
+            --clusterrole=edit --serviceaccount=a31-tenant:actor
+          cat > policy.yaml <<'EOF'
+          apiVersion: policy.cert-manager.io/v1alpha1
+          kind: CertificateRequestPolicy
+          metadata:
+            name: a31-split-name-policy
+          spec:
+            selector:
+              namespace:
+                matchNames: [a31-tenant]
+              issuerRef:
+                name: a31-constrained
+                kind: ClusterIssuer
+                group: cert-manager.io
+            allowed:
+              commonName:
+                value: "allowed.test"
+              dnsNames:
+                values: [allowed.test]
+              isCA: false
+              usages: [digital signature, server auth]
+          EOF
+          kubectl apply -f policy.yaml
+          kubectl wait --for=condition=Ready \
+            certificaterequestpolicy/a31-split-name-policy --timeout=180s
+          cat > policy-use.yaml <<'EOF'
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: a31-policy-use
+            namespace: a31-tenant
+          rules:
+            - apiGroups: [policy.cert-manager.io]
+              resources: [certificaterequestpolicies]
+              resourceNames: [a31-split-name-policy]
+              verbs: [use]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: a31-policy-use
+            namespace: a31-tenant
+          subjects:
+            - kind: ServiceAccount
+              name: actor
+              namespace: a31-tenant
+          roleRef:
+            kind: Role
+            name: a31-policy-use
+            apiGroup: rbac.authorization.k8s.io
+          EOF
+          kubectl apply -f policy-use.yaml
+          actor='system:serviceaccount:a31-tenant:actor'
+          test "$(kubectl auth can-i create certificaterequests.cert-manager.io \
+            --as="$actor" -n a31-tenant)" = yes
+          test "$(kubectl auth can-i get certificaterequests.cert-manager.io \
+            --as="$actor" -n a31-tenant)" = yes
+          test "$(kubectl auth can-i get secret/a31-ca-key \
+            --as="$actor" -n cert-manager)" = no
+          if kubectl --as="$actor" -n cert-manager get secret a31-ca-key \
+            -o name >/dev/null 2>&1; then
+            echo 'A31_UNEXPECTED_CA_SECRET_ACCESS'
+            exit 1
+          fi
+          
+          test "$(kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io/a31-split-name-policy \
+            --as="$actor" -n a31-tenant)" = yes
+          test "$(kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io/a31-split-name-policy \
+            \
+            --as=system:serviceaccount:a31-tenant:unbound -n a31-tenant)" = no
+          test "$(kubectl auth can-i create certificaterequestpolicies.policy.cert-manager.io \
+            --as="$actor")" = no
+
+          openssl ecparam -name prime256v1 -genkey -noout -out actor-leaf.key
+          make_request() {
+            label="$1"
+            cn="$2"
+            san="$3"
+            expect="$4"
+            if [ -n "$san" ]; then
+              openssl req -new -sha256 -key actor-leaf.key -subj "/CN=$cn" \
+                -addext "subjectAltName=DNS:$san" -out "$label.csr"
+            else
+              openssl req -new -sha256 -key actor-leaf.key -subj "/CN=$cn" -out "$label.csr"
+            fi
+            csr_b64="$(base64 -w0 < "$label.csr")"
+            cat > "$label-request.yaml" <<EOF
+          apiVersion: cert-manager.io/v1
+          kind: CertificateRequest
+          metadata:
+            name: a31-$label
+            namespace: a31-tenant
+          spec:
+            request: $csr_b64
+            issuerRef:
+              group: cert-manager.io
+              kind: ClusterIssuer
+              name: a31-constrained
+            usages:
+              - digital signature
+              - server auth
+          EOF
+            kubectl --as="$actor" -n a31-tenant create -f "$label-request.yaml"
+            if [ "$expect" = Denied ]; then
+              kubectl -n a31-tenant wait --for=condition=Denied \
+                "certificaterequest/a31-$label" --timeout=180s
+              test -z "$(kubectl -n a31-tenant get certificaterequest "a31-$label" \
+                -o jsonpath='{.status.certificate}')"
+              echo "A31_POLICY_DENIED_${label}"
+            else
+              kubectl -n a31-tenant wait --for=condition=Approved \
+                "certificaterequest/a31-$label" --timeout=180s
+              kubectl -n a31-tenant wait --for=condition=Ready \
+                "certificaterequest/a31-$label" --timeout=180s
+              kubectl --as="$actor" -n a31-tenant get certificaterequest "a31-$label" \
+                -o jsonpath='{.status.certificate}' | base64 -d > "$label-issued.pem"
+              test -s "$label-issued.pem"
+              openssl x509 -in "$label-issued.pem" -noout -subject -fingerprint -sha256
+              echo "A31_POLICY_ISSUED_${label}"
+            fi
+          }
+
+          make_request denied forbidden.test forbidden.test Denied
+          make_request allowed allowed.test allowed.test Approved
+          make_request attack forbidden.test '' Denied
+
+          echo 'A31_STRICT_CN_POLICY_DENIAL_PASS'
