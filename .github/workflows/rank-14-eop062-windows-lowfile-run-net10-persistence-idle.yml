@@ -1,0 +1,27 @@
+name: Rank 14 EOP062 natural idle persistent authorization rollback
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-roslyn-windows-lowfile-run-net10-persistence-idle.ps1
+      - .github/workflows/rank-14-eop062-windows-lowfile-run-net10-persistence-idle.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-lowfile-run-net10-persistence-idle:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.404
+      - name: Test persistent role after genuine server idle exit
+        shell: pwsh
+        run: |
+          '{"sdk":{"version":"10.0.404","rollForward":"disable"}}' | Set-Content global.json
+          .\eop062-roslyn-windows-lowfile-run-net10-persistence-idle.ps1
