@@ -1,0 +1,42 @@
+name: G10-L067 isolated L2 bridge feasibility
+on:
+  push:
+    branches: [rank-08-g10l067-pwshwin-20261128]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - name: Try disposable IPv6-capable internal bridge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $name = 'g10l067-rank08-l2probe'
+          $adapter = Get-NetAdapter -Name 'vEthernet (nat)' -ErrorAction SilentlyContinue
+          if ($null -eq $adapter) {
+            Write-Output 'L2PROBE_RESULT=NO_INTERNAL_ADAPTER'
+            exit 0
+          }
+          Write-Output ('ADAPTER_STATUS={0}' -f $adapter.Status)
+          $created = $false
+          try {
+            $option = 'com.docker.network.windowsshim.interface=' + $adapter.Name
+            $output = & docker.exe network create -d l2bridge --subnet 172.30.67.0/24 --gateway 172.30.67.1 -o $option $name 2>&1
+            $code = $LASTEXITCODE
+            Write-Output ('L2PROBE_CREATE_EXIT={0}' -f $code)
+            Write-Output ('L2PROBE_CREATE_MESSAGE={0}' -f ($output -join ' '))
+            if ($code -eq 0) {
+              $created = $true
+              Write-Output 'L2PROBE_RESULT=NETWORK_CREATED'
+            } else {
+              Write-Output 'L2PROBE_RESULT=NETWORK_DENIED'
+            }
+          } finally {
+            if ($created) {
+              & docker.exe network rm $name 2>&1 | Out-Null
+              Write-Output ('L2PROBE_CLEANUP_EXIT={0}' -f $LASTEXITCODE)
+            }
+          }
