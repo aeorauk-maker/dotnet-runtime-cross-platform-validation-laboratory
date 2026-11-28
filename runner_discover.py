@@ -5,6 +5,8 @@ import pathlib
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 
 
 def resource_env(fragment, variable):
@@ -57,10 +59,37 @@ def main():
         "G06_REDIS_CONTAINER": redis,
         "G06_POSTGRES_CONTAINER": postgres,
     }
+    # Aspire starts resource processes before the Identity hosted migration and
+    # the proxy's Ordering route are ready. Require the actual auth/schema and
+    # unauthenticated-denial baselines before changing the private fixture.
+    for _ in range(90):
+        try:
+            with urllib.request.urlopen(issuer.rstrip("/") + "/.well-known/openid-configuration", timeout=3) as response:
+                oidc_ready = response.status == 200
+        except (OSError, urllib.error.URLError):
+            oidc_ready = False
+        table = subprocess.run(
+            ["docker", "exec", postgres, "sh", "-c",
+             'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -qAt -U "$POSTGRES_USER" -d identitydb -c "select to_regclass(\'\\\"AspNetUsers\\\"\');"'],
+            capture_output=True, text=True, timeout=5,
+        )
+        schema_ready = table.returncode == 0 and bool(table.stdout.strip())
+        try:
+            urllib.request.urlopen(values["G06_BFF"] + "/api/orders/?api-version=1.0", timeout=3)
+            bff_denies = False
+        except urllib.error.HTTPError as exc:
+            bff_denies = exc.code == 401
+        except (OSError, urllib.error.URLError):
+            bff_denies = False
+        if oidc_ready and schema_ready and bff_denies:
+            break
+        time.sleep(2)
+    else:
+        raise RuntimeError(f"stock readiness timeout: oidc={oidc_ready}, identity_table={schema_ready}, bff_401={bff_denies}")
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
         for key, value in values.items():
             output.write(f"{key}={value}\n")
-    print("Owned Identity, Ordering, Redis, PostgreSQL and mobile BFF discovered")
+    print("Owned Identity, Ordering, Redis, PostgreSQL and mobile BFF ready; anonymous order GET denied")
 
 
 if __name__ == "__main__":
