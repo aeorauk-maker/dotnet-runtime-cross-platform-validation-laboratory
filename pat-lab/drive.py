@@ -162,4 +162,4 @@ def main():
         finally:
             for handle in (fresh, retiring, old, prep, issuer): stop(handle)
 
-if __name__ == "__main__": main
+if __name__ == "__main__": main()
