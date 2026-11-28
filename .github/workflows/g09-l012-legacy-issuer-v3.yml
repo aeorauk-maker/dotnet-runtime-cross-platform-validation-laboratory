@@ -1,0 +1,234 @@
+name: G09-L012 Dogtag legacy issuer discriminator v3
+
+on:
+  push:
+    branches:
+      - pa30-rank11-g09l012-dogtag-20261128
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g09-l012-dogtag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  issuer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SHARED: /tmp/workdir/pki
+    steps:
+      - name: Create isolated test CA and directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          DS_PASSWORD="$(openssl rand -hex 16)"
+          echo "::add-mask::$DS_PASSWORD"
+          echo "DS_PASSWORD=$DS_PASSWORD" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/dogtagpki/pki.git /tmp/pki-src
+          docker network create g09l012
+          /tmp/pki-src/tests/bin/ds-create.sh \
+            --image=quay.io/389ds/dirsrv:latest \
+            --hostname=ds.example.com \
+            --network=g09l012 \
+            --network-alias=ds.example.com \
+            --password="$DS_PASSWORD" \
+            ds-g09l012 >/tmp/ds-setup.log 2>&1 || { tail -n 60 /tmp/ds-setup.log | sed "s/$DS_PASSWORD/[masked]/g"; exit 1; }
+          mkdir -p certs conf logs
+          docker run --detach \
+            --name ca-g09l012 \
+            --hostname ca.example.com \
+            --network g09l012 \
+            --network-alias ca.example.com \
+            -p 127.0.0.1:18443:8443 \
+            -v "$PWD/certs:/certs" \
+            -v "$PWD/conf:/conf" \
+            -v "$PWD/logs:/logs" \
+            -e PKI_DS_URL=ldap://ds.example.com:3389 \
+            -e PKI_DS_PASSWORD="$DS_PASSWORD" \
+            quay.io/dogtagpki/pki-ca:latest >/dev/null
+          for i in $(seq 1 90); do
+            if curl -ksS --max-time 2 -o /dev/null https://127.0.0.1:18443/ca/; then break; fi
+            sleep 2
+          done
+          docker exec ca-g09l012 pki-server ca-db-init -v >/tmp/ca-db-init.log 2>&1
+          docker exec ca-g09l012 pki-server ca-db-index-add -v >/tmp/ca-index.log 2>&1
+          docker exec ca-g09l012 pki-server ca-db-index-rebuild -v >/tmp/ca-rebuild.log 2>&1
+          docker exec ca-g09l012 pki-server cert-export --cert-file /conf/certs/ca_signing.crt ca_signing
+          docker exec ca-g09l012 pki-server ca-cert-import \
+            --cert /conf/certs/ca_signing.crt \
+            --csr /conf/certs/ca_signing.csr \
+            --profile /usr/share/pki/ca/conf/caCert.profile >/tmp/ca-import.log 2>&1
+          echo "CA initialized; legacy policy before change:"
+          docker exec ca-g09l012 grep '^ca.Policy.enable=' /conf/ca/CS.cfg
+          docker exec ca-g09l012 pki-server ca-config-set ca.Policy.enable true
+          # The distributed deprecated-policy configuration still names its
+          # pre-move Java packages. Repoint registrations to the unmodified
+          # packaged policy classes; preserve all rules and predicates.
+          docker exec ca-g09l012 sed -i \
+            -e 's/com\.netscape\.cms\.policy\.constraints\./org.dogtagpki.legacy.server.policy.constraints./g' \
+            -e 's/com\.netscape\.cms\.policy\.extensions\./org.dogtagpki.legacy.server.policy.extensions./g' \
+            /conf/ca/CS.cfg
+          docker restart ca-g09l012 >/dev/null
+          for i in $(seq 1 90); do
+            if curl -ksS --max-time 2 -o /dev/null https://127.0.0.1:18443/ca/; then break; fi
+            sleep 2
+          done
+          echo "Legacy policy after change:"
+          docker exec ca-g09l012 grep -E '^ca.Policy.enable=|^ca.Policy.rule.SubjectAltNameExt.predicate=' /conf/ca/CS.cfg
+          docker exec ca-g09l012 grep '^ca.Policy.impl.AttributePresentConstraints.class=' /conf/ca/CS.cfg
+          echo "Source and image versions:"
+          git -C /tmp/pki-src rev-parse HEAD
+          docker image inspect quay.io/dogtagpki/pki-ca:latest --format '{{.Id}}'
+
+      - name: Generate signed, inert CSR controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save --silent node-forge@1.3.1
+          mkdir -p private
+          cat > /tmp/make-csrs.js <<'JS'
+          const forge = require(process.cwd() + '/node_modules/node-forge');
+          const fs = require('fs');
+          const pki = forge.pki;
+          const keys = pki.rsa.generateKeyPair(2048);
+          function make(label, names) {
+            const csr = pki.createCertificationRequest();
+            csr.publicKey = keys.publicKey;
+            csr.setSubject([{name:'commonName',value:'allowed.test'}]);
+            csr.setAttributes([{name:'extensionRequest',extensions:names.map(n => ({name:'subjectAltName',altNames:[{type:2,value:n}]}))}]);
+            csr.sign(keys.privateKey,forge.md.sha256.create());
+            if (!csr.verify()) throw new Error('CSR signature invalid');
+            fs.writeFileSync('private/' + label + '.pem',pki.certificationRequestToPem(csr));
+          }
+          make('duplicate-first',['forbidden.test','allowed.test']);
+          make('duplicate-reversed',['allowed.test','forbidden.test']);
+          make('allowed-single',['allowed.test']);
+          make('forbidden-single',['forbidden.test']);
+          JS
+          node /tmp/make-csrs.js
+          for csr in private/*.pem; do openssl req -in "$csr" -verify -noout; done
+          echo "Signed controls created locally on disposable runner; keys and CSR bodies withheld from logs."
+
+      - name: Submit through applicant-facing legacy endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p responses
+          submit() {
+            label="$1"; type="$2"; csr="$3"
+            code="$(curl -ksS --max-time 30 -o "responses/$label.html" -w '%{http_code}' \
+              --data-urlencode "certType=$type" \
+              --data-urlencode "pkcs10Request@private/$csr.pem" \
+              https://127.0.0.1:18443/ca/enrollment || true)"
+            echo "$label HTTP=$code bytes=$(wc -c <"responses/$label.html")"
+          }
+          submit duplicate-cep CEP-Request duplicate-first
+          submit duplicate-client client duplicate-first
+          submit reversed-cep CEP-Request duplicate-reversed
+          submit allowed-cep CEP-Request allowed-single
+          submit forbidden-cep CEP-Request forbidden-single
+          python3 - <<'PY'
+          import html,re,pathlib
+          for path in sorted(pathlib.Path('responses').glob('*.html')):
+              s=html.unescape(path.read_text(errors='replace'))
+              ids=sorted(set(re.findall(r'(?i)(?:request\s*id|requestId)[^0-9]{0,30}(\d{1,12})',s)))
+              state=sorted(set(re.findall(r'(?i)\b(?:pending|complete|rejected|failed|error|approved)\b',s)))
+              certs=len(re.findall(r'BEGIN CERTIFICATE',s))
+              print(f'{path.stem}: request_ids={ids} states={state} pem_certificates={certs}')
+          PY
+
+      - name: Approve through normal CA agent and inspect issued DER
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec ca-g09l012 pki nss-create --force
+          docker exec ca-g09l012 pki nss-cert-import \
+            --cert /conf/certs/ca_signing.crt --trust CT,C,C ca_signing
+          docker exec ca-g09l012 pki nss-cert-request \
+            --subject 'CN=Administrator' \
+            --ext /usr/share/pki/server/certs/admin.conf \
+            --csr /tmp/admin.csr
+          docker exec ca-g09l012 pki-server ca-cert-create \
+            --csr /tmp/admin.csr \
+            --profile /usr/share/pki/ca/conf/rsaAdminCert.profile \
+            --cert /tmp/admin.crt \
+            --import-cert
+          docker exec ca-g09l012 pki nss-cert-import --cert /tmp/admin.crt admin
+          docker exec ca-g09l012 pki-server ca-user-add \
+            --full-name Administrator --type adminType \
+            --cert /tmp/admin.crt admin
+          docker exec ca-g09l012 pki-server ca-user-role-add admin Administrators
+          docker exec ca-g09l012 pki-server ca-user-role-add admin 'Certificate Manager Agents'
+          python3 - <<'PY'
+          import html,re,pathlib,json
+          ids={}
+          for path in pathlib.Path('responses').glob('*.html'):
+              s=html.unescape(path.read_text(errors='replace'))
+              matches=re.findall(r'(?i)(?:request\s*id|requestId)[^0-9]{0,30}(\d{1,12})',s)
+              if len(set(matches))!=1: raise SystemExit(f'unclear request ID for {path.stem}: {matches}')
+              ids[path.stem]=matches[0]
+          pathlib.Path('request-ids.json').write_text(json.dumps(ids,sort_keys=True))
+          PY
+          mkdir -p issued approval
+          python3 - <<'PY' >request-ids.tsv
+          import json
+          for name,ident in json.load(open('request-ids.json')).items(): print(name,ident,sep='\t')
+          PY
+          while IFS=$'\t' read -r label id; do
+            echo "Approving $label request $id"
+            if ! docker exec ca-g09l012 pki \
+                -U https://ca.example.com:8443 -n admin \
+                ca-cert-request-approve "$id" --force \
+                >"approval/$label.txt" 2>&1; then
+              sed -E 's/-----BEGIN.*-----/[certificate-redacted]/g' "approval/$label.txt" | tail -n 30
+              exit 1
+            fi
+            docker exec ca-g09l012 pki \
+              -U https://ca.example.com:8443 -n admin \
+              ca-cert-request-show "$id" \
+              >"approval/$label-show.txt" 2>&1
+            python3 - "$label" <<'PY'
+          import pathlib,re,sys
+          label=sys.argv[1]
+          s=pathlib.Path(f'approval/{label}-show.txt').read_text(errors='replace')
+          print(label,'request status=',re.findall(r'(?im)^\s*Request Status:\s*(\S+)',s),
+                'certificate ids=',re.findall(r'(?im)^\s*Certificate ID:\s*(\S+)',s))
+          PY
+            cert_id="$(sed -nE 's/^[[:space:]]*Certificate ID:[[:space:]]*(\S+).*$/\1/p' "approval/$label-show.txt" | head -n 1)"
+            if [[ -n "$cert_id" ]]; then
+              docker exec ca-g09l012 pki \
+                -U https://ca.example.com:8443 \
+                ca-cert-show "$cert_id" --output "/tmp/$label.crt" \
+                >"approval/$label-cert-show.txt" 2>&1
+              docker cp "ca-g09l012:/tmp/$label.crt" "issued/$label.pem"
+              echo "$label certificate SAN extension count: $(openssl x509 -in "issued/$label.pem" -noout -text | grep -c 'X509v3 Subject Alternative Name')"
+              openssl x509 -in "issued/$label.pem" -outform DER -out "issued/$label.der"
+              shasum -a 256 "issued/$label.der"
+            fi
+          done <request-ids.tsv
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g09-l012-dogtag-approval-diagnostics
+          path: |
+            request-ids.json
+            approval/
+            issued/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Preserve sanitized diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo 'Containers:'
+          docker ps --format '{{.Names}} {{.Status}}'
+          echo 'Legacy endpoint and CA diagnostics:'
+          docker exec ca-g09l012 grep -E '^ca.Policy.enable=|^ca.Policy.rule.SubjectAltNameExt.predicate=' /conf/ca/CS.cfg
+          docker exec ca-g09l012 sh -c "grep -h -E 'EnrollServlet|PKCS10Processor|PolicyResult|CEP-Request|SubjectAltNameExt|Exception' /var/lib/pki/pki-tomcat/logs/ca/debug* 2>/dev/null | tail -n 80" \
+            | sed -E 's/(pkcs10Request|challengePassword)[^ ]*/[request-redacted]/g'
