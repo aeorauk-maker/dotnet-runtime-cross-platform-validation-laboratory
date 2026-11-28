@@ -1,0 +1,86 @@
+name: G09-L016 clean ZIP replay
+on:
+  workflow_dispatch:
+    inputs:
+      package_b64:
+        description: Base64 of inert owned archive; consumed from event file, never printed
+        required: true
+        type: string
+jobs:
+  replay:
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.100
+      - name: Verify exact archive and replay twice from clean extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import zipfile
+
+          expected = '798dcdccad32bc56b237ff36f9e921a49e5335c8700bee1742b4d96c3b88d440'
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          raw = base64.b64decode(event['inputs']['package_b64'], validate=True)
+          digest = hashlib.sha256(raw).hexdigest()
+          assert digest == expected, 'exact archive digest mismatch'
+          base = Path(os.environ['RUNNER_TEMP']) / 'g09-l016-clean-replay'
+          base.mkdir()
+          archive = base / 'MSRC_G09-L016_PoC.zip'
+          archive.write_bytes(raw)
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None, 'archive integrity failed'
+              names = z.namelist()
+              assert len(names) == len(set(names)) and len(names) == 19
+              assert all(not n.startswith('/') and '..' not in Path(n).parts for n in names)
+          print('A31_ARCHIVE_SHA256=' + digest)
+          print('A31_RUNNER_ARCH=' + subprocess.check_output(['uname', '-m'], text=True).strip())
+          for number in (1, 2):
+              fresh = base / f'extraction-{number}'
+              fresh.mkdir()
+              subprocess.run(['unzip', '-q', str(archive), '-d', str(fresh)], check=True)
+              result = subprocess.run(['./run.sh'], cwd=fresh, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      timeout=180)
+              if result.returncode:
+                  print(f'A31_CLEAN_RUN_{number}_FAILED_EXIT={result.returncode}')
+                  print('A31_FAILED_STDOUT_SHA256=' + hashlib.sha256(result.stdout.encode()).hexdigest())
+                  print('A31_FAILED_STDERR_SHA256=' + hashlib.sha256(result.stderr.encode()).hexdigest())
+                  raise SystemExit(1)
+              proof = json.loads(result.stdout)
+              assert proof['result'] == 'pass'
+              assert proof['sdk'] == '11.0.100' and proof['runtime'] == '11.0.0'
+              assert proof['actor_leaf_sha256'] == 'eabcb604896b9703afaaf183f6b29b894cc6879cc5f7f1fd7875aa38e32dc7ba'
+              assert proof['guard_statuses'] == {'no_cookie': 401, 'no_owner_proof': 403,
+                                                'wrong_cookie': 401, 'valid': 200,
+                                                'captured_replay': 200}
+              assert proof['writes_before_after_replay'] == [1, 2]
+              assert proof['strict_cookie_flags'] and proof['os_root_trust']
+              assert proof['victim_proxy_configuration'] is False
+              assert proof['no_custom_chain_policy_or_validation_callback']
+              assert proof['denied_san_and_wrong_host_captured_cookie'] is False
+              assert proof['attack_repeat_passed'] and proof['owned_root_removed']
+              assert proof['hosts_route_restored']
+              assert proof['transparent_forwarded_connections'] >= 10
+              safe = {k: proof[k] for k in ('result', 'sdk', 'runtime', 'actor_leaf_sha256',
+                                            'strict_cookie_flags', 'os_root_trust',
+                                            'victim_proxy_configuration', 'guard_statuses',
+                                            'denied_san_and_wrong_host_captured_cookie',
+                                            'writes_before_after_replay', 'attack_repeat_passed',
+                                            'owned_root_removed', 'hosts_route_restored')}
+              print(f'A31_CLEAN_RUN_{number}_PASS=' + json.dumps(safe, sort_keys=True))
+          print('A31_EXACT_ARCHIVE_TWO_CLEAN_REPLAYS_PASS')
+          PY
