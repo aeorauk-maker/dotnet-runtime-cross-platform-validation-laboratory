@@ -1,0 +1,139 @@
+name: PA30 L105 Windows container selector control
+on:
+  push:
+    branches: [pa30-rank01-l105-scm-20261128]
+    paths:
+      - .github/workflows/pa30-l105-wincontainer-selector-control.yml
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.100
+      - name: Compare no-filter and filtered monitor on one container target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path $env:RUNNER_TEMP 'Pa30L105SingleCandidate'
+          $project = Join-Path $root 'project'
+          $published = Join-Path $root 'target'
+          $toolDir = Join-Path $root 'tools'
+          $monitorDir = Join-Path $root 'monitor'
+          New-Item -ItemType Directory -Force -Path $root,$project,$published,$toolDir,$monitorDir | Out-Null
+          $image = 'mcr.microsoft.com/dotnet/aspnet:10.0-nanoserver-ltsc2025'
+          $container = 'pa30-l105-single-candidate'
+          $targetAssembly = 'C:\lab\target\Pa30Single.dll'
+          $mount = "type=bind,source=$root,target=C:\lab"
+          try {
+            $docker = Get-Service docker -ErrorAction SilentlyContinue
+            if (-not $docker) { throw 'Docker service missing' }
+            if ($docker.Status -ne 'Running') { Start-Service docker }
+            docker info --format 'SERVER_OS={{.OSType}} SERVER_VERSION={{.ServerVersion}}' | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Docker daemon unavailable' }
+            dotnet --version
+            dotnet new console -n Pa30Single -f net10.0 -o $project --no-restore | Out-Host
+            @'
+          using System;
+          using System.IO.Pipes;
+          using System.Security.Principal;
+          using System.Threading;
+          Console.WriteLine($"TARGET_PID={Environment.ProcessId} SID={WindowsIdentity.GetCurrent().User?.Value} USER={WindowsIdentity.GetCurrent().Name}");
+          using (var pipe = new NamedPipeServerStream($"dotnet-diagnostic-{Environment.ProcessId}", PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances)) {
+              Console.WriteLine($"FAKE_PIPE_BOUND=True PID={Environment.ProcessId}");
+              pipe.WaitForConnection();
+              Console.WriteLine($"FAKE_FIRST_BYTE={pipe.ReadByte()}");
+              pipe.RunAsClient(() => {
+                  Console.WriteLine($"FAKE_IMPERSONATED_SID={WindowsIdentity.GetCurrent().User?.Value} LEVEL={WindowsIdentity.GetCurrent().ImpersonationLevel}");
+              });
+          }
+          Console.WriteLine("TARGET_WAITING_AFTER_CALLBACK=True");
+          Thread.Sleep(TimeSpan.FromMinutes(8));
+          '@ | Set-Content -Path (Join-Path $project 'Program.cs') -Encoding utf8
+            dotnet publish (Join-Path $project 'Pa30Single.csproj') -c Release -o $published | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Target publish failed' }
+            dotnet tool install dotnet-trace --tool-path $toolDir --version 10.0.750501 | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Released trace install failed' }
+            dotnet tool install dotnet-monitor --tool-path $monitorDir --version 10.0.5 | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Released monitor install failed' }
+            docker pull $image | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Official .NET Windows image pull failed' }
+            docker image inspect $image --format 'IMAGE_ID={{.Id}} OS={{.Os}} ARCH={{.Architecture}}' | Out-Host
+            docker run -d --isolation=process --name $container --user ContainerUser --mount $mount -p 52402:52402 -p 52404:52404 --entrypoint dotnet $image $targetAssembly | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Container target failed to start' }
+            $bound = $false
+            for ($i = 0; $i -lt 80; $i++) {
+              Start-Sleep -Milliseconds 500
+              $logs = docker logs $container 2>&1 | Out-String
+              if ($logs -match 'FAKE_PIPE_BOUND=True') { $bound = $true; break }
+              $running = docker inspect $container --format '{{.State.Running}}'
+              if ($running -ne 'true') { break }
+            }
+            Write-Host "TARGET_LOG_BEFORE=$($logs.Replace("`r"," ").Replace("`n"," | "))"
+            Write-Host "LOW_CONTAINERUSER_FAKE_BOUND=$bound"
+            if (-not $bound) { throw 'Lower ContainerUser target did not bind same-PID pipe' }
+            docker exec --user ContainerAdministrator $container dotnet --list-runtimes | Out-Host
+            $census = docker exec --user ContainerAdministrator $container 'C:\lab\tools\dotnet-trace.exe' ps | Out-String
+            $censusExit = $LASTEXITCODE
+            Write-Host "CONTAINER_DIAGNOSTICS_CENSUS=$($census.Replace("`r"," ").Replace("`n"," | "))"
+            $pids = @([regex]::Matches($census, '(?m)^\s*(\d+)\s+'))
+            $targetPid = [regex]::Match($logs, 'TARGET_PID=(\d+)').Groups[1].Value
+            $oneTarget = $pids.Count -eq 1 -and $pids[0].Groups[1].Value -eq $targetPid
+            Write-Host "CONTAINER_CENSUS_EXIT=$censusExit CANDIDATES=$($pids.Count) TARGET_ONLY=$oneTarget"
+            if ($censusExit -ne 0 -or -not $oneTarget) { throw 'Container did not have exactly one diagnostics target' }
+            docker exec -d --user ContainerAdministrator $container cmd /c 'C:\lab\monitor\dotnet-monitor.exe collect --urls http://0.0.0.0:52401 --metricUrls http://0.0.0.0:52402 --temp-apikey > C:\lab\monitor.out 2>&1'
+            if ($LASTEXITCODE -ne 0) { throw 'Elevated no-filter monitor failed to launch' }
+            Write-Host 'MONITOR_NO_FILTER=True MONITOR_USER=ContainerAdministrator'
+            Start-Sleep -Seconds 3
+            $censusWithMonitor = docker exec --user ContainerAdministrator $container 'C:\lab\tools\dotnet-trace.exe' ps | Out-String
+            Write-Host "CENSUS_WITH_MONITOR=$($censusWithMonitor.Replace("`r"," ").Replace("`n"," | "))"
+            $metrics = $false
+            $fake = $false
+            $httpStatus = '<missing>'
+            $httpBytes = -1
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $response = Invoke-WebRequest 'http://127.0.0.1:52402/metrics' -UseBasicParsing -TimeoutSec 2
+                $httpStatus = [string]$response.StatusCode
+                $httpBytes = $response.Content.Length
+                if ($response.StatusCode -eq 200 -and $response.Content -match 'systemruntime') { $metrics = $true }
+              } catch {}
+              $logs = docker logs $container 2>&1 | Out-String
+              if ($logs -match 'FAKE_FIRST_BYTE=') { $fake = $true }
+              if ($metrics -and $fake) { break }
+            }
+            $monitorLog = if (Test-Path (Join-Path $root 'monitor.out')) { Get-Content (Join-Path $root 'monitor.out') -Raw } else { '<missing>' }
+            $startLines = ($monitorLog -split "`n" | Select-Object -First 24) -join ' | '
+            Write-Host "NO_FILTER_MONITOR_LOG_START=$($startLines.Replace("`r"," "))"
+            Write-Host "NO_FILTER_HTTP_STATUS=$httpStatus HTTP_BYTES=$httpBytes METRICS_SYSTEMRUNTIME=$metrics FAKE_CONTACT=$fake"
+            $kill = docker exec --user ContainerAdministrator $container cmd /c 'taskkill /F /IM dotnet-monitor.exe' 2>&1 | Out-String
+            $killExit = $LASTEXITCODE
+            Write-Host "NO_FILTER_MONITOR_KILL_EXIT=$killExit OUTPUT=$($kill.Replace("`r"," ").Replace("`n"," | "))"
+            docker exec -d --user ContainerAdministrator --env DotnetMonitor_DefaultProcess__Filters__0__ProcessName=dotnet $container cmd /c 'C:\lab\monitor\dotnet-monitor.exe collect --urls http://0.0.0.0:52403 --metricUrls http://0.0.0.0:52404 --temp-apikey > C:\lab\filtered.out 2>&1'
+            if ($LASTEXITCODE -ne 0) { throw 'Filtered positive-control monitor failed to launch' }
+            $filteredMetrics = $false
+            $filteredFake = $false
+            for ($i = 0; $i -lt 70; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $filteredResponse = Invoke-WebRequest 'http://127.0.0.1:52404/metrics' -UseBasicParsing -TimeoutSec 2
+                if ($filteredResponse.StatusCode -eq 200 -and $filteredResponse.Content -match 'systemruntime') { $filteredMetrics = $true }
+              } catch {}
+              $filteredLogs = docker logs $container 2>&1 | Out-String
+              if ($filteredLogs -match 'FAKE_FIRST_BYTE=') { $filteredFake = $true }
+              if ($filteredMetrics -and $filteredFake) { break }
+            }
+            $filteredLog = if (Test-Path (Join-Path $root 'filtered.out')) { Get-Content (Join-Path $root 'filtered.out') -Raw } else { '<missing>' }
+            $filteredStart = ($filteredLog -split "`n" | Select-Object -First 24) -join ' | '
+            Write-Host "FILTERED_TARGET_LOG=$($filteredLogs.Replace("`r"," ").Replace("`n"," | "))"
+            Write-Host "FILTERED_MONITOR_LOG_START=$($filteredStart.Replace("`r"," "))"
+            Write-Host "FILTERED_METRICS_SYSTEMRUNTIME=$filteredMetrics FILTERED_FAKE_CONTACT=$filteredFake"
+          } finally {
+            docker rm -f $container 2>&1 | Out-Host
+            Write-Host 'CONTAINER_CLEANUP_ATTEMPTED=True'
+          }
