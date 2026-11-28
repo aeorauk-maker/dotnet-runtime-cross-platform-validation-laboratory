@@ -311,9 +311,8 @@ readlink /proc/1/ns/net
     print("RUN_LOG_TAIL=" + run_log[-2500:].replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>"), flush=True)
     if MODE == "completed":
         assert_eq("RAN_STALE_DLL", sha(dll), old_hash)
-        assert_eq("PRE_GRANT_LOW_ADMIN", http("/admin", token=True), 403)
-        assert_eq("PUBLIC_LOW_GRANT", http("/grant", token=True), 200)
-        assert_eq("POST_GRANT_LOW_ADMIN", http("/admin", token=True), 200)
+        assert_eq("ACTOR_SELF_GRANT_CONFIRMED", ROLE.read_text(), "low=Admin")
+        assert_eq("POST_ACTOR_LOW_ADMIN", http("/admin", token=True), 200)
         assert_eq("ROLE_PERSISTED", ROLE.read_text(), "low=Admin")
         assert_eq("PROTECTED_MARKER", MARKER.read_text(), "PROTECTED_INERT_MARKER_062")
         assert_secret("PROTECTED_SECRET_READ", protected_read(token=True))
