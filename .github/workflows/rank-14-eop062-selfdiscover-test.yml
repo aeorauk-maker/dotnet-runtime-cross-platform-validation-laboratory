@@ -1,0 +1,32 @@
+name: rank-14-eop062-selfdiscover-test
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'MSRC_EOP02-EOP-062_selfdiscover_test.zip'
+      - '.github/workflows/rank-14-eop062-selfdiscover-test.yml'
+  workflow_dispatch:
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Recheck exact ZIP and replay self-discovered-pipe pair
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' '9347b0d9bfbc45410c4ec4811db7c781480afcb3494c0bb7f39bf6c2b130af17' MSRC_EOP02-EOP-062_selfdiscover_test.zip | sha256sum --check
+          unzip -t MSRC_EOP02-EOP-062_selfdiscover_test.zip
+          mkdir "$RUNNER_TEMP/eop062-discover-$GITHUB_RUN_ID"
+          unzip -q MSRC_EOP02-EOP-062_selfdiscover_test.zip -d "$RUNNER_TEMP/eop062-discover-$GITHUB_RUN_ID"
+          cd "$RUNNER_TEMP/eop062-discover-$GITHUB_RUN_ID"
+          dotnet --version
+          ./run.sh completed
+          ./run.sh malformed
+          ./run.sh completed
