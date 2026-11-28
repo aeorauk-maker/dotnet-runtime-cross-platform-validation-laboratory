@@ -148,11 +148,11 @@ def main():
 def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_hash,
                   package_hash, collector_log, protocol_only):
     original_search = run(["security", "list-keychains", "-d", "user"]).stdout
-    login_keychain = Path.home() / "Library/Keychains/login.keychain-db"
+    trust_keychain = Path("/Library/Keychains/System.keychain")
     root_label = "A31 owned root"
-    existing = run(["security", "find-certificate", "-Z", "-c", root_label, str(login_keychain)])
+    existing = run(["security", "find-certificate", "-Z", "-c", root_label, str(trust_keychain)])
     if existing.returncode == 0:
-        raise RuntimeError("unique test root already present in login Keychain; inspect before rerun")
+        raise RuntimeError("unique test root already present in system Keychain; inspect before rerun")
     attempted = False
     all_rows = []
     captured_auth = None
@@ -160,8 +160,8 @@ def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_has
         trust_started = time.monotonic()
         if not protocol_only:
             attempted = True
-            result = run(["security", "add-trusted-cert", "-p", "basic", "-p", "ssl",
-                          "-r", "trustRoot", "-k", str(login_keychain), str(ROOT)], timeout=180)
+            result = run(["sudo", "security", "add-trusted-cert", "-d", "-p", "basic", "-p", "ssl",
+                          "-r", "trustRoot", "-k", str(trust_keychain), str(ROOT)], timeout=45)
             if result.returncode:
                 raise RuntimeError("add-trusted-cert: " + result.stdout)
             trust_probe = run(["security", "verify-cert", "-c", str(FIXTURES / "valid_direct_root.der"),
@@ -294,10 +294,10 @@ def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_has
     finally:
         cleanup_error = None
         if attempted:
-            present = run(["security", "find-certificate", "-Z", "-c", root_label, str(login_keychain)])
+            present = run(["security", "find-certificate", "-Z", "-c", root_label, str(trust_keychain)])
             if present.returncode == 0:
-                result = run(["security", "delete-certificate", "-c", root_label,
-                              str(login_keychain)], timeout=60)
+                result = run(["sudo", "security", "delete-certificate", "-c", root_label,
+                              str(trust_keychain)], timeout=45)
                 if result.returncode:
                     cleanup_error = "delete-certificate failed: " + result.stdout
         current_search = run(["security", "list-keychains", "-d", "user"]).stdout
@@ -313,10 +313,10 @@ def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_has
         (OUT / "protected-canary.txt").unlink(missing_ok=True)
         (OUT / "protected-server-key.pem").unlink(missing_ok=True)
         (OUT / "protected-server-cert.pem").unlink(missing_ok=True)
-        present_after = run(["security", "find-certificate", "-Z", "-c", root_label, str(login_keychain)])
+        present_after = run(["security", "find-certificate", "-Z", "-c", root_label, str(trust_keychain)])
         if present_after.returncode == 0:
             cleanup_error = "test root still present after cleanup"
-        trust_after = run(["security", "dump-trust-settings"], timeout=20)
+        trust_after = run(["security", "dump-trust-settings", "-d"], timeout=20)
         if root_label in trust_after.stdout:
             cleanup_error = "test root trust setting still present after cleanup"
         if cleanup_error:
