@@ -29,6 +29,7 @@ CASES = (
 )
 DOTNET = "dotnet"
 PYTHON = sys.executable
+TARGET_FRAMEWORK = os.environ.get("A31_TFM", "net11.0")
 
 
 def make_package(collector_port):
@@ -87,12 +88,16 @@ def wait_ready(process):
 
 
 def main():
+    if TARGET_FRAMEWORK not in ("net10.0", "net11.0"):
+        raise ValueError("unsupported controlled test target framework")
     parser = argparse.ArgumentParser()
     parser.add_argument("--protocol-only", action="store_true")
     args = parser.parse_args()
     HERE.mkdir(exist_ok=True)
     FIXTURES.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
+    sdk_version = "10.0.404" if TARGET_FRAMEWORK == "net10.0" else "11.0.100"
+    (HERE / "global.json").write_text(json.dumps({"sdk": {"version": sdk_version, "rollForward": "disable"}}))
     if "NuGetPackageSourceCredentials_OwnedFeed" in os.environ:
         raise RuntimeError("ambient OwnedFeed credential would confound configured credential attribution")
     ROOT.write_bytes(ssl.PEM_cert_to_DER_cert((FIXTURES / "root.pem").read_text()))
@@ -110,7 +115,7 @@ def main():
         ssl.PEM_cert_to_DER_cert((FIXTURES / "direct-root.cert.pem").read_text()))
     (HERE / "project").mkdir(exist_ok=True)
     (HERE / "project" / "OwnedFeed.csproj").write_text(
-        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework>'
+        f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>{TARGET_FRAMEWORK}</TargetFramework>'
         '<NuGetAudit>false</NuGetAudit></PropertyGroup><ItemGroup>'
         '<PackageReference Include="Owned.TestPkg" Version="1.0.0" /></ItemGroup></Project>')
     marker = "owned-feed-" + secrets.token_hex(8)
@@ -286,6 +291,8 @@ def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_has
                     protected.kill()
                     protected.wait()
         summary = {"sdk": run([DOTNET, "--version"]).stdout.strip(),
+                   "target_framework": TARGET_FRAMEWORK,
+                   "runtimes": run([DOTNET, "--list-runtimes"]).stdout.strip(),
                    "protocol_only": protocol_only, "package_sha256": package_hash,
                    "canary_sha256": canary_hash, "results": all_rows,
                    "replay": replay_row, "trustcheck": trustrow}
