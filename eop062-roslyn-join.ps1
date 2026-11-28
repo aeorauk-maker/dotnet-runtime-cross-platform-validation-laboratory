@@ -449,7 +449,7 @@ try {
     $project = Join-Path $labRoot 'AdminApp.csproj'
     $source = Join-Path $labRoot 'Program.cs'
     [System.IO.File]::WriteAllText($project, '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework><UseAppHost>false</UseAppHost></PropertyGroup></Project>')
-    [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("SECURE_BUILD_EXPECTED");')
+    [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("PUBLIC_OLD");')
     $dotnetExe = (Get-Command dotnet).Source
     & $dotnetExe restore $project --ignore-failed-sources | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Owned project restore failed' }
@@ -458,6 +458,18 @@ try {
     & icacls.exe $labRoot /setintegritylevel M /T | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Could not label restored lab tree medium' }
     $outputDll = Join-Path $labRoot 'bin\Debug\net11.0\AdminApp.dll'
+    & $dotnetExe build $project --no-restore -v:minimal '-p:UseSharedCompilation=false' | Out-Host
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outputDll)) { throw 'Public baseline build failed' }
+    $oldHash = (Get-FileHash $outputDll -Algorithm SHA256).Hash
+    $oldOutput = (& $dotnetExe $outputDll | Out-String).Trim()
+    Write-Host "PUBLIC_BASELINE hash=$oldHash output=$oldOutput"
+    if ($oldOutput -ne 'PUBLIC_OLD') { throw 'Public baseline output mismatch' }
+    & icacls.exe $labRoot /grant:r "${runnerUser}:(OI)(CI)(M)" /T | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Could not grant baseline lab tree' }
+    & icacls.exe $labRoot /setintegritylevel M /T | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Could not label baseline lab tree medium' }
+    [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("SECURE_NEW");')
+    Write-Host "SECURED_SOURCE hash=$((Get-FileHash $source -Algorithm SHA256).Hash)"
 
     function Invoke-MediumBuild([string]$label, [string]$extra) {
         $cmdFile = Join-Path $labRoot "$label.cmd"
@@ -564,15 +576,17 @@ try {
     $forgedExists = Test-Path $outputDll
     $forgedHash = if ($forgedExists) { (Get-FileHash $outputDll -Algorithm SHA256).Hash } else { '<absent>' }
     Write-Host "FORGED_RESULT exit=$forgedExit dll=$forgedExists hash=$forgedHash actor-wait=$actorWait"
+    if ($forgedExists) { Write-Host "FORGED_OUTPUT=$((& $dotnetExe $outputDll | Out-String).Trim())" }
     Write-Host "ROSLYN_LOW_LOG_BEGIN`n$([System.IO.File]::ReadAllText($actorResult))`nROSLYN_LOW_LOG_END"
     if ($roslynActorProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($roslynActorProc.hThread) }
     if ($roslynActorProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($roslynActorProc.hProcess) }
-    $validExit = Invoke-MediumBuild 'valid' '-p:UseSharedCompilation=false'
+    $validExit = Invoke-MediumBuild 'valid' ''
     $validExists = Test-Path $outputDll
     $validHash = if ($validExists) { (Get-FileHash $outputDll -Algorithm SHA256).Hash } else { '<absent>' }
     Write-Host "VALID_RESULT exit=$validExit dll=$validExists hash=$validHash"
-    if ($forgedExit -ne 0 -or $forgedExists -or $validExit -ne 0 -or -not $validExists) {
-        throw 'Released Roslyn false-success/no-output discriminator did not pass'
+    if ($validExists) { Write-Host "VALID_OUTPUT=$((& $dotnetExe $outputDll | Out-String).Trim())" }
+    if ($forgedExit -ne 0 -or -not $forgedExists -or $forgedHash -ne $oldHash -or $validExit -ne 0 -or -not $validExists -or $validHash -eq $oldHash) {
+        throw 'Released Roslyn stale-output discriminator did not pass'
     }
 } finally {
     if ($mediumClientProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($mediumClientProc.hThread) }
