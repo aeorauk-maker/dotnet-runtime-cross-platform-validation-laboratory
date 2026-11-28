@@ -20,6 +20,8 @@ ROOT = Path(os.environ["GITHUB_WORKSPACE"]) / f".eop062-service-lab-{SUFFIX}"
 ROOT.mkdir(mode=0o700)
 SERVICE_ID = os.environ["EOP062_SERVICE_ID"]
 NATURAL_IDLE = os.environ.get("EOP062_NATURAL_IDLE", "0") == "1"
+WITHDRAW = os.environ.get("EOP062_WITHDRAW", "1") == "1"
+assert not (NATURAL_IDLE and WITHDRAW)
 PORT = 5162 if MODE == "completed" else 5163
 OWNER = secrets.token_hex(32)
 LOW = secrets.token_hex(32)
@@ -36,9 +38,9 @@ LOG = ROOT / "run.log"
 app_proc = None
 actor_proc = None
 
-def run(args, *, check=True, capture=True, cwd=None):
+def run(args, *, check=True, capture=True, cwd=None, timeout=None):
     r = subprocess.run(args, text=True, stdout=subprocess.PIPE if capture else None,
-                       stderr=subprocess.STDOUT if capture else None, check=False, cwd=cwd)
+                       stderr=subprocess.STDOUT if capture else None, check=False, cwd=cwd, timeout=timeout)
     if check and r.returncode:
         safe_args = [str(a).replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>") for a in args]
         safe_output = (r.stdout or "")[-2500:].replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>")
@@ -193,7 +195,7 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 ''')
 
 try:
-    print(f"MODE={MODE} SERVICE_ID={SERVICE_ID[:12]} NATURAL_IDLE={NATURAL_IDLE}", flush=True)
+    print(f"MODE={MODE} SERVICE_ID={SERVICE_ID[:12]} NATURAL_IDLE={NATURAL_IDLE} WITHDRAW={WITHDRAW}", flush=True)
     assert_eq("RELEASED_SDK", victim_exec("dotnet --version").stdout.strip(), "11.0.100")
     print(f"RUNTIME={victim_exec('dotnet --list-runtimes').stdout.strip()}", flush=True)
     sdk_lines = victim_exec("dotnet --list-sdks").stdout.splitlines()
@@ -259,7 +261,21 @@ try:
                          f"/tmp/{pipe_name}"], check=False)
     assert_eq("LIVE_SERVER_NAME_OCCUPIED", live_preclaim.returncode, 17)
     assert_eq("REAL_ROSLYN_SERVER_AFTER_DENIED_PRECLAIM", compiler_server_live(), "LIVE")
-    if NATURAL_IDLE:
+    if WITHDRAW:
+        # This lower-authority service sends no valid compiler request: the
+        # released server translates the short read into RequestError.
+        run(["docker", "exec", SERVICE_ID, "perl", "-MIO::Socket::UNIX", "-MSocket=SOCK_STREAM", "-e",
+             "my $p=shift; my $s=IO::Socket::UNIX->new(Type=>SOCK_STREAM,Peer=>$p,Timeout=>2) or die qq{connect failed: $!}; close($s); print qq{ACTOR_CLOSED_INCOMPLETE_REQUEST\\n};",
+             f"/tmp/{pipe_name}"], timeout=5)
+        print("ACTOR_CLOSED_INCOMPLETE_REQUEST=True", flush=True)
+        start = time.monotonic()
+        for _ in range(100):
+            if compiler_server_live() == "ABSENT":
+                break
+            time.sleep(.1)
+        assert_eq("REAL_ROSLYN_SERVER_AFTER_ACTOR_INCOMPLETE_REQUEST", compiler_server_live(), "ABSENT")
+        print(f"ACTOR_SERVER_WITHDRAW_SECONDS={time.monotonic()-start:.3f}", flush=True)
+    elif NATURAL_IDLE:
         print("NATURAL_IDLE_WAIT_START seconds=675 no-shutdown-command=True", flush=True)
         time.sleep(675)
         assert_eq("REAL_ROSLYN_SERVER_AFTER_IDLE", compiler_server_live(), "ABSENT")
