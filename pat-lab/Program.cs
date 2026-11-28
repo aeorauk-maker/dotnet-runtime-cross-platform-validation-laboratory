@@ -43,6 +43,12 @@ builder.Services.AddEchoRowLevelSecurity(builder.Configuration);
 builder.Services.AddDbContext<AtlasDbContext>((sp, o) => OwnerScopeServices.UseOwnerRls(
     o.UseNpgsql(postgresAddress, n => n.MigrationsHistoryTable("__ef_migrations", "atlas")), sp));
 builder.Services.AddScoped<AccessTokenService>();
+builder.Services.AddScoped<AtlasService>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddHttpClient<GeoLookupClient>();
+builder.Services.AddSingleton(new PatRateLimitOptions());
+builder.Services.AddSingleton<PatRateLimiter>();
+builder.Services.AddMcpServer().WithHttpTransport(o => o.Stateless = true).WithTools<AtlasMcpTools>();
 var readiness = new AtlasReadiness { Configured = true };
 builder.Services.AddSingleton(readiness);
 builder.Services.AddSingleton(new CsrfOptions { PublicOrigin = "https://contacts.example.invalid", IsDevelopment = false });
@@ -65,7 +71,32 @@ app.UseSession();
 app.UseMiddleware<EchoSessionMiddleware>();
 app.UseMiddleware<OwnerScopeMiddleware>();
 app.UseAuthorization();
+app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/api/mcp"), mcp => mcp.Use(async (ctx, next) =>
+{
+    var ready = ctx.RequestServices.GetRequiredService<AtlasReadiness>().Ready;
+    var header = ctx.Request.Headers.Authorization.ToString();
+    var token = header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? header[7..].Trim() : string.Empty;
+    var checkedToken = ready && token.Length > 0
+        ? await ctx.RequestServices.GetRequiredService<AccessTokenService>().CheckAsync(token)
+        : null;
+    if (checkedToken == null)
+    {
+        ctx.Response.StatusCode = ready ? StatusCodes.Status401Unauthorized : StatusCodes.Status503ServiceUnavailable;
+        ctx.Response.Headers.WWWAuthenticate = "Bearer";
+        return;
+    }
+    if (!ctx.RequestServices.GetRequiredService<PatRateLimiter>().TryAcquire(checkedToken.Id, out var retryAfter))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return;
+    }
+    ctx.Items[AtlasMcpTools.OwnerItem] = checkedToken.OwnerId;
+    ctx.Items[AtlasMcpTools.CanWriteItem] = checkedToken.CanWrite;
+    await next();
+}));
 app.MapControllers();
+app.MapMcp("/api/mcp");
 app.MapGet("/operator/ping", () => Results.Ok(new { ready = readiness.Ready }));
 app.MapGet("/operator/repository", (HttpContext ctx) =>
 {

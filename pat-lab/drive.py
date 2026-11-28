@@ -52,10 +52,30 @@ def stop(handle):
         process.wait(timeout=10)
     log.close()
 
-def new_token(port, cookie, name):
+def new_token(port, cookie, name, allow_write=True):
     return req(port, "POST", "/api/atlas/tokens",
-               {"name": name, "allowWrite": True, "expiresInDays": 365},
+               {"name": name, "allowWrite": allow_write, "expiresInDays": 365},
                cookie=cookie, csrf=True)
+
+def mcp_tool(port, token, name, arguments):
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if token: headers["Authorization"] = "Bearer " + token
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}}
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    conn.request("POST", "/api/mcp", json.dumps(body), headers)
+    response = conn.getresponse()
+    raw = response.read().decode()
+    status = response.status
+    conn.close()
+    if raw.startswith("event:") or raw.startswith("data:"):
+        raw = next((line[5:].strip() for line in raw.splitlines() if line.startswith("data:")), "{}")
+    try: parsed = json.loads(raw)
+    except json.JSONDecodeError: parsed = {"unparsed": raw[:120]}
+    return status, parsed
+
+def tool_ok(status, result):
+    return status == 200 and "result" in result and not result["result"].get("isError", False)
 
 def cert_file(directory):
     key, crt, pem = [os.path.join(directory, "inert." + suffix)
@@ -120,6 +140,9 @@ def main():
             post_status, post, _ = new_token(5291, cookie, "after-retire")
             assert post_status == 200, (post_status, post)
             post_token, post_id = post["data"]["token"], post["data"]["info"]["id"]
+            readonly_status, readonly, _ = new_token(5291, cookie, "read-only", False)
+            assert readonly_status == 200, (readonly_status, readonly)
+            readonly_token = readonly["data"]["token"]
             foreign_cookie_status, _, _ = new_token(5292, cookie, "foreign-denied")
             invalidation_status, invalidation, _ = req(5291, "POST", "/operator/invalidate-local")
             after_invalidation_status, _, _ = new_token(5291, cookie, "local-invalidation-denied")
@@ -147,17 +170,35 @@ def main():
             fresh = start(5291, cert)
             old_cookie_status, _, _ = new_token(5291, cookie, "fresh-denied")
             bearer_status, bearer_result, _ = req(5291, "GET", "/operator/check-pat", bearer=post_token)
+            place_args = {"name": "inert-C2-L077-place", "lat": 51.5, "lon": -0.1}
+            no_bearer_status, _ = mcp_tool(5291, None, "atlas_create_place", place_args)
+            readonly_mcp_status, readonly_mcp = mcp_tool(5291, readonly_token, "atlas_create_place", place_args)
+            write_mcp_status, write_mcp = mcp_tool(5291, post_token, "atlas_create_place", place_args)
+            assert tool_ok(write_mcp_status, write_mcp), (write_mcp_status, write_mcp)
+            # The tool result is an actual AtlasPlace. Keep content in the lab,
+            # never print a bearer or owner identifier into the public job log.
+            content = write_mcp["result"].get("content", [])
+            place_data = next((json.loads(item["text"]) for item in content if item.get("type") == "text"), {})
+            place_id = place_data.get("id") or place_data.get("Id")
+            assert place_id, write_mcp
+            read_mcp_status, read_mcp = mcp_tool(5291, post_token, "atlas_get_place", {"id": place_id})
             new_issue, _, new_cookie = req(5291, "POST", "/operator/issue")
             fresh_revoke, _, _ = req(5291, "DELETE", "/api/atlas/tokens/" + post_id,
                                      cookie=new_cookie, csrf=True)
             _, final_result, _ = req(5291, "GET", "/operator/check-pat", bearer=post_token)
+            revoked_mcp_status, _ = mcp_tool(5291, post_token, "atlas_get_place", {"id": place_id})
             print(json.dumps({
                 "fresh_old_cookie_status": old_cookie_status,
                 "fresh_bearer_accepted": bearer_status == 200 and bearer_result["accepted"],
                 "fresh_bearer_write": bearer_result["canWrite"],
+                "mcp_anonymous_status": no_bearer_status,
+                "mcp_readonly_write_denied": not tool_ok(readonly_mcp_status, readonly_mcp),
+                "mcp_place_created": tool_ok(write_mcp_status, write_mcp),
+                "mcp_place_read_back": tool_ok(read_mcp_status, read_mcp),
                 "fresh_owner_issue_status": new_issue,
                 "fresh_owner_revoke_status": fresh_revoke,
                 "final_bearer_denied": not final_result["accepted"],
+                "revoked_mcp_status": revoked_mcp_status,
             }), flush=True)
         finally:
             for handle in (fresh, retiring, old, prep, issuer): stop(handle)
