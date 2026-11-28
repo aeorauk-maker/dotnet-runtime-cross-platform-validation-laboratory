@@ -1,0 +1,108 @@
+name: Rank03 Windows LDAP enabled HTTP guard
+on:
+  push:
+    branches: [pa30-rank03-winwsl-20261128]
+jobs:
+  identity:
+    runs-on: windows-2025
+    timeout-minutes: 16
+    permissions:
+      contents: read
+    steps:
+      - name: Install official Ubuntu WSL distro
+        timeout-minutes: 7
+        shell: pwsh
+        run: |
+          wsl.exe --install --distribution Ubuntu-24.04 --no-launch --web-download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec sh -lc 'printf "WSL_BOOTED=1\n"; uname -r; id -u'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install and provision disposable Samba domain
+        shell: pwsh
+        run: |
+          $install = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/tmp/rank03-apt-update.log 2>&1 && apt-get install -y -qq samba-ad-dc winbind krb5-user dnsutils tcpdump >/tmp/rank03-apt-install.log 2>&1; rc=$?; echo "APT_EXIT=$rc"; test $rc -eq 0; command -v samba-tool'
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $provision = 'set -eu; rm -f /etc/samba/smb.conf; pass="Aa1!$(openssl rand -hex 20)"; printf "%s" "$pass" >/root/.rank03-admin-pass; chmod 600 /root/.rank03-admin-pass; if samba-tool domain provision --realm=LAB.EXAMPLE --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass="$pass" >/tmp/rank03-provision.log 2>&1; then echo PROVISION=OK; else echo PROVISION=FAILED; grep -Ei "error|exception|failed|traceback" /tmp/rank03-provision.log | tail -8 | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g"; exit 19; fi; sed -i "/^\[global\]/a interfaces = lo eth0" /etc/samba/smb.conf; sed -i "/^\[global\]/a bind interfaces only = yes" /etc/samba/smb.conf; sed -i "/^\[global\]/a server services = -dns, -s3fs, -winbindd" /etc/samba/smb.conf; printf "127.0.0.1 dc.lab.example\n" >>/etc/hosts; printf "[libdefaults]\n default_realm = LAB.EXAMPLE\n dns_lookup_kdc = false\n[realms]\n LAB.EXAMPLE = {\n  kdc = 127.0.0.1\n }\n" >/root/.rank03-krb5.conf; chmod 600 /root/.rank03-krb5.conf; echo BIND_CONFIG=OK; echo POST_PROVISION=YES'
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $provision
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Start Samba without port 53 and verify guest KDC
+        shell: pwsh
+        run: |
+          $start = 'nohup samba -i -d 2 >/tmp/rank03-samba-start.log 2>&1 </dev/null & spid=$!; sleep 6; if kill -0 "$spid" 2>/dev/null; then echo "SAMBA_PROC=LIVE"; else echo "SAMBA_PROC=EXITED"; wait "$spid" 2>/dev/null; echo "SAMBA_EXIT=$?"; fi; echo "SAMBA_LOG_BYTES=$(wc -c </tmp/rank03-samba-start.log)"; sed -n "1,45p" /tmp/rank03-samba-start.log | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g"; ip -4 -brief addr; testparm -s 2>/dev/null | grep -E "interfaces|bind interfaces only|server role|server services" | head -8 || true; ss -lnt | grep -E ":(88|389|53)[[:space:]]" || true; pass=$(cat /root/.rank03-admin-pass); printf "%s\n" "$pass" | KRB5_CONFIG=/root/.rank03-krb5.conf kinit Administrator@LAB.EXAMPLE >/tmp/rank03-kinit.log 2>&1; rc=$?; echo "GUEST_ADMIN_KINIT_EXIT=$rc"; sed -n "1,8p" /tmp/rank03-kinit.log | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g"; exit $rc'
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $start
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Test released Negotiate identity and Admin-only guard
+        shell: pwsh
+        run: |
+          $lowPassword = 'Aa1!' + ([guid]::NewGuid().ToString('N').Substring(0,20))
+          Write-Host "::add-mask::$lowPassword"
+          New-LocalUser -Name 'rank03low' -Password (ConvertTo-SecureString $lowPassword -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          dotnet new web -n roleprobe -f net10.0 -o roleprobe --no-restore
+          dotnet add roleprobe/roleprobe.csproj package Microsoft.AspNetCore.Authentication.Negotiate --version 10.0.15
+          @'
+          using Microsoft.AspNetCore.Authentication.Negotiate;
+          using Microsoft.AspNetCore.Authorization;
+          using System.Net;
+          using System.Security.Principal;
+
+          var builder = WebApplication.CreateBuilder(args);
+          builder.WebHost.UseUrls("http://127.0.0.1:50891");
+          builder.Logging.AddFilter("Microsoft.AspNetCore.Authentication.Negotiate", LogLevel.Debug);
+          builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme).AddNegotiate(options => options.EnableLdap(settings => {
+              settings.Domain = "lab.example";
+              settings.MachineAccountName = "Administrator";
+              settings.MachineAccountPassword = Environment.GetEnvironmentVariable("PA30_BIND_PASS");
+          }));
+          builder.Services.AddAuthorization();
+          var app = builder.Build();
+          app.UseAuthentication();
+          app.UseAuthorization();
+          int writes = 0;
+          app.MapGet("/who", (HttpContext c) => {
+              var identity = c.User.Identity;
+              Console.WriteLine($"HTTP_IDENTITY_WINDOWS={identity is WindowsIdentity}");
+              Console.WriteLine($"HTTP_IDENTITY_NAME_HAS_AT={identity?.Name?.Contains('@')}");
+              Console.WriteLine($"HTTP_IDENTITY_NAME_HAS_BACKSLASH={identity?.Name?.Contains('\\')}");
+              return Results.Ok();
+          }).RequireAuthorization();
+          app.MapPost("/admin", () => {
+              int n = Interlocked.Increment(ref writes);
+              File.WriteAllText(Path.Combine(Path.GetTempPath(), "rank03-win-admin-marker.txt"), n.ToString());
+              return Results.Ok();
+          }).RequireAuthorization(new AuthorizeAttribute { Roles = "Administrators" });
+          await app.StartAsync();
+          using var anon = new HttpClient();
+          using var lowHandler = new HttpClientHandler { Credentials = new NetworkCredential("rank03low", Environment.GetEnvironmentVariable("PA30_LOW_PASS")!, Environment.MachineName) };
+          using var low = new HttpClient(lowHandler);
+          using var adminHandler = new HttpClientHandler { Credentials = CredentialCache.DefaultCredentials };
+          using var admin = new HttpClient(adminHandler);
+          const string root = "http://127.0.0.1:50891";
+          Console.WriteLine($"HTTP_ANON_WHO={(int)(await anon.GetAsync(root+"/who")).StatusCode}");
+          Console.WriteLine($"HTTP_LOW_WHO={(int)(await low.GetAsync(root+"/who")).StatusCode}");
+          Console.WriteLine($"HTTP_LOW_ADMIN={(int)(await low.PostAsync(root+"/admin", new StringContent(""))).StatusCode}");
+          Console.WriteLine($"HTTP_MARKER_AFTER_LOW={writes}");
+          Console.WriteLine($"HTTP_VALID_ADMIN={(int)(await admin.PostAsync(root+"/admin", new StringContent(""))).StatusCode}");
+          Console.WriteLine($"HTTP_MARKER_AFTER_VALID={writes}");
+          Console.WriteLine($"HTTP_LOW_ADMIN_REVERSE={(int)(await low.PostAsync(root+"/admin", new StringContent(""))).StatusCode}");
+          Console.WriteLine($"HTTP_MARKER_AFTER_REVERSE={writes}");
+          await app.StopAsync();
+          '@ | Set-Content -Path roleprobe/Program.cs -Encoding utf8
+          dotnet build roleprobe/roleprobe.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bindPass = (& wsl.exe --distribution Ubuntu-24.04 --user root --exec cat /root/.rank03-admin-pass).Trim()
+          Write-Host "::add-mask::$bindPass"
+          $env:PA30_LOW_PASS = $lowPassword
+          $env:PA30_BIND_PASS = $bindPass
+          $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+          Add-Content -Path $hostsPath -Value '127.0.0.1 lab.example #rank03-ldap-fixture'
+          try { & './roleprobe/bin/Release/net10.0/roleprobe.exe' }
+          finally {
+            (Get-Content -Path $hostsPath | Where-Object { $_ -notmatch '#rank03-ldap-fixture' }) | Set-Content -Path $hostsPath
+            Remove-Item Env:PA30_BIND_PASS -ErrorAction SilentlyContinue
+            Remove-Item Env:PA30_LOW_PASS -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name 'rank03low' -ErrorAction SilentlyContinue
+          }
