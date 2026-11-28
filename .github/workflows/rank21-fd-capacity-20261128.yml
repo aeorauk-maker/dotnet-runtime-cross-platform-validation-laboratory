@@ -1,0 +1,126 @@
+name: Rank 21 generic .NET FD capacity
+
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-fd-capacity-20261128
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capacity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Build generic local HTTP host
+        shell: bash
+        run: |
+          dotnet new web -n FdCapacity -f net11.0 --no-restore
+          cat > FdCapacity/Program.cs <<'CS'
+          var builder = WebApplication.CreateBuilder(args);
+          var app = builder.Build();
+          var directory = Path.Combine(AppContext.BaseDirectory, "probe-files");
+          Directory.CreateDirectory(directory);
+          File.WriteAllText(Path.Combine(directory, "one.txt"), "one");
+          app.MapGet("/health", () => Results.Ok("ok"));
+          app.MapGet("/probe", () =>
+          {
+              try { return (IResult)Results.Ok(Directory.EnumerateFiles(directory).Count()); }
+              catch (IOException) { return Results.StatusCode(503); }
+          });
+          app.Run();
+          CS
+          dotnet build FdCapacity/FdCapacity.csproj -c Release --nologo
+      - name: Measure socket and file descriptor capacity
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import http.client
+          import json
+          import os
+          import resource
+          import socket
+          import subprocess
+          import time
+
+          port = 5087
+          env = dict(os.environ, ASPNETCORE_URLS=f"http://127.0.0.1:{port}", DOTNET_ENVIRONMENT="Production")
+          log = open("server.log", "w")
+          server = subprocess.Popen(
+              ["dotnet", "FdCapacity/bin/Release/net11.0/FdCapacity.dll"],
+              env=env, stdout=log, stderr=subprocess.STDOUT,
+              preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 4096)))
+          sockets = []
+
+          def request(conn, path):
+              conn.request("GET", path)
+              response = conn.getresponse()
+              response.read()
+              return response.status
+
+          try:
+              for _ in range(50):
+                  try:
+                      ready = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                      if request(ready, "/health") == 200:
+                          ready.close()
+                          break
+                  except OSError:
+                      time.sleep(.2)
+              else:
+                  raise RuntimeError("host did not start")
+
+              probe = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+              health = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+              print("baseline", json.dumps({"probe": request(probe, "/probe"), "health": request(health, "/health")}))
+
+              for target in (1000, 2000, 3000, 3600, 3800, 3900, 4000, 4050):
+                  failures = 0
+                  while len(sockets) < target and failures < 5:
+                      try:
+                          sockets.append(socket.create_connection(("127.0.0.1", port), timeout=.3))
+                      except OSError:
+                          failures += 1
+                  time.sleep(.4)
+                  fd = len(os.listdir(f"/proc/{server.pid}/fd")) if server.poll() is None else -1
+                  rss = 0
+                  if fd >= 0:
+                      with open(f"/proc/{server.pid}/status") as status:
+                          for line in status:
+                              if line.startswith("VmRSS:"):
+                                  rss = int(line.split()[1])
+                                  break
+                  try:
+                      probe_status = request(probe, "/probe")
+                  except Exception as exc:
+                      probe_status = type(exc).__name__
+                  try:
+                      health_status = request(health, "/health")
+                  except Exception as exc:
+                      health_status = type(exc).__name__
+                  print("stage", json.dumps({"target": target, "sockets": len(sockets), "server_fd": fd,
+                                             "server_rss_kib": rss, "probe": probe_status,
+                                             "health": health_status, "exit": server.poll()}), flush=True)
+                  if fd < 0 or rss > 2_000_000 or probe_status == 503 or failures >= 5:
+                      break
+              probe.close()
+              health.close()
+          finally:
+              for sock in sockets:
+                  sock.close()
+              if server.poll() is None:
+                  server.terminate()
+              try:
+                  server.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  server.kill()
+                  server.wait()
+              log.close()
+              with open("server.log") as stream:
+                  print("host_log_tail", stream.read()[-3000:])
+          PY
