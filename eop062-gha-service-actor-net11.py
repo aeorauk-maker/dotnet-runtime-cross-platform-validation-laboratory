@@ -252,13 +252,14 @@ try:
     write_source(True)
     assert_eq("SECURED_SOURCE_WITH_RESIDUAL_BIN", sha(dll), old_hash)
     assert_eq("SECURED_SOURCE_WITH_RESIDUAL_OBJ", sha(obj_dll), old_hash)
-    live_preclaim = run(["docker", "exec", "-e", f"EOP062_PIPE_INPUT={PIPE_INPUT}", SERVICE_ID,
-                         "perl", str(ACTOR_DIR / "fake.pl"), "completed", "0"], check=False)
-    if live_preclaim.returncode == 0 or "READY global=" in live_preclaim.stdout or not any(
-            phrase in live_preclaim.stdout for phrase in ("global active", "global not a socket")):
-        raise AssertionError("live-server preclaim unexpectedly reached READY or failed for an unrelated reason: " + live_preclaim.stdout[-1000:])
+    # Prove the live server occupies the exact global name. A full fake-server
+    # launch can block inside a connect probe of the live compiler endpoint.
+    pipe_name = base64.b64encode(hashlib.sha256(PIPE_INPUT.encode()).digest()).decode().replace("/", "_").rstrip("=")
+    live_preclaim = run(["docker", "exec", SERVICE_ID, "perl", "-MErrno=EEXIST", "-e",
+                         "my $dst=shift; if(symlink(q{/tmp/eop062-unused},$dst)){unlink($dst); exit 0;} exit($! == EEXIST ? 17 : 18);",
+                         f"/tmp/{pipe_name}"], check=False)
+    assert_eq("LIVE_SERVER_NAME_OCCUPIED", live_preclaim.returncode, 17)
     assert_eq("REAL_ROSLYN_SERVER_AFTER_DENIED_PRECLAIM", compiler_server_live(), "LIVE")
-    print("LIVE_SERVER_PRECLAIM_DENIED=True", flush=True)
     if NATURAL_IDLE:
         print("NATURAL_IDLE_WAIT_START seconds=675 no-shutdown-command=True", flush=True)
         time.sleep(675)
