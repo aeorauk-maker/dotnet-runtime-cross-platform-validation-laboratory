@@ -26,8 +26,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(dotnet --version)" = 11.0.100
-          test "$(sha256sum eop062-landlock-net11.py | cut -d ' ' -f 1)" = 6b114d494fbc69bc1a9baedc271d30a2ffba8240ee3ac7da220b8b7a9c431362
-          test "$(sha256sum eop062-landlock-fake.pl | cut -d ' ' -f 1)" = 718c20db4b31501a52f08197146e153aa8cc27c15896b47d913de57d6750e6aa
+          test "$(sha256sum eop062-landlock-net11.py | cut -d ' ' -f 1)" = 79803b4dab985c89313344fa584f908fa707085a9a6fdf7e938f25602d080818
+          test "$(sha256sum eop062-landlock-fake.pl | cut -d ' ' -f 1)" = 695614d020582336d87d3f1c7ed153970f9caa467c1c82ef8ff82ba6ad2c3f3a
           test "$(sha256sum eop062-landlock-launch.c | cut -d ' ' -f 1)" = 9cf4a46b27cdf7fe4480b9f6d24d9cc2de2ae72149c447450a818adf1441d55b
           python3 -m py_compile eop062-landlock-net11.py
           perl -c eop062-landlock-fake.pl
