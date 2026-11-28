@@ -1,0 +1,27 @@
+name: Rank 14 EOP062 Windows SDK 10 persistent role fault control
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-roslyn-windows-lowfile-run-net10-persistence-malformed.ps1
+      - .github/workflows/rank-14-eop062-windows-lowfile-run-net10-persistence-malformed.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-lowfile-run-net10-persistence-malformed:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.404
+      - name: Test malformed wire with persistent role guard
+        shell: pwsh
+        run: |
+          '{"sdk":{"version":"10.0.404","rollForward":"disable"}}' | Set-Content global.json
+          .\eop062-roslyn-windows-lowfile-run-net10-persistence-malformed.ps1
