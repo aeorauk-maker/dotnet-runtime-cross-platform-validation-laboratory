@@ -1,0 +1,43 @@
+name: PA41 isolated service readiness
+
+on:
+  push:
+    branches:
+      - pa41-c2l077-pat-20261128
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: inert-lab
+          POSTGRES_DB: inert_pat
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d inert_pat" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Verify isolated services
+        env:
+          PGPASSWORD: inert-lab
+        run: |
+          set -euo pipefail
+          dotnet --list-runtimes | grep '^Microsoft.AspNetCore.App 10\.0\.'
+          redis-cli -h 127.0.0.1 ping | grep '^PONG$'
+          psql -h 127.0.0.1 -U postgres -d inert_pat -Atc 'select 1' | grep '^1$'
+          echo READY
