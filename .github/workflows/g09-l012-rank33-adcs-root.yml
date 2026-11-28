@@ -57,7 +57,7 @@ jobs:
                   $resubmit = certutil.exe -config $config -resubmit $case.requestId 2>&1
                   $case.resubmitExit = $LASTEXITCODE
                   ($resubmit | Out-String) | Set-Content "lab/$name.resubmit.txt"
-                  $retrieve = certreq.exe -retrieve -q -binary -config $config $case.requestId "lab/$name.der" 2>&1
+                  $retrieve = certreq.exe -retrieve -f -q -binary -config $config $case.requestId "lab/$name.der" 2>&1
                   Write-Host "R33 RETRIEVE_RETURNED $name $LASTEXITCODE"
                   $case.retrieveExit = $LASTEXITCODE
                   ($retrieve | Out-String) | Set-Content "lab/$name.retrieve.txt"
