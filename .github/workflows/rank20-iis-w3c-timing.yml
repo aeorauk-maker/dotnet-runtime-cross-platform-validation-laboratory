@@ -74,7 +74,8 @@ jobs:
           Write-Host "row_visible_within_30s=$visible"
           Write-Host "full_query_visible_within_30s=$full"
           Write-Host "full_query_elapsed_ms=$elapsedMs"
-          if (-not $full) {
+          # Continue the traffic and actor controls even when the first row flushes early.
+          if ($true) {
             $client = [System.Net.Http.HttpClient]::new()
             $seenAtRequest = -1
             $seenAtMs = -1
