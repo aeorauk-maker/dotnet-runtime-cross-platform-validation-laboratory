@@ -1,0 +1,20 @@
+name: Rank 20 EOP062 generic Windows pipe discriminator
+
+on:
+  push:
+    branches:
+      - rank-20-eop062-windows-20261127
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generic-pipe:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate low-integrity pipe owner admission
+        shell: pwsh
+        run: .\eop062-generic-low-pipe.ps1
