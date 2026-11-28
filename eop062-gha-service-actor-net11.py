@@ -198,10 +198,13 @@ try:
     print(f"MODE={MODE} SERVICE_ID={SERVICE_ID[:12]} NATURAL_IDLE={NATURAL_IDLE}", flush=True)
     assert_eq("RELEASED_SDK", victim_exec("dotnet --version").stdout.strip(), "11.0.100")
     print(f"RUNTIME={victim_exec('dotnet --list-runtimes').stdout.strip()}", flush=True)
-    dotnet_exe = Path(shutil.which("dotnet")).resolve()
-    compiler_dir = dotnet_exe.parent / "sdk/11.0.100/roslyn/bincore"
+    sdk_lines = victim_exec("dotnet --list-sdks").stdout.splitlines()
+    sdk_line = next(line for line in sdk_lines if line.startswith("11.0.100 ["))
+    sdk_base = Path(sdk_line.split("[", 1)[1].split("]", 1)[0]) / "11.0.100"
+    compiler_dir = next((path for path in (sdk_base / "Roslyn/bincore", sdk_base / "roslyn/bincore") if path.is_dir()), sdk_base / "roslyn/bincore")
     assert_eq("COMPILER_DIRECTORY_EXISTS", compiler_dir.is_dir(), True)
-    PIPE_INPUT = f"{victim_exec('id -un').stdout.strip()}.False.{compiler_dir}"
+    PIPE_INPUT = f"{victim_exec('id -un').stdout.strip()}.False.{str(compiler_dir).lower()}"
+    print(f"COMPILER_DIRECTORY={compiler_dir}", flush=True)
     host_uid = victim_exec("id -u").stdout.strip()
     actor_uid = run(["docker", "exec", SERVICE_ID, "id", "-u"]).stdout.strip()
     assert_eq("HOST_ACTOR_UID_MATCH", actor_uid, host_uid)
