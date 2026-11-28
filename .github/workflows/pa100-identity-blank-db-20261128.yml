@@ -1,0 +1,25 @@
+name: PA100 Identity empty DB publish
+on:
+  push:
+    branches:
+      - pa100-identity-blank-20261128-60c8e1
+    paths:
+      - .github/workflows/pa100-identity-blank-db-20261128.yml
+      - runner_identity_blank_db_publish.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  blank_db_publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests==2.32.3
+      - run: python runner_identity_blank_db_publish.py
