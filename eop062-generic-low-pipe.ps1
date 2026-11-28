@@ -317,10 +317,23 @@ try {
     & icacls.exe $lowScript /grant:r "${runnerUser}:(R)" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Could not grant low script read' }
     $lowCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$lowScript`"")
-    if (-not [MicNative]::CreateProcessAsUserW($low, $pwshExe, $lowCommand,
+    $lowLaunched = [MicNative]::CreateProcessAsUserW($low, $pwshExe, $lowCommand,
         [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero,
-        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowProc)) {
-        throw "Low server CreateProcessAsUserW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowProc)
+    if (-not $lowLaunched) {
+        $asUserError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        Write-Host "low-CreateProcessAsUserW-error=$asUserError"
+        if ($asUserError -ne 1314) { throw "Low server CreateProcessAsUserW failed: $asUserError" }
+        $lowCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$lowScript`"")
+        $lowLaunched = [MicNative]::CreateProcessWithTokenW($low, 0, $pwshExe,
+            $lowCommand, 0, [IntPtr]::Zero,
+            (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowProc)
+        if (-not $lowLaunched) {
+            throw "Low server CreateProcessWithTokenW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+        }
+        Write-Host 'low-launch=CreateProcessWithTokenW'
+    } else {
+        Write-Host 'low-launch=CreateProcessAsUserW'
     }
     Write-Host "low-server-pid=$($lowProc.dwProcessId)"
     $lowReady = $false
