@@ -1,0 +1,65 @@
+name: Rank 21 private route discriminator
+
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-bridge-route-20261128
+    paths:
+      - .github/workflows/rank21-private-bridge-route-20261128.yml
+      - rank21-lab-v36-bridge-route-20261128.enc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+
+      - name: Clean-extract private route fixture
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_KEY"
+          mkdir -p "$RUNNER_TEMP/c2-l054-v36-route"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v36-bridge-route-20261128.enc" -out "$RUNNER_TEMP/c2-l054-v36-route/MSRC_C2-L054_PoC.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' 'd97301677f605be411739323402639f59ab07a9fd466108628928af957760b9d' "$RUNNER_TEMP/c2-l054-v36-route/MSRC_C2-L054_PoC.zip" | sha256sum -c - >/dev/null
+          unzip -t "$RUNNER_TEMP/c2-l054-v36-route/MSRC_C2-L054_PoC.zip" >/dev/null
+          mkdir "$RUNNER_TEMP/c2-l054-v36-route/fresh"
+          unzip -q "$RUNNER_TEMP/c2-l054-v36-route/MSRC_C2-L054_PoC.zip" -d "$RUNNER_TEMP/c2-l054-v36-route/fresh"
+          cd "$RUNNER_TEMP/c2-l054-v36-route/fresh"
+          sha256sum -c manifest.sha256 >/dev/null
+
+      - name: Run private route discriminator and controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/c2-l054-v36-route/fresh"
+          bash run.sh > replay.stdout 2>&1
+
+      - name: Seal route-discriminator evidence
+        if: always()
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/c2-l054-v36-route/fresh"
+          tar -czf "$RUNNER_TEMP/c2-l054-v36-route/replay-evidence.tar.gz" --ignore-failed-read replay.stdout run-preflight.txt network-preflight.txt poc/status.txt poc/build.log poc/run.stdout poc/socket_evidence poc/evidence 2>/dev/null || true
+          test -s "$RUNNER_TEMP/c2-l054-v36-route/replay-evidence.tar.gz"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in "$RUNNER_TEMP/c2-l054-v36-route/replay-evidence.tar.gz" -out "$GITHUB_WORKSPACE/c2-l054-v36-route-replay.enc" -pass env:PRIVATE_KEY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c2-l054-v36-route-replay-sealed
+          path: c2-l054-v36-route-replay.enc
+          retention-days: 1
