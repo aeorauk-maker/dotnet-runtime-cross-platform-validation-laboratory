@@ -29,7 +29,7 @@ jobs:
           import zipfile
           import json
 
-          expected = '798dcdccad32bc56b237ff36f9e921a49e5335c8700bee1742b4d96c3b88d440'
+          expected = 'e13291a18afa75ec05ccbbabdd8adbd347a583bdde02dd49f997139fcd1eb723'
           raw = (Path(os.environ['GITHUB_WORKSPACE']) / 'MSRC_G09-L016_PoC.zip').read_bytes()
           digest = hashlib.sha256(raw).hexdigest()
           assert digest == expected, 'exact archive digest mismatch'
@@ -40,17 +40,21 @@ jobs:
           with zipfile.ZipFile(archive) as z:
               assert z.testzip() is None, 'archive integrity failed'
               names = z.namelist()
-              assert len(names) == len(set(names)) and len(names) == 19
+              assert len(names) == len(set(names)) and len(names) == 20
               assert all(not n.startswith('/') and '..' not in Path(n).parts for n in names)
           print('A31_ARCHIVE_SHA256=' + digest)
           print('A31_RUNNER_ARCH=' + subprocess.check_output(['uname', '-m'], text=True).strip())
-          for number in (1, 2):
+          for number in (1, 2, 3, 4):
               fresh = base / f'extraction-{number}'
               fresh.mkdir()
               subprocess.run(['unzip', '-q', str(archive), '-d', str(fresh)], check=True)
+              generated = number >= 3
+              env = dict(os.environ)
+              if generated:
+                  env['G09_FORCE_REGENERATE'] = '1'
               result = subprocess.run(['./run.sh'], cwd=fresh, text=True,
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      timeout=180)
+                                      timeout=180, env=env)
               if result.returncode:
                   print(f'A31_CLEAN_RUN_{number}_FAILED_EXIT={result.returncode}')
                   print('A31_FAILED_STDOUT_SHA256=' + hashlib.sha256(result.stdout.encode()).hexdigest())
@@ -59,7 +63,9 @@ jobs:
               proof = json.loads(result.stdout)
               assert proof['result'] == 'pass'
               assert proof['sdk'] == '11.0.100' and proof['runtime'] == '11.0.0'
-              assert proof['actor_leaf_sha256'] == 'eabcb604896b9703afaaf183f6b29b894cc6879cc5f7f1fd7875aa38e32dc7ba'
+              assert proof['leaf_source'] == ('locally_regenerated' if generated else 'actor_issued')
+              if not generated:
+                  assert proof['actor_leaf_sha256'] == 'eabcb604896b9703afaaf183f6b29b894cc6879cc5f7f1fd7875aa38e32dc7ba'
               assert proof['guard_statuses'] == {'no_cookie': 401, 'no_owner_proof': 403,
                                                 'wrong_cookie': 401, 'valid': 200,
                                                 'captured_replay': 200}
@@ -71,12 +77,12 @@ jobs:
               assert proof['attack_repeat_passed'] and proof['owned_root_removed']
               assert proof['hosts_route_restored']
               assert proof['transparent_forwarded_connections'] >= 10
-              safe = {k: proof[k] for k in ('result', 'sdk', 'runtime', 'actor_leaf_sha256',
+              safe = {k: proof[k] for k in ('result', 'sdk', 'runtime', 'leaf_source', 'actor_leaf_sha256',
                                             'strict_cookie_flags', 'os_root_trust',
                                             'victim_proxy_configuration', 'guard_statuses',
                                             'denied_san_and_wrong_host_captured_cookie',
                                             'writes_before_after_replay', 'attack_repeat_passed',
                                             'owned_root_removed', 'hosts_route_restored')}
               print(f'A31_CLEAN_RUN_{number}_PASS=' + json.dumps(safe, sort_keys=True))
-          print('A31_EXACT_ARCHIVE_TWO_CLEAN_REPLAYS_PASS')
+          print('A31_EXACT_ARCHIVE_TWO_ACTOR_AND_TWO_REGENERATED_CLEAN_REPLAYS_PASS')
           PY
