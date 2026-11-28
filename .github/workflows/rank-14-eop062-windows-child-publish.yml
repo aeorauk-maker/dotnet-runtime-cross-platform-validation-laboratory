@@ -1,0 +1,25 @@
+name: Rank 14 EOP062 Windows Low child publish rollback
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-roslyn-windows-child-publish.ps1
+      - .github/workflows/rank-14-eop062-windows-child-publish.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-child-publish-join:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test clean Low child false success in one-call ASP.NET Core publish
+        shell: pwsh
+        run: .\eop062-roslyn-windows-child-publish.ps1
