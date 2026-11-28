@@ -1,0 +1,137 @@
+name: Rank 14 EOP062 MXC native pipe visibility
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths: [.github/workflows/rank-14-eop062-mxc-native-pipe-visibility.yml]
+permissions:
+  contents: read
+jobs:
+  native-pipe:
+    runs-on: windows-11-arm
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe contained native server to host client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $ProgressPreference='SilentlyContinue'
+          $lab=Join-Path $env:RUNNER_TEMP 'eop062-mxc-native'
+          $actor=Join-Path $lab 'actor'
+          $protected=Join-Path $lab 'protected'
+          New-Item -ItemType Directory -Path $actor,$protected -Force | Out-Null
+          Set-Location $lab
+          npm init -y | Out-Null
+          npm install --no-audit --no-fund @microsoft/mxc-sdk@1.0.1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'MXC install failed' }
+          $executor=Join-Path $lab 'node_modules\@microsoft\mxc-sdk\bin\arm64\wxc-exec.exe'
+          & $executor --probe | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'MXC probe failed' }
+          Write-Host "HOST_USER=$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <sddl.h>
+          static HANDLE out;
+          static void logA(const char *s) { DWORD n; WriteFile(out,s,lstrlenA(s),&n,0); WriteFile(out,"\r\n",2,&n,0); }
+          static void sidLog(const char *label, int cls) {
+            HANDLE token; BYTE buf[1024]; DWORD n; LPWSTR sid=0; char text[256];
+            if (!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)) { logA("TOKEN_OPEN_FAILED"); return; }
+            if (!GetTokenInformation(token,(TOKEN_INFORMATION_CLASS)cls,buf,sizeof(buf),&n)) { logA("TOKEN_QUERY_FAILED"); CloseHandle(token); return; }
+            if (cls==TokenIntegrityLevel) {
+              PSID p=((TOKEN_MANDATORY_LABEL*)buf)->Label.Sid;
+              DWORD il=*GetSidSubAuthority(p,*GetSidSubAuthorityCount(p)-1);
+              logA(il==4096?"IL=LOW":il==8192?"IL=MEDIUM":il==12288?"IL=HIGH":"IL=OTHER");
+            } else {
+              PSID p=cls==TokenOwner?((TOKEN_OWNER*)buf)->Owner:((TOKEN_USER*)buf)->User.Sid;
+              if (ConvertSidToStringSidW(p,&sid)) {
+                logA(label); WideCharToMultiByte(CP_UTF8,0,sid,-1,text,sizeof(text),0,0); logA(text); LocalFree(sid);
+              }
+            }
+            CloseHandle(token);
+          }
+          void mainCRTStartup(void) {
+            DWORD n; char bytes[4];
+            out=CreateFileW(L"result.txt",FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,0,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
+            if (out==INVALID_HANDLE_VALUE) ExitProcess(20);
+            sidLog("ACTOR_USER",TokenUser); sidLog("ACTOR_OWNER",TokenOwner); sidLog("ACTOR_IL",TokenIntegrityLevel);
+            HANDLE f=CreateFileW(L"..\\protected\\owner.txt",FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,0,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0);
+            if (f==INVALID_HANDLE_VALUE) logA("PROTECTED_WRITE=DENIED");
+            else { WriteFile(f,"TOUCHED",7,&n,0); CloseHandle(f); logA("PROTECTED_WRITE=ALLOWED"); }
+            HANDLE pipe=CreateNamedPipeW(L"\\\\.\\pipe\\eop062-mxc-native-rank14",PIPE_ACCESS_DUPLEX,PIPE_TYPE_BYTE|PIPE_READMODE_BYTE|PIPE_WAIT,1,4096,4096,60000,0);
+            if (pipe==INVALID_HANDLE_VALUE) { logA("PIPE_CREATE=DENIED"); CloseHandle(out); ExitProcess(21); }
+            logA("PIPE_CREATE=ALLOWED");
+            if (!ConnectNamedPipe(pipe,0) && GetLastError()!=ERROR_PIPE_CONNECTED) { logA("PIPE_ACCEPT=DENIED"); CloseHandle(pipe); CloseHandle(out); ExitProcess(22); }
+            logA("PIPE_ACCEPT=ALLOWED");
+            if (ReadFile(pipe,bytes,4,&n,0) && n==4) { logA("PIPE_REQUEST=RECEIVED"); WriteFile(pipe,"PONG",4,&n,0); FlushFileBuffers(pipe); logA("PIPE_RESPONSE=SENT"); }
+            else logA("PIPE_REQUEST=FAILED");
+            DisconnectNamedPipe(pipe); CloseHandle(pipe); CloseHandle(out); ExitProcess(0);
+          }
+          '@ | Set-Content -Path (Join-Path $actor 'actor.c')
+          $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs=(& $vswhere -latest -property installationPath).Trim()
+          $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
+          $src=Join-Path $actor 'actor.c'
+          $obj=Join-Path $actor 'actor.obj'
+          $binary=Join-Path $actor 'actor.exe'
+          $compile='call "'+$vcvars+'" arm64 >nul && cl.exe /nologo /W3 /GS- /Zl /c /Fo:"'+$obj+'" "'+$src+'" && link.exe /nologo /NODEFAULTLIB /ENTRY:mainCRTStartup /SUBSYSTEM:CONSOLE /MACHINE:ARM64 /OUT:"'+$binary+'" "'+$obj+'" kernel32.lib advapi32.lib'
+          cmd.exe /D /C $compile | Out-Host
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binary)) { throw "Native build failed: $LASTEXITCODE" }
+          'ORIGINAL' | Set-Content (Join-Path $protected 'owner.txt')
+          icacls (Join-Path $protected 'owner.txt') /setintegritylevel 'M' | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Medium label failed' }
+          $request=@{
+            version='1.0.0'; containment='processcontainer'
+            process=@{ commandLine="`"$binary`""; cwd=$actor; timeout=65000 }
+            filesystem=@{ readwritePaths=@($actor); deniedPaths=@($protected) }
+            network=@{ egress=@{default='deny'} }
+          }
+          $requestPath=Join-Path $actor 'request.json'
+          $request | ConvertTo-Json -Depth 8 | Set-Content $requestPath
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using Microsoft.Win32.SafeHandles;
+          public static class PipeProbeNative {
+            [DllImport("kernel32.dll", EntryPoint="WaitNamedPipeW", CharSet=CharSet.Unicode, SetLastError=true)]
+            public static extern bool WaitNamedPipe(string name, uint timeout);
+            [DllImport("kernel32.dll", EntryPoint="CreateFileW", CharSet=CharSet.Unicode, SetLastError=true)]
+            public static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+          }
+          '@
+          $control=[System.IO.Pipes.NamedPipeServerStream]::new('eop062-mxc-host-control',[System.IO.Pipes.PipeDirection]::InOut)
+          $controlWait=[PipeProbeNative]::WaitNamedPipe('\\.\pipe\eop062-mxc-host-control',1000)
+          Write-Host "HOST_CONTROL_WAITPIPE=$controlWait ERROR=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          $control.Dispose()
+          $stdout=Join-Path $lab 'stdout.txt'; $stderr=Join-Path $lab 'stderr.txt'
+          $proc=Start-Process -FilePath $executor -ArgumentList @($requestPath) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $result=Join-Path $actor 'result.txt'
+          try {
+            $ready=$false
+            for ($i=0;$i -lt 45;$i++) {
+              if ((Test-Path $result) -and ((Get-Content $result -Raw) -match 'PIPE_CREATE=ALLOWED')) { $ready=$true; break }
+              if ($proc.HasExited) { break }
+              Start-Sleep -Seconds 1
+            }
+            if ($ready) {
+              try {
+                $pipePath='\\.\pipe\eop062-mxc-native-rank14'
+                $visible=[PipeProbeNative]::WaitNamedPipe($pipePath,1000)
+                Write-Host "HOST_WAITPIPE=$visible ERROR=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+                $handle=[PipeProbeNative]::CreateFile($pipePath,[uint32]3221225472,0,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
+                $openError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                if ($handle.IsInvalid) { Write-Host "HOST_CREATEFILE=DENIED ERROR=$openError" }
+                else {
+                  $client=[System.IO.FileStream]::new($handle,[System.IO.FileAccess]::ReadWrite)
+                  $data=[Text.Encoding]::ASCII.GetBytes('PING'); $client.Write($data,0,4); $client.Flush()
+                  $reply=New-Object byte[] 4; $n=$client.Read($reply,0,4)
+                  Write-Host "HOST_CLIENT=CONNECTED REPLY=$([Text.Encoding]::ASCII.GetString($reply,0,$n))"
+                  $client.Dispose()
+                }
+              } catch { Write-Host "HOST_CLIENT=DENIED TYPE=$($_.Exception.GetType().Name) MESSAGE=$($_.Exception.Message)" }
+            } else { Write-Host 'HOST_CLIENT=NO_SERVER' }
+            $proc.WaitForExit(70000) | Out-Null
+          } finally { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force } }
+          Write-Host '=== ACTOR RESULT ==='; if (Test-Path $result) { Get-Content $result | Out-Host } else { Write-Host 'RESULT_ABSENT' }
+          Write-Host '=== EXECUTOR STDERR ==='; if (Test-Path $stderr) { Get-Content $stderr | Out-Host }
+          Write-Host "EXECUTOR_EXIT=$($proc.ExitCode) PROTECTED_CONTENT=$((Get-Content (Join-Path $protected 'owner.txt') -Raw).Trim())"
