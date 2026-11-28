@@ -134,9 +134,21 @@ jobs:
             exit 1
           fi
           openssl x509 -in denied-issued.pem -noout -text | grep -q 'DNS:forbidden.test'
+          openssl ecparam -name prime256v1 -genkey -noout -out direct-root.key
+          openssl req -new -sha256 -key direct-root.key -subj '/CN=forbidden.test' \
+            -addext 'subjectAltName=DNS:forbidden.test' -out direct-root.csr
+          cat > direct-root.ext <<'EOF'
+          basicConstraints=critical,CA:FALSE
+          keyUsage=critical,digitalSignature
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:forbidden.test
+          EOF
+          openssl x509 -req -sha256 -in direct-root.csr -CA root.pem -CAkey root.key \
+            -CAcreateserial -days 2 -out direct-root.cert.pem -extfile direct-root.ext
+          openssl verify -CAfile root.pem direct-root.cert.pem
           mkdir -p "${RUNNER_TEMP}/a31-public-fixture"
           cp root.pem issuer.pem actor-leaf.key allowed-issued.pem attack-issued.pem denied-issued.pem \
-            "${RUNNER_TEMP}/a31-public-fixture/"
+            direct-root.cert.pem direct-root.key "${RUNNER_TEMP}/a31-public-fixture/"
           echo 'A31_REQUEST_ONLY_CLUSTER_ISSUANCE_PASS'
       - name: Export short-lived owned test fixture
         uses: actions/upload-artifact@v4
@@ -144,3 +156,25 @@ jobs:
           name: a31-public-test-fixture
           path: ${{ runner.temp }}/a31-public-fixture/
           retention-days: 1
+  exact_build:
+    needs: issuer
+    runs-on: macos-15
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.100
+      - uses: actions/download-artifact@v4
+        with:
+          name: a31-public-test-fixture
+          path: fixture
+      - name: Prove exact actor leaf through normal SDK build
+        shell: bash
+        run: python3 a31_exact_build.py
