@@ -16,6 +16,9 @@ jobs:
           $links = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' })
           Write-Output ('LINK_LOCAL_COUNT=' + $links.Count)
           Write-Output ('UP_NIC_COUNT=' + @(Get-NetAdapter | Where-Object Status -eq 'Up').Count)
+          $interfaces = @($links | Select-Object -ExpandProperty InterfaceIndex -Unique)
+          Write-Output ('LINK_LOCAL_INTERFACE_COUNT=' + $interfaces.Count)
+          foreach ($i in $interfaces) { $a = Get-NetAdapter -InterfaceIndex $i -ErrorAction SilentlyContinue; Write-Output ('LINK_IFACE=' + $i + ':' + $a.Name + ':' + $a.InterfaceDescription) }
           if ($links.Count -eq 0) { Write-Output 'UNSCOPED_LOCAL_PROBE=NO_LINK_LOCAL'; exit 0 }
           $entry = $links[0]
           $raw = ($entry.IPAddress -split '%')[0]
