@@ -87,6 +87,11 @@ server.listen(0,'127.0.0.1',async () => {
 & dotnet publish $project -c Release -r win-x64 -v:q '-p:UseSharedCompilation=false' '-p:PublishSingleFile=true' '-p:SelfContained=false' | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Actor publish failed' }
 $original = Join-Path $lab 'bin\Release\net10.0\win-x64\publish\Actor.exe'
+if ($env:GITHUB_WORKSPACE) {
+    $artifactActor = Join-Path $env:GITHUB_WORKSPACE 'eop062-actor-inert.exe'
+    Copy-Item -LiteralPath $original -Destination $artifactActor -Force
+    Write-Host "ARTIFACT_ACTOR_SHA256=$((Get-FileHash $artifactActor -Algorithm SHA256).Hash)"
+}
 $downloaded = Join-Path $downloadDir 'eop062-actor.exe'
 Push-Location $lab
 try {
