@@ -822,10 +822,13 @@ try {
     ) | Sort-Object
     $appEnvironmentPtr = [Runtime.InteropServices.Marshal]::StringToHGlobalUni(($appEnvironment -join "`0") + "`0`0")
     Write-Host 'RUN_ENVIRONMENT=explicit-minimal-profile-independent'
-    $appCommand = [System.Text.StringBuilder]::new("`"$dotnetExe`" run --project `"$project`" --no-restore --no-launch-profile -c Debug")
+    $runLog = Join-Path $labRoot 'forged-run.log'
+    $runLauncher = Join-Path $labRoot 'forged-run.cmd'
+    [System.IO.File]::WriteAllText($runLauncher, "@echo off`r`n`"$dotnetExe`" run --project `"$project`" --no-restore --no-launch-profile -c Debug > `"$runLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n")
+    $appCommand = [System.Text.StringBuilder]::new("`"$cmdExe`" /D /C `"$runLauncher`"")
     Write-Host "FORGED_RUN_COMMAND=$appCommand"
     if (-not [MicNative]::CreateProcessWithLogonW($testUser, '.', $testPassword,
-        1, $dotnetExe, $appCommand, 0x400, $appEnvironmentPtr,
+        1, $cmdExe, $appCommand, 0x400, $appEnvironmentPtr,
         $labRoot, [ref]$startup, [ref]$appProc)) {
         throw "Standard-account dotnet run launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
@@ -837,6 +840,8 @@ try {
     $forgedExists = Test-Path $outputDll
     $forgedHash = if ($forgedExists) { (Get-FileHash $outputDll -Algorithm SHA256).Hash } else { '<absent>' }
     Write-Host "FORGED_RUN state=$runState exit=$runExit dll=$forgedExists hash=$forgedHash old=$oldHash"
+    $runLogText = if (Test-Path $runLog) { [System.IO.File]::ReadAllText($runLog) } else { '<absent>' }
+    Write-Host "FORGED_RUN_LOG_BEGIN`n$runLogText`nFORGED_RUN_LOG_END"
     $forgedMarkerExists = Test-Path $markerPath
     $forgedMarkerText = if ($forgedMarkerExists) { [System.IO.File]::ReadAllText($markerPath) } else { '<absent>' }
     Write-Host "FORGED_AUTH actor-wait=$actorWait marker=$forgedMarkerExists text=$forgedMarkerText"
