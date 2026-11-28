@@ -112,6 +112,7 @@ $lowCmdProc = [MicNative+ProcessInfo]::new()
 $mediumClientProc = [MicNative+ProcessInfo]::new()
 $appProc = [MicNative+ProcessInfo]::new()
 $validAppProc = [MicNative+ProcessInfo]::new()
+$appEnvironmentPtr = [IntPtr]::Zero
 try {
     if (-not [MicNative]::OpenProcessToken([MicNative]::GetCurrentProcess(), 0xF01FF, [ref]$token)) {
         throw "OpenProcessToken failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
@@ -723,6 +724,7 @@ try {
     Record 'SENT_COMPLETED_ZERO'
     $server.Dispose()
     $http = [System.Net.Http.HttpClient]::new()
+    $http.Timeout = [TimeSpan]::FromSeconds(2)
     $ready = $false
     for ($attempt = 0; $attempt -lt 150; $attempt++) {
         try {
@@ -762,12 +764,24 @@ try {
     $forgedExists = Test-Path $outputDll
     $forgedHash = if ($forgedExists) { (Get-FileHash $outputDll -Algorithm SHA256).Hash } else { '<absent>' }
     Write-Host "FORGED_RESULT exit=$forgedExit dll=$forgedExists hash=$forgedHash"
-    Write-Host "MARKER_BEFORE_LAUNCH=$((Test-Path $markerPath))"
-    $env:ASPNETCORE_URLS = $baseUrl
-    $env:EOP062_MARKER = $markerPath
+    $markerBeforeLaunch = Test-Path $markerPath
+    Write-Host "MARKER_BEFORE_LAUNCH=$markerBeforeLaunch"
+    $dotnetRoot = [System.IO.Path]::GetDirectoryName($dotnetExe)
+    $appEnvironment = @(
+        "ASPNETCORE_URLS=$baseUrl",
+        "DOTNET_ROOT=$dotnetRoot",
+        "EOP062_MARKER=$markerPath",
+        "PATH=$dotnetRoot;$env:SystemRoot\System32",
+        "SystemRoot=$env:SystemRoot",
+        "TEMP=$labRoot",
+        "TMP=$labRoot",
+        "WINDIR=$env:SystemRoot"
+    ) | Sort-Object
+    $appEnvironmentPtr = [Runtime.InteropServices.Marshal]::StringToHGlobalUni(($appEnvironment -join "`0") + "`0`0")
+    Write-Host 'APP_ENVIRONMENT=explicit-minimal-profile-independent'
     $appCommand = [System.Text.StringBuilder]::new("`"$dotnetExe`" `"$outputDll`"")
     if (-not [MicNative]::CreateProcessWithLogonW($testUser, '.', $testPassword,
-        1, $dotnetExe, $appCommand, 0, [IntPtr]::Zero,
+        1, $dotnetExe, $appCommand, 0x400, $appEnvironmentPtr,
         (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$appProc)) {
         throw "Standard-account forged app launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
@@ -790,11 +804,12 @@ try {
     Write-Host "VALID_RESULT exit=$validExit dll=$validExists hash=$validHash"
     $validCommand = [System.Text.StringBuilder]::new("`"$dotnetExe`" `"$outputDll`"")
     if (-not [MicNative]::CreateProcessWithLogonW($testUser, '.', $testPassword,
-        1, $dotnetExe, $validCommand, 0, [IntPtr]::Zero,
+        1, $dotnetExe, $validCommand, 0x400, $appEnvironmentPtr,
         (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$validAppProc)) {
         throw "Standard-account secured app launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
     $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds(2)
     $validReady = $false
     for ($attempt = 0; $attempt -lt 150; $attempt++) {
         try {
@@ -818,10 +833,11 @@ try {
     [void][MicNative]::WaitForSingleObject($validAppProc.hProcess, 5000)
     if ($validAppProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($validAppProc.hThread); $validAppProc.hThread = [IntPtr]::Zero }
     if ($validAppProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($validAppProc.hProcess); $validAppProc.hProcess = [IntPtr]::Zero }
-    if ($prevalidExit -ne 0 -or $prevalidHash -eq $oldHash -or $forgedExit -ne 0 -or -not $forgedExists -or $forgedHash -ne $oldHash -or $actorWait -ne 0 -or -not $actorText.Contains('LOW_SELF_DOWNGRADE=VERIFIED') -or -not $actorText.Contains('LOW_SOURCE_WRITE=DENIED') -or -not $actorText.Contains('LOW_PROJECT_WRITE=DENIED') -or -not $actorText.Contains('LOW_MARKER_WRITE=DENIED') -or -not $actorText.Contains('TARGET=True') -or -not $actorText.Contains('SENT_COMPLETED_ZERO') -or -not $actorText.Contains('LOW_ANON_ADMIN_STATUS=200') -or -not $forgedMarkerExists -or $forgedMarkerText -ne 'PROTECTED_INERT_MARKER_062' -or $validExit -ne 0 -or -not $validExists -or $validHash -eq $oldHash -or $anonStatus -ne 401 -or $markerAfterAnon -or $ownerStatus -ne 200 -or -not $markerAfterOwner) {
+    if ($prevalidExit -ne 0 -or $prevalidHash -eq $oldHash -or $forgedExit -ne 0 -or -not $forgedExists -or $forgedHash -ne $oldHash -or $markerBeforeLaunch -or $actorWait -ne 0 -or -not $actorText.Contains('LOW_SELF_DOWNGRADE=VERIFIED') -or -not $actorText.Contains('LOW_SOURCE_WRITE=DENIED') -or -not $actorText.Contains('LOW_PROJECT_WRITE=DENIED') -or -not $actorText.Contains('LOW_MARKER_WRITE=DENIED') -or -not $actorText.Contains('TARGET=True') -or -not $actorText.Contains('SENT_COMPLETED_ZERO') -or -not $actorText.Contains('LOW_ANON_ADMIN_STATUS=200') -or -not $forgedMarkerExists -or $forgedMarkerText -ne 'PROTECTED_INERT_MARKER_062' -or $validExit -ne 0 -or -not $validExists -or $validHash -eq $oldHash -or $anonStatus -ne 401 -or $markerAfterAnon -or $ownerStatus -ne 200 -or -not $markerAfterOwner) {
         throw 'Released Roslyn Windows authorization rollback discriminator did not pass'
     }
 } finally {
+    if ($appEnvironmentPtr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($appEnvironmentPtr) }
     if ($appProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::TerminateProcess($appProc.hProcess, 0); [void][MicNative]::CloseHandle($appProc.hProcess) }
     if ($appProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($appProc.hThread) }
     if ($validAppProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::TerminateProcess($validAppProc.hProcess, 0); [void][MicNative]::CloseHandle($validAppProc.hProcess) }
