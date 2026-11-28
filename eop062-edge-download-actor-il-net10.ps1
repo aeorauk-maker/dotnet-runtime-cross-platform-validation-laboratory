@@ -92,8 +92,13 @@ $originalHash = (Get-FileHash $original -Algorithm SHA256).Hash
 $downloadHash = (Get-FileHash $downloaded -Algorithm SHA256).Hash
 Write-Host "BINARY_HASH_EQUAL=$($originalHash -eq $downloadHash) SDK_VERSION=$(& dotnet --version)"
 if ($originalHash -ne $downloadHash) { throw 'Browser download bytes changed' }
+$lowControl = Join-Path $lab 'low-labeled-actor.exe'
+Copy-Item $original $lowControl
+& icacls.exe $lowControl /setintegritylevel Low | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Low actor control label failed' }
 Write-Host "ORIGINAL_ACL=$((& icacls.exe $original) -join ';')"
 Write-Host "DOWNLOADED_ACL=$((& icacls.exe $downloaded) -join ';')"
+Write-Host "LOW_CONTROL_ACL=$((& icacls.exe $lowControl) -join ';')"
 
 function Run-ActorCase([string]$label, [string]$executable) {
     [IO.File]::WriteAllText($protected, 'original')
@@ -111,10 +116,17 @@ function Run-ActorCase([string]$label, [string]$executable) {
     try {
         $actorOutput = & $executable $protected $pipeName 2>&1
         $hostOutput = Receive-Job $job -Wait
-        Write-Host "CASE=$label ACTOR=$(($actorOutput -join ';')) HOST=$(($hostOutput -join ';')) SENTINEL=$([IO.File]::ReadAllText($protected))"
+        return "CASE=$label ACTOR=$(($actorOutput -join ';')) HOST=$(($hostOutput -join ';')) SENTINEL=$([IO.File]::ReadAllText($protected))"
     } finally { Remove-Job $job -Force -ErrorAction SilentlyContinue }
 }
 
-Run-ActorCase 'original' $original
-Run-ActorCase 'edge-downloaded' $downloaded
+$originalResult = Run-ActorCase 'original' $original
+$downloadResult = Run-ActorCase 'edge-downloaded' $downloaded
+$lowResult = Run-ActorCase 'explicit-low-label' $lowControl
+Write-Host $originalResult
+Write-Host $downloadResult
+Write-Host $lowResult
+if ($originalResult -notmatch 'IL_RID=12288.*PROTECTED_WRITE=ALLOWED.*PIPE_HOST_CONNECT=YES') { throw 'Original positive control failed' }
+if ($downloadResult -notmatch 'IL_RID=12288.*PROTECTED_WRITE=ALLOWED.*PIPE_HOST_CONNECT=YES') { throw 'Edge download result changed' }
+if ($lowResult -notmatch 'IL_RID=4096.*PROTECTED_WRITE=DENIED.*PIPE_HOST_CONNECT=YES') { throw 'Explicit Low measurement control failed' }
 Write-Host 'EOP062_EDGE_DOWNLOAD_ACTOR_DIAGNOSTIC_COMPLETE'
