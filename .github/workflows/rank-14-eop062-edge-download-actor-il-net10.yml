@@ -1,0 +1,20 @@
+name: Rank 14 EOP062 Edge downloaded actor integrity
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths: [.github/workflows/rank-14-eop062-edge-download-actor-il-net10.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  edge-downloaded-actor:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.404
+      - name: Check Edge downloaded actor token and host pipe
+        shell: pwsh
+        run: ./eop062-edge-download-actor-il-net10.ps1
