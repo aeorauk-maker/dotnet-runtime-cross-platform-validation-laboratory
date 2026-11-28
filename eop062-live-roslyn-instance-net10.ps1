@@ -181,9 +181,11 @@ try {
     [System.IO.File]::WriteAllText($buildLauncher,
         "@echo off`r`nset `"DOTNET_CLI_HOME=$labRoot`"`r`n`"$dotnetExe`" build `"$project`" --no-restore -v:minimal > `"$buildLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n")
     $build = Start-Standard $cmdExe "`"$cmdExe`" /D /C `"$buildLauncher`""
-    Wait-Standard $build
+    $buildWaitError = $null
+    try { Wait-Standard $build } catch { $buildWaitError = $_ }
     $buildText = [System.IO.File]::ReadAllText($buildLog)
     Write-Host "BUILD_LOG_BEGIN`n$buildText`nBUILD_LOG_END"
+    if ($buildWaitError) { throw $buildWaitError }
     if (-not $buildText.Contains('Build succeeded.')) { throw 'Product build did not succeed' }
     $medium = Start-Standard $pwshExe "`"$pwshExe`" -NoProfile -NonInteractive -File `"$sharedScript`" -Mode probe -PipeName $pipeName -ResultPath `"$mediumResult`""
     Wait-Standard $medium
