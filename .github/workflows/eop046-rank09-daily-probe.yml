@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           dotnet workload list
-          sudo -H env -u XDG_RUNTIME_DIR DOTNET_ROOT="$DOTNET_ROOT" DOTNET_CLI_HOME="$RUNNER_TEMP/eop046-root-dotnet" "$DOTNET_ROOT/dotnet" workload install android --source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json
+          sudo -H env -u XDG_RUNTIME_DIR DOTNET_ROOT="$DOTNET_ROOT" DOTNET_CLI_HOME="$RUNNER_TEMP/eop046-root-dotnet" "$DOTNET_ROOT/dotnet" workload install android --source https://api.nuget.org/v3/index.json --source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json
           dotnet workload list
       - name: Preserve probe facts
         if: always()
