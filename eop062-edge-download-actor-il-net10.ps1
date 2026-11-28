@@ -130,3 +130,55 @@ if ($originalResult -notmatch 'IL_RID=12288.*PROTECTED_WRITE=ALLOWED.*PIPE_HOST_
 if ($downloadResult -notmatch 'IL_RID=12288.*PROTECTED_WRITE=ALLOWED.*PIPE_HOST_CONNECT=YES') { throw 'Edge download result changed' }
 if ($lowResult -notmatch 'IL_RID=4096.*PROTECTED_WRITE=DENIED.*PIPE_HOST_CONNECT=YES') { throw 'Explicit Low measurement control failed' }
 Write-Host 'EOP062_EDGE_DOWNLOAD_ACTOR_DIAGNOSTIC_COMPLETE'
+
+# Separate ordinary-standard-account check: the previous download used the High runner account.
+$stdName = 'eop062b' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+$stdPass = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(18)) + 'aA1!'
+& net.exe user $stdName $stdPass /add /y | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Standard account creation failed' }
+try {
+    $stdIdentity = "$env:COMPUTERNAME\$stdName"
+    $stdSecure = ConvertTo-SecureString $stdPass -AsPlainText -Force
+    $stdCredential = [pscredential]::new($stdIdentity, $stdSecure)
+    & icacls.exe $lab /grant "${stdIdentity}:(OI)(CI)M" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Standard lab ACL failed' }
+    $stdDir = Join-Path $lab 'standard-downloaded'
+    [void](New-Item -ItemType Directory -Path $stdDir -Force)
+    $stdDownloaded = Join-Path $stdDir 'eop062-actor.exe'
+    $stdNodeOut = Join-Path $lab 'standard-node-out.txt'
+    $stdNodeErr = Join-Path $lab 'standard-node-err.txt'
+    $nodeExe = (Get-Command node.exe).Source
+    $nodeProcess = Start-Process -FilePath $nodeExe -Credential $stdCredential -ArgumentList @($nodeSource, $original, $stdDownloaded) -RedirectStandardOutput $stdNodeOut -RedirectStandardError $stdNodeErr -PassThru -Wait
+    Write-Host "STANDARD_EDGE_EXIT=$($nodeProcess.ExitCode) NODE_OUT=$(([IO.File]::ReadAllText($stdNodeOut)).Trim()) NODE_ERR=$(([IO.File]::ReadAllText($stdNodeErr)).Trim())"
+    if ($nodeProcess.ExitCode -ne 0 -or -not (Test-Path $stdDownloaded)) { Write-Host 'STANDARD_EDGE_DOWNLOAD_UNAVAILABLE'; exit 0 }
+    $stdHashEqual = ((Get-FileHash $stdDownloaded -Algorithm SHA256).Hash -eq $originalHash)
+    Write-Host "STANDARD_BINARY_HASH_EQUAL=$stdHashEqual STANDARD_DOWNLOADED_ACL=$((& icacls.exe $stdDownloaded) -join ';')"
+    if (-not $stdHashEqual) { throw 'Standard Edge download bytes changed' }
+    [IO.File]::WriteAllText($protected, 'original')
+    $stdPipe = 'eop062-standard-' + [guid]::NewGuid().ToString('N')
+    $stdOut = Join-Path $lab 'standard-actor-out.txt'
+    $stdErr = Join-Path $lab 'standard-actor-err.txt'
+    $hostJob = Start-Job -ArgumentList $stdPipe -ScriptBlock {
+        param($name)
+        try {
+            $client = [IO.Pipes.NamedPipeClientStream]::new('.', $name, [IO.Pipes.PipeDirection]::InOut)
+            $client.Connect(10000)
+            Start-Sleep -Milliseconds 1000
+            $client.Dispose()
+            'HOST_CONNECT=YES'
+        } catch { 'HOST_CONNECT=NO TYPE=' + $_.Exception.GetType().Name }
+    }
+    try {
+        $stdActor = Start-Process -FilePath $stdDownloaded -Credential $stdCredential -ArgumentList @($protected, $stdPipe) -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr -PassThru -Wait
+        $stdHost = Receive-Job $hostJob -Wait
+        $stdText = ([IO.File]::ReadAllText($stdOut)).Trim() -replace "`r?`n", ';'
+        $stdErrorText = ([IO.File]::ReadAllText($stdErr)).Trim() -replace "`r?`n", ';'
+        Write-Host "STANDARD_CASE EXIT=$($stdActor.ExitCode) ACTOR=$stdText STDERR=$stdErrorText HOST=$stdHost SENTINEL=$([IO.File]::ReadAllText($protected))"
+        if ($stdActor.ExitCode -ne 0) { throw 'Standard downloaded actor failed' }
+        if ($stdText -notmatch 'IL_RID=8192.*PROTECTED_WRITE=ALLOWED.*PIPE_HOST_CONNECT=YES') { throw 'Standard downloaded actor was not Medium and writable' }
+        if ($stdHost -ne 'HOST_CONNECT=YES') { throw 'Host did not see standard actor pipe' }
+        Write-Host 'EOP062_STANDARD_EDGE_DOWNLOAD_MEDIUM_CONFIRMED'
+    } finally { Remove-Job $hostJob -Force -ErrorAction SilentlyContinue }
+} finally {
+    & net.exe user $stdName /delete | Out-Null
+}
