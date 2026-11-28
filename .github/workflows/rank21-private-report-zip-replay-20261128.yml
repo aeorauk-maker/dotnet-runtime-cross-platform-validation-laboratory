@@ -1,0 +1,65 @@
+name: Rank 21 final ZIP clean replay
+
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-fd-capacity-20261128
+    paths:
+      - .github/workflows/rank21-private-report-zip-replay-20261128.yml
+      - MSRC_C2-L054_PoC.zip.enc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+
+      - name: Clean-extract exact report ZIP
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_KEY"
+          mkdir -p "$RUNNER_TEMP/c2-l054-report"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/MSRC_C2-L054_PoC.zip.enc" -out "$RUNNER_TEMP/c2-l054-report/MSRC_C2-L054_PoC.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' '5441d1769cf70f9e49d6b99ab79123b5cdb7fb50e918bb866a77b4873a19fe1e' "$RUNNER_TEMP/c2-l054-report/MSRC_C2-L054_PoC.zip" | sha256sum -c - >/dev/null
+          unzip -t "$RUNNER_TEMP/c2-l054-report/MSRC_C2-L054_PoC.zip" >/dev/null
+          mkdir "$RUNNER_TEMP/c2-l054-report/fresh"
+          unzip -q "$RUNNER_TEMP/c2-l054-report/MSRC_C2-L054_PoC.zip" -d "$RUNNER_TEMP/c2-l054-report/fresh"
+          cd "$RUNNER_TEMP/c2-l054-report/fresh"
+          sha256sum -c manifest.sha256 >/dev/null
+
+      - name: Execute README command and assert protected result
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/c2-l054-report/fresh"
+          bash run.sh > replay.stdout 2>&1
+
+      - name: Seal exact-archive replay evidence
+        if: always()
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/c2-l054-report/fresh"
+          tar -czf "$RUNNER_TEMP/c2-l054-report/replay-evidence.tar.gz" --ignore-failed-read replay.stdout run-preflight.txt poc/status.txt poc/build.log poc/run.stdout poc/socket_evidence poc/evidence 2>/dev/null || true
+          test -s "$RUNNER_TEMP/c2-l054-report/replay-evidence.tar.gz"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in "$RUNNER_TEMP/c2-l054-report/replay-evidence.tar.gz" -out "$GITHUB_WORKSPACE/c2-l054-report-replay.enc" -pass env:PRIVATE_KEY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c2-l054-report-replay-sealed
+          path: c2-l054-report-replay.enc
+          retention-days: 1
