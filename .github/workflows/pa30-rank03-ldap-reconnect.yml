@@ -49,6 +49,7 @@ jobs:
               Console.WriteLine("same_live=" + Query(c));
               Console.ReadLine();
               Console.WriteLine("same_after_failure=" + Query(c));
+              Console.WriteLine("same_after_retry=" + Query(c));
               using var fresh = Open();
               Console.WriteLine("fresh=" + Query(fresh));
           } catch (Exception e) { Console.WriteLine("fatal=" + e); Environment.ExitCode = 1; }
@@ -86,6 +87,7 @@ jobs:
                           mid,op=parse(message(s))
                           if op==0x60: response=0x61
                           elif op==0x63: response=0x65
+                          elif op==0x42: break
                           else: raise ValueError('unexpected LDAP operation '+hex(op))
                           self.server.ops.append(op)
                           s.sendall(tlv(0x30,mid+tlv(response,b'\x0a\x01\x00\x04\x00\x04\x00')))
@@ -118,7 +120,7 @@ jobs:
               hosts('127.0.0.2'); time.sleep(0.5)
               p.stdin.write('\n'); p.stdin.flush(); line()
               honest.stop()
-              p.stdin.write('\n'); p.stdin.flush(); line(); line()
+              p.stdin.write('\n'); p.stdin.flush(); line(); line(); line()
               p.wait(timeout=30)
               print('honest_ops='+str(len(honest.ops))+' other_ops='+str(len(other.ops))+' exit='+str(p.returncode))
               if p.returncode: raise RuntimeError('probe failed')
