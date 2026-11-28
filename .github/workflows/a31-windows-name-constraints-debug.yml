@@ -130,6 +130,7 @@ jobs:
                   RevocationMode = X509RevocationMode.NoCheck
               };
               policy.CustomTrustStore.Add(root);
+              if (intermediate is not null) policy.ExtraStore.Add(intermediate);
               using var handler = new SocketsHttpHandler();
               handler.SslOptions.CertificateChainPolicy = policy;
               handler.ConnectCallback = async (context, cancellation) => {
