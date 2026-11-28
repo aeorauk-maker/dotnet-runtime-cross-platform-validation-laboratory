@@ -23,3 +23,5 @@ jobs:
       - name: Test released Roslyn default pipe across integrity levels
         shell: pwsh
         run: .\eop062-roslyn-join.ps1
+
+# Isolated diagnostic rerun after the prior script push did not enqueue a job.
