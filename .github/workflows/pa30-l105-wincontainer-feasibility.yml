@@ -1,0 +1,38 @@
+name: PA30 L105 single-candidate Windows container feasibility
+on:
+  push:
+    branches: [pa30-rank01-l105-scm-20261128]
+    paths:
+      - .github/workflows/pa30-l105-wincontainer-feasibility.yml
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check isolated Windows container availability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "HOST_OS=$([Environment]::OSVersion.VersionString)"
+          Write-Host "FREE_GIB=$([math]::Round((Get-PSDrive C).Free / 1GB,2))"
+          $docker = Get-Command docker -ErrorAction SilentlyContinue
+          Write-Host "DOCKER_CLI_PRESENT=$([bool]$docker)"
+          $service = Get-Service docker -ErrorAction SilentlyContinue
+          Write-Host "DOCKER_SERVICE_PRESENT=$([bool]$service) DOCKER_SERVICE_STATUS=$($service.Status)"
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName Containers -ErrorAction SilentlyContinue
+          Write-Host "CONTAINERS_FEATURE=$($feature.State)"
+          if (-not $docker -or -not $service -or $service.Status -ne 'Running') {
+            Write-Host 'PROCESS_ISOLATED_CONTAINER_AVAILABLE=False REASON=engine-unavailable'
+            exit 0
+          }
+          docker info --format 'SERVER_OS={{.OSType}} SERVER_VERSION={{.ServerVersion}}' 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'PROCESS_ISOLATED_CONTAINER_AVAILABLE=False REASON=daemon-unavailable'
+            exit 0
+          }
+          docker run --rm --isolation=process mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd /c ver 2>&1 | Out-Host
+          $runExit = $LASTEXITCODE
+          Write-Host "NANOSERVER_PROCESS_ISOLATED_RUN_EXIT=$runExit"
+          Write-Host "PROCESS_ISOLATED_CONTAINER_AVAILABLE=$($runExit -eq 0)"
