@@ -70,17 +70,22 @@ jobs:
                   }
               } catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
           });
-          foreach (var variant in new[]{("UPN", new NetworkCredential("Administrator@LAB.EXAMPLE", password)), ("NETBIOS", new NetworkCredential("Administrator", password, "LAB"))}) {
-              using var ldap = new LdapConnection(new LdapDirectoryIdentifier(host, true, false), variant.Item2, AuthType.Kerberos);
+          foreach (var variant in new[]{
+              ("KERB_UPN", new NetworkCredential("Administrator@LAB.EXAMPLE", password), AuthType.Kerberos),
+              ("KERB_NETBIOS", new NetworkCredential("Administrator", password, "LAB"), AuthType.Kerberos),
+              ("NEG_UPN", new NetworkCredential("Administrator@LAB.EXAMPLE", password), AuthType.Negotiate),
+              ("NEG_NETBIOS", new NetworkCredential("Administrator", password, "LAB"), AuthType.Negotiate)
+          }) {
+              using var ldap = new LdapConnection(new LdapDirectoryIdentifier(host, true, false), variant.Item2, variant.Item3);
               ldap.SessionOptions.ProtocolVersion = 3;
               ldap.Timeout = TimeSpan.FromSeconds(10);
               try {
                   ldap.Bind();
-                  Console.WriteLine($"WINDOWS_KERBEROS_BIND_{variant.Item1}=SUCCESS");
+                  Console.WriteLine($"WINDOWS_BIND_{variant.Item1}=SUCCESS");
               } catch (LdapException ex) {
-                  Console.WriteLine($"WINDOWS_KERBEROS_BIND_{variant.Item1}=LDAP_ERROR_{ex.ErrorCode}");
+                  Console.WriteLine($"WINDOWS_BIND_{variant.Item1}=LDAP_ERROR_{ex.ErrorCode}");
               } catch (Exception ex) {
-                  Console.WriteLine($"WINDOWS_KERBEROS_BIND_{variant.Item1}=CLASS_{ex.GetType().Name}");
+                  Console.WriteLine($"WINDOWS_BIND_{variant.Item1}=CLASS_{ex.GetType().Name}");
               }
               try { Console.WriteLine($"WINDOWS_LDAP_HOST_{variant.Item1}={ldap.SessionOptions.HostName}"); } catch { }
           }
@@ -132,6 +137,11 @@ jobs:
           $client = @(Get-DnsClientServerAddress -AddressFamily IPv4) | Where-Object { $_.ServerAddresses.Count -gt 0 -and $_.InterfaceAlias -notmatch 'Loopback' } | Select-Object -First 1
           if ($null -eq $client) { Write-Host 'WINDOWS_DNS_FIXTURE=NO_CLIENT'; exit 2 }
           $saved = @($client.ServerAddresses)
+          $traceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\ldap\Tracing\bindprobe.exe'
+          New-Item -Path $traceKey -Force | Out-Null
+          $etl = Join-Path $env:RUNNER_TEMP 'eop090-kerb.etl'
+          $txt = Join-Path $env:RUNNER_TEMP 'eop090-kerb.txt'
+          logman create trace eop090-kerb -ow -o $etl -p 'Microsoft-Windows-LDAP-Client' 0x18180380 0xff -ets | Out-Null
           try {
             Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses @('127.0.0.1')
             ipconfig /flushdns | Out-Null
@@ -140,4 +150,17 @@ jobs:
             if ($saved.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses $saved }
             else { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ResetServerAddresses }
             Remove-Item Env:PA30_BIND_PASS -ErrorAction SilentlyContinue
+            logman stop eop090-kerb -ets | Out-Null
+            Remove-Item -Path $traceKey -Force -ErrorAction SilentlyContinue
           }
+          netsh trace convert "input=$etl" "output=$txt" | Out-Null
+          if (Test-Path $txt) {
+            $matches = Select-String -Path $txt -Pattern 'make spn|servicename for bind|SSPI|InitializeSecurity|AcquireCredential|Bind failed|ldap_bind|error code|SASL' | Select-Object -First 80
+            foreach ($match in $matches) {
+              $safe = $match.Line -replace '[A-Fa-f0-9]{32,}', '[redacted]'
+              Write-Host "WINDOWS_LDAP_TRACE=$safe"
+            }
+            Write-Host "WINDOWS_LDAP_TRACE_MATCH_COUNT=$($matches.Count)"
+          }
+          $kdcEvidence = & wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc 'grep -Eic "AS-REQ|TGS-REQ|KDC|kerberos" /tmp/rank03-samba-start.log || true'
+          Write-Host "GUEST_KDC_LOG_MATCHES=$kdcEvidence"
