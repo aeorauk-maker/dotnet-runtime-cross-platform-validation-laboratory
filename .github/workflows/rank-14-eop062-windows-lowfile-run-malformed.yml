@@ -1,0 +1,25 @@
+name: Rank 14 EOP062 Windows automatic-run malformed-wire control
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-roslyn-windows-lowfile-run-malformed.ps1
+      - .github/workflows/rank-14-eop062-windows-lowfile-run-malformed.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-lowfile-run-malformed:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test matched malformed-wire automatic ASP.NET Core run
+        shell: pwsh
+        run: .\eop062-roslyn-windows-lowfile-run-malformed.ps1
