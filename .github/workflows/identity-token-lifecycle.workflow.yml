@@ -1,6 +1,11 @@
 name: Identity token lifecycle control
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - pa30-rank30-identity-token-order-20261128
+    paths:
+      - .github/workflows/identity-token-lifecycle.workflow.yml
 
 jobs:
   identity-token-lifecycle:
