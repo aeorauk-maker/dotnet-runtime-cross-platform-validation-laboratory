@@ -1,0 +1,38 @@
+name: rank-14-eop062-landlock-zip-replay
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'MSRC_EOP02-EOP-062_Landlock_v1.zip'
+      - '.github/workflows/rank-14-eop062-landlock-zip-replay.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact_zip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Hash-check and clean-extract exact Landlock ZIP
+        run: |
+          set -euo pipefail
+          test "$(dotnet --version)" = 11.0.100
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location \
+            https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/rank-14-eop062-pa30-20261128/MSRC_EOP02-EOP-062_Landlock_v1.zip \
+            --output MSRC_EOP02-EOP-062_Landlock_v1.zip
+          echo '9ed80458b1a4a76b7b8810c84f5c692533f9fc1d2f40a9e0944085900274a43b  MSRC_EOP02-EOP-062_Landlock_v1.zip' | sha256sum -c -
+          unzip -t MSRC_EOP02-EOP-062_Landlock_v1.zip
+          mkdir eop062-landlock-exact
+          unzip -q MSRC_EOP02-EOP-062_Landlock_v1.zip -d eop062-landlock-exact
+          test -x eop062-landlock-exact/run.sh
+          test ! -e eop062-landlock-exact/poc/landlock-launch
+      - name: Replay final archive controls
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/eop062-landlock-exact"
+          ./run.sh
+          echo EXACT_LANDLOCK_ZIP_REPLAY=PASS
