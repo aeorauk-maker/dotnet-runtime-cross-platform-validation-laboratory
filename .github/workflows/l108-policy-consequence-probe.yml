@@ -192,6 +192,8 @@ jobs:
           lower_events = pathlib.Path("/tmp") / ("l108-events-" + suffix + ".jsonl")
           retained_event = pathlib.Path("/tmp") / ("l108-retained-" + suffix + ".json")
           after_removal_event = pathlib.Path("/tmp") / ("l108-after-removal-" + suffix + ".json")
+          rotation_event = pathlib.Path("/tmp") / ("l108-rotation-" + suffix + ".json")
+          after_rotation_event = pathlib.Path("/tmp") / ("l108-after-rotation-" + suffix + ".json")
           after_token_revoke_event = pathlib.Path("/tmp") / ("l108-after-token-revoke-" + suffix + ".json")
           project_token_file = pathlib.Path("/tmp") / ("l108-project-token-" + suffix)
           lower_port = pathlib.Path("/tmp") / ("l108-port-" + suffix)
@@ -204,11 +206,14 @@ jobs:
               EVENTS = pathlib.Path({str(lower_events)!r})
               RETAINED_EVENT = pathlib.Path({str(retained_event)!r})
               AFTER_REMOVAL_EVENT = pathlib.Path({str(after_removal_event)!r})
+              ROTATION_EVENT = pathlib.Path({str(rotation_event)!r})
+              AFTER_ROTATION_EVENT = pathlib.Path({str(after_rotation_event)!r})
               AFTER_TOKEN_REVOKE_EVENT = pathlib.Path({str(after_token_revoke_event)!r})
               PROJECT_TOKEN_FILE = pathlib.Path({str(project_token_file)!r})
               PORT = pathlib.Path({str(lower_port)!r})
               SUFFIX = {suffix!r}
               EXPIRES = {(datetime.date.today() + datetime.timedelta(days=2)).isoformat()!r}
+              ROTATED_EXPIRES = {(datetime.date.today() + datetime.timedelta(days=5)).isoformat()!r}
               count = 0
               class Handler(BaseHTTPRequestHandler):
                   def do_POST(self):
@@ -261,12 +266,66 @@ jobs:
                               event["project_token_sha256"] = hashlib.sha256(
                                   project_token.encode()).hexdigest()
                               event["project_token_id"] = minted.get("id")
+                              event["project_token_expires_at"] = minted.get("expires_at")
                       with EVENTS.open("a") as out:
                           out.write(json.dumps(event) + "\\n")
                       self.send_response(204)
                       self.end_headers()
                   def do_GET(self):
+                      if self.path == "/rotate-project-token" and PROJECT_TOKEN_FILE.exists():
+                          old_token = PROJECT_TOKEN_FILE.read_text()
+                          rotate_payload = json.dumps({{
+                              "expires_at": ROTATED_EXPIRES
+                          }}).encode()
+                          rotate_request = urllib.request.Request(
+                              BASE + f"/api/v4/projects/{{PROJECT}}/access_tokens/self/rotate",
+                              data=rotate_payload,
+                              headers={{"PRIVATE-TOKEN": old_token,
+                                       "Content-Type": "application/json"}},
+                              method="POST")
+                          try:
+                              with urllib.request.urlopen(rotate_request, timeout=45) as response:
+                                  rotate_status = response.status
+                                  rotated = json.load(response)
+                          except urllib.error.HTTPError as error:
+                              rotate_status = error.code
+                              rotated = {{}}
+                          rotation = {{"uid": os.getuid(), "rotation_http": rotate_status,
+                                      "old_token_sha256": hashlib.sha256(
+                                          old_token.encode()).hexdigest(),
+                                      "requested_expires_at": ROTATED_EXPIRES}}
+                          if rotate_status == 200 and rotated.get("token"):
+                              new_token = rotated["token"]
+                              PROJECT_TOKEN_FILE.write_text(new_token)
+                              PROJECT_TOKEN_FILE.chmod(0o600)
+                              rotation["new_token_sha256"] = hashlib.sha256(
+                                  new_token.encode()).hexdigest()
+                              rotation["rotated_token_id"] = rotated.get("id")
+                              rotation["rotated_expires_at"] = rotated.get("expires_at")
+                              old_path = "owned-l108-old-rotated-denied-" + SUFFIX + ".txt"
+                              old_payload = json.dumps({{
+                                  "branch": "main", "content": "INERT_OLD_ROTATED_DENIED",
+                                  "commit_message": "Owned old-token denial control"
+                              }}).encode()
+                              old_request = urllib.request.Request(
+                                  BASE + f"/api/v4/projects/{{PROJECT}}/repository/files/{{old_path}}",
+                                  data=old_payload,
+                                  headers={{"PRIVATE-TOKEN": old_token,
+                                           "Content-Type": "application/json"}},
+                                  method="POST")
+                              try:
+                                  with urllib.request.urlopen(old_request, timeout=45) as response:
+                                      old_status = response.status
+                              except urllib.error.HTTPError as error:
+                                  old_status = error.code
+                              rotation["old_token_write_http"] = old_status
+                              rotation["old_token_denied_path"] = old_path
+                          ROTATION_EVENT.write_text(json.dumps(rotation))
+                          self.send_response(204)
+                          self.end_headers()
+                          return
                       if self.path not in ("/retained", "/after-member-removal",
+                                           "/after-project-token-rotation",
                                            "/after-project-token-revoke") or not PROJECT_TOKEN_FILE.exists():
                           self.send_response(404)
                           self.end_headers()
@@ -280,6 +339,10 @@ jobs:
                           path = "owned-l108-after-member-removal-" + SUFFIX + ".txt"
                           content = "INERT_L108_AFTER_MEMBER_REMOVAL"
                           event_path = AFTER_REMOVAL_EVENT
+                      elif self.path == "/after-project-token-rotation":
+                          path = "owned-l108-after-token-rotation-" + SUFFIX + ".txt"
+                          content = "INERT_L108_AFTER_TOKEN_ROTATION"
+                          event_path = AFTER_ROTATION_EVENT
                       else:
                           path = "owned-l108-after-token-revoke-" + SUFFIX + ".txt"
                           content = "INERT_L108_AFTER_TOKEN_REVOKE_DENIED"
@@ -832,9 +895,63 @@ jobs:
                   "expected_sha256": hashlib.sha256(expected_after.encode()).hexdigest()})
               if after_code != 200 or after_content != expected_after:
                   raise RuntimeError("Post-removal A write readback mismatch")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/rotate-project-token", timeout=60) as response:
+                  rotation_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_project_token_rotation_trigger",
+                  "http": rotation_trigger_http})
+              if rotation_trigger_http != 204 or not rotation_event.exists():
+                  raise RuntimeError("Lower project-token self-rotation did not run")
+              rotation = json.loads(rotation_event.read_text())
+              summary["project_token_rotation_event"] = rotation
+              if (rotation["uid"] != 65534 or rotation["rotation_http"] != 200 or
+                      rotation["old_token_sha256"] !=
+                      events[-1]["project_token_sha256"] or
+                      not rotation.get("new_token_sha256") or
+                      rotation["new_token_sha256"] == rotation["old_token_sha256"] or
+                      datetime.date.fromisoformat(rotation["rotated_expires_at"]) <=
+                      datetime.date.fromisoformat(events[-1]["project_token_expires_at"]) or
+                      rotation["old_token_write_http"] not in (401, 403)):
+                  raise RuntimeError("Lower project-token renewal or old-token denial failed")
+              old_absent_code, _ = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  rotation["old_token_denied_path"] + "/raw?ref=main", token=root_token)
+              summary["controls"].append({
+                  "case": "old_rotated_token_write_absent_from_a", "http": old_absent_code})
+              if old_absent_code != 404:
+                  raise RuntimeError("Old rotated project token unexpectedly wrote A")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/after-project-token-rotation", timeout=60) as response:
+                  after_rotation_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_after_project_token_rotation_trigger",
+                  "http": after_rotation_trigger_http})
+              if after_rotation_trigger_http != 204 or not after_rotation_event.exists():
+                  raise RuntimeError("Post-rotation lower action did not run")
+              after_rotation = json.loads(after_rotation_event.read_text())
+              summary["after_project_token_rotation_event"] = after_rotation
+              if (after_rotation["uid"] != 65534 or
+                      after_rotation["project_token_sha256"] !=
+                      rotation["new_token_sha256"] or
+                      after_rotation["gitlab_write_http"] != 201):
+                  raise RuntimeError("Rotated project token failed private A write")
+              rotated_code, rotated_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  after_rotation["path"] + "/raw?ref=main", token=root_token)
+              expected_rotated = "INERT_L108_AFTER_TOKEN_ROTATION"
+              summary["controls"].append({
+                  "case": "trusted_a_written_by_rotated_project_token",
+                  "http": rotated_code,
+                  "content_sha256": hashlib.sha256(str(rotated_content).encode()).hexdigest(),
+                  "expected_sha256": hashlib.sha256(expected_rotated.encode()).hexdigest()})
+              if rotated_code != 200 or rotated_content != expected_rotated:
+                  raise RuntimeError("Rotated project token A write readback mismatch")
               project_revoke_code, _ = request(
                   "DELETE", f"/api/v4/projects/{a['id']}/access_tokens/" +
-                  str(events[-1]["project_token_id"]), token=root_token)
+                  str(rotation["rotated_token_id"]), token=root_token)
               summary["controls"].append({"case": "retained_project_token_revoked",
                                           "http": project_revoke_code})
               if project_revoke_code != 204:
@@ -852,7 +969,7 @@ jobs:
               summary["after_project_token_revoke_event"] = after_revoke
               if (after_revoke["uid"] != 65534 or
                       after_revoke["project_token_sha256"] !=
-                      events[-1]["project_token_sha256"] or
+                      rotation["new_token_sha256"] or
                       after_revoke["gitlab_write_http"] not in (401, 403)):
                   raise RuntimeError("Revoked project token unexpectedly wrote A")
               absent_code, _ = request(
