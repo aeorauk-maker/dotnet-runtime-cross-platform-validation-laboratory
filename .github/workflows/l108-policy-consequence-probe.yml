@@ -317,19 +317,25 @@ jobs:
                      "--source", source, "--api-key", token,
                      "--allow-insecure-connections", "--no-symbols", "--force-english-output"]
               if lower_os:
-                  lower_home = pathlib.Path("/tmp") / ("l108-publisher-" + suffix)
-                  cmd = ["sudo", "-u", "nobody", "env",
-                         "HOME=" + str(lower_home),
-                         "DOTNET_CLI_HOME=" + str(lower_home),
-                         "DOTNET_CLI_TELEMETRY_OPTOUT=1",
-                         "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1"] + cmd
+                  cmd = ["sudo", "-u", "nobody", "curl", "--silent", "--show-error",
+                         "--request", "PUT", "--form",
+                         "package=@" + str(package_for_push),
+                         "--user", users["publisher"]["username"] + ":" + token,
+                         "--output", "/dev/null", "--write-out", "%{http_code}",
+                         f"{base}/api/v4/projects/{project_id}/packages/nuget/"]
               result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+              accepted = (result.returncode == 0 and
+                          (result.stdout.strip() in ("200", "201") if lower_os else True))
               summary["controls"].append(
                   {"case": f"push_{series}_{marker}_to_{project_id}",
                    "exit": result.returncode,
                    "lower_os": lower_os,
+                   "http": result.stdout.strip() if lower_os else None,
                    "package_sha256": package_hash(package)})
-              if (result.returncode == 0) != expect_success:
+              if lower_os and not expect_success and result.stdout.strip() not in (
+                      "401", "403", "404"):
+                  raise RuntimeError("Denied lower-OS push did not reach GitLab authorization")
+              if accepted != expect_success:
                   output = (result.stdout + result.stderr).replace(token, "[masked]")
                   raise RuntimeError("Unexpected push result: " + output[-800:])
 
