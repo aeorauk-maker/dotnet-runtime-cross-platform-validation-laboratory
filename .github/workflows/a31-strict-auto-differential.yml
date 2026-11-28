@@ -159,8 +159,8 @@ jobs:
           kubectl apply -f policy-use.yaml
           actor_token="$(kubectl -n a31-tenant create token actor --duration=15m)"
           test -n "$actor_token"
-          actor_kubectl() { kubectl --token="$actor_token" "$@"; }
-          test "$(actor_kubectl auth whoami -o jsonpath='{.status.userInfo.username}')" = 'system:serviceaccount:a31-tenant:actor'
+          actor_kubectl() { local ca_file="$PWD/actor-ca.pem"; kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > "$ca_file"; kubectl --kubeconfig=/dev/null --server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" --certificate-authority="$ca_file" --token="$actor_token" "$@"; }
+          actor_identity="$(actor_kubectl auth whoami -o jsonpath='{.status.userInfo.username}')"; echo "A31_ACTOR_IDENTITY=$actor_identity"; test "$actor_identity" = 'system:serviceaccount:a31-tenant:actor'
           test "$(actor_kubectl auth can-i create certificaterequests.cert-manager.io -n a31-tenant)" = yes
           test "$(actor_kubectl auth can-i get certificaterequests.cert-manager.io -n a31-tenant)" = yes
           test "$(actor_kubectl auth can-i get secret/a31-ca-key -n cert-manager)" = no
