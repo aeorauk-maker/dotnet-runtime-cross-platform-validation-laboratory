@@ -128,10 +128,10 @@ jobs:
             exit 1
           fi
           
-          test "$(kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io \
-            --resource-name=a31-split-name-policy --as="$actor" -n a31-tenant)" = yes
-          test "$(kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io \
-            --resource-name=a31-split-name-policy \
+          test "$(kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io/a31-split-name-policy \
+            --as="$actor" -n a31-tenant)" = yes
+          test "$(kubectl auth can-i use certificaterequestpolicies.policy.cert-manager.io/a31-split-name-policy \
+            \
             --as=system:serviceaccount:a31-tenant:unbound -n a31-tenant)" = no
           test "$(kubectl auth can-i create certificaterequestpolicies.policy.cert-manager.io \
             --as="$actor")" = no
