@@ -88,6 +88,7 @@ jobs:
                           if op==0x60: response=0x61
                           elif op==0x63: response=0x65
                           elif op==0x42: break
+                          elif op==0x50: continue
                           else: raise ValueError('unexpected LDAP operation '+hex(op))
                           self.server.ops.append(op)
                           s.sendall(tlv(0x30,mid+tlv(response,b'\x0a\x01\x00\x04\x00\x04\x00')))
