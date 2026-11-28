@@ -151,7 +151,130 @@ jobs:
           } finally {
             $capStop = 'if test -f /tmp/rank03-tcpdump.pid; then kill $(cat /tmp/rank03-tcpdump.pid) 2>/dev/null || true; fi; sleep 1'
             wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $capStop
-            $capReport = 'from pathlib import Path; b=Path("/tmp/rank03-ldap.pcap").read_bytes(); print("LDAP_CAPTURE_BYTES="+str(len(b))); print("LDAP_NTLMSSP_PRESENT="+str(b"NTLMSSP" in b)); print("LDAP_KERBEROS_OID_PRESENT="+str(bytes.fromhex("06092a864886f712010202") in b))'
+            $capReport = @'
+            """Summarize LDAP bind auth tags from a private pcap; never print packet contents."""
+            
+            from collections import Counter
+            from pathlib import Path
+            import struct
+            
+            
+            def tlv(data, offset):
+                if offset + 2 > len(data):
+                    raise ValueError("short tag")
+                tag = data[offset]
+                first = data[offset + 1]
+                offset += 2
+                if first & 0x80:
+                    count = first & 0x7F
+                    if count == 0 or count > 4 or offset + count > len(data):
+                        raise ValueError("invalid length")
+                    length = int.from_bytes(data[offset : offset + count], "big")
+                    offset += count
+                else:
+                    length = first
+                end = offset + length
+                if end > len(data):
+                    raise ValueError("truncated value")
+                return tag, offset, end, end
+            
+            
+            def ldap_bind_auth(payload):
+                tag, start, end, _ = tlv(payload, 0)
+                if tag != 0x30:
+                    return None
+                _, _, _, pos = tlv(payload, start)  # messageID
+                tag, inner, _, _ = tlv(payload, pos)
+                if tag != 0x60:
+                    return None
+                _, _, _, pos = tlv(payload, inner)  # version
+                _, _, _, pos = tlv(payload, pos)  # name; never print
+                tag, auth_start, _, _ = tlv(payload, pos)
+                names = {0x80: "simple", 0xA3: "sasl", 0x89: "sicily-discovery", 0x8A: "sicily-negotiate", 0x8B: "sicily-response"}
+                auth = names.get(tag, f"tag-{tag:02x}")
+                if tag == 0xA3:
+                    mech_tag, mech_start, mech_end, _ = tlv(payload, auth_start)
+                    if mech_tag == 0x04:
+                        mechanism = payload[mech_start:mech_end]
+                        allowed = {b"GSS-SPNEGO", b"GSSAPI", b"NTLM", b"DIGEST-MD5", b"EXTERNAL"}
+                        auth += ":" + (mechanism.decode("ascii") if mechanism in allowed else "other")
+                return auth
+            
+            
+            def ipv4_tcp_payload(frame, linktype):
+                if linktype == 276:  # Linux cooked v2
+                    offset = 20
+                elif linktype == 113:  # Linux cooked v1
+                    offset = 16
+                elif linktype == 1:  # Ethernet
+                    offset = 14
+                else:
+                    return None
+                if len(frame) < offset + 20 or frame[offset] >> 4 != 4:
+                    return None
+                ihl = (frame[offset] & 15) * 4
+                if frame[offset + 9] != 6 or ihl < 20:
+                    return None
+                ip_end = offset + int.from_bytes(frame[offset + 2 : offset + 4], "big")
+                tcp = offset + ihl
+                if ip_end > len(frame) or tcp + 20 > ip_end:
+                    return None
+                destination = int.from_bytes(frame[tcp + 2 : tcp + 4], "big")
+                header = ((frame[tcp + 12] >> 4) & 15) * 4
+                if header < 20 or tcp + header > ip_end:
+                    return None
+                return destination, frame[tcp + header : ip_end]
+            
+            
+            def summarize(path):
+                data = Path(path).read_bytes()
+                print(f"LDAP_CAPTURE_BYTES={len(data)}")
+                if len(data) < 24:
+                    print("LDAP_PCAP_STATUS=SHORT")
+                    return
+                magic = data[:4]
+                if magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1"):
+                    order = "<"
+                elif magic in (b"\xa1\xb2\xc3\xd4", b"\xa1\xb2\x3c\x4d"):
+                    order = ">"
+                else:
+                    print("LDAP_PCAP_STATUS=UNKNOWN_FORMAT")
+                    return
+                linktype = struct.unpack_from(order + "I", data, 20)[0]
+                pos = 24
+                packets = 0
+                client_payloads = 0
+                parse_errors = 0
+                auth = Counter()
+                while pos + 16 <= len(data):
+                    included = struct.unpack_from(order + "I", data, pos + 8)[0]
+                    pos += 16
+                    if included > len(data) - pos:
+                        parse_errors += 1
+                        break
+                    frame = data[pos : pos + included]
+                    pos += included
+                    packets += 1
+                    result = ipv4_tcp_payload(frame, linktype)
+                    if result is None or result[0] != 389 or not result[1]:
+                        continue
+                    client_payloads += 1
+                    try:
+                        choice = ldap_bind_auth(result[1])
+                        if choice:
+                            auth[choice] += 1
+                    except ValueError:
+                        parse_errors += 1
+                print(f"LDAP_PCAP_LINKTYPE={linktype}")
+                print(f"LDAP_PCAP_PACKETS={packets}")
+                print(f"LDAP_CLIENT_PAYLOADS={client_payloads}")
+                print(f"LDAP_BER_PARSE_ERRORS={parse_errors}")
+                print("LDAP_BIND_AUTH=" + (",".join(f"{key}:{auth[key]}" for key in sorted(auth)) or "none"))
+            
+            
+            if __name__ == "__main__":
+                summarize("/tmp/rank03-ldap.pcap")
+            '@
             wsl.exe --distribution Ubuntu-24.04 --user root --exec python3 -c $capReport
             if ($saved.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses $saved }
             else { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ResetServerAddresses }
