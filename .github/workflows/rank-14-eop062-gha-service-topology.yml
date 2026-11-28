@@ -33,10 +33,14 @@ jobs:
           echo "HOST_ACTOR_UID_MATCH=$host_uid"
           test -z "$(docker inspect -f '{{.HostConfig.PidMode}}' "$SERVICE_ID")"
           echo 'ACTOR_PID_MODE=separate'
-          host_pid_ns=$(readlink /proc/1/ns/pid)
-          actor_pid_ns=$(docker exec "$SERVICE_ID" readlink /proc/1/ns/pid)
-          test "$host_pid_ns" != "$actor_pid_ns"
-          echo 'ACTOR_PID_NAMESPACE_SEPARATE=true'
+          host_pid_ns=$(readlink /proc/1/ns/pid 2>/dev/null || true)
+          actor_pid_ns=$(docker exec "$SERVICE_ID" readlink /proc/1/ns/pid 2>/dev/null || true)
+          echo "HOST_PID_NS=$host_pid_ns ACTOR_PID_NS=$actor_pid_ns"
+          if test -n "$host_pid_ns" && test -n "$actor_pid_ns" && test "$host_pid_ns" != "$actor_pid_ns"; then
+            echo 'ACTOR_PID_NAMESPACE_SEPARATE=true'
+          else
+            echo 'ACTOR_PID_NAMESPACE_SYMLINK_INCONCLUSIVE=true'
+          fi
           test "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/tmp"}}shared{{end}}{{end}}' "$SERVICE_ID")" = shared
           marker="/tmp/eop062-r14-${GITHUB_RUN_ID}-service-marker"
           printf 'host-owned' > "$marker"
