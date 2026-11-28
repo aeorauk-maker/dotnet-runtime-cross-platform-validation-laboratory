@@ -1,0 +1,1498 @@
+name: Owned L108 scheduled CI variable consequence run4
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - pa30-rank23-l108-scheduled-ci-20261128
+
+permissions:
+  contents: read
+
+jobs:
+  downstream-write:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check isolated runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          free -h
+          available_kib=$(df --output=avail -k / | tail -n 1)
+          test "$available_kib" -ge 9000000
+
+      - name: Install supported .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.100
+
+      - name: Start ephemeral GitLab CE 19.6.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          root_password=$(openssl rand -hex 24)
+          echo "::add-mask::$root_password"
+          docker run --detach --rm --name l108-owned-gitlab \
+            --shm-size 512m \
+            --publish 127.0.0.1:8929:8929 \
+            --env GITLAB_ROOT_PASSWORD="$root_password" \
+            --env GITLAB_OMNIBUS_CONFIG="external_url 'http://127.0.0.1:8929'; prometheus_monitoring['enable'] = false;" \
+            gitlab/gitlab-ce:19.6.2-ce.0 >/dev/null
+          ready=0
+          for attempt in $(seq 1 120); do
+            if curl --silent --fail --output /dev/null \
+              http://127.0.0.1:8929/users/sign_in; then
+              ready=1
+              break
+            fi
+            if ! docker inspect --format '{{.State.Running}}' l108-owned-gitlab | grep -qx true; then
+              echo "GitLab container stopped before readiness"
+              exit 1
+            fi
+            sleep 10
+          done
+          test "$ready" -eq 1
+          docker exec l108-owned-gitlab gitlab-rails runner \
+            "s=SecureRandom.alphanumeric(20); t=User.find_by_username('root').personal_access_tokens.create!(scopes: ['api', 'create_runner'], name: 'l108-ephemeral-root', expires_at: 2.days.from_now); t.set_token(s); t.save!; File.write('/tmp/l108-root-token', s)" >/dev/null
+          docker cp l108-owned-gitlab:/tmp/l108-root-token "$RUNNER_TEMP/l108-root-token" >/dev/null
+          chmod 600 "$RUNNER_TEMP/l108-root-token"
+          echo "Ephemeral GitLab is ready; admin token retained only on this runner."
+
+      - name: Test signed policy and protected A CI consequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import secrets
+          import shutil
+          import subprocess
+          import threading
+          import textwrap
+          import time
+          import urllib.error
+          import urllib.request
+          from xml.sax.saxutils import escape
+
+          base = "http://127.0.0.1:8929"
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"]) / "l108-probe"
+          temp.mkdir(mode=0o700, exist_ok=True)
+          root_token = (pathlib.Path(os.environ["RUNNER_TEMP"]) / "l108-root-token").read_text().strip()
+          print("::add-mask::" + root_token)
+          summary = {"gitlab_image": "gitlab/gitlab-ce:19.6.2-ce.0",
+                     "sdk": subprocess.check_output(["dotnet", "--version"], text=True).strip(),
+                     "controls": []}
+
+          protected_bytes = b"INERT_OWNED_L108_" + secrets.token_bytes(24)
+          protected_file = temp / "victim-only"
+          protected_file.write_bytes(protected_bytes)
+          protected_file.chmod(0o600)
+          summary["protected_file"] = {"mode": oct(protected_file.stat().st_mode & 0o777),
+                                       "sha256": hashlib.sha256(protected_bytes).hexdigest()}
+
+          def request(method, path, data=None, token=None, basic=None):
+              headers = {}
+              if token:
+                  headers["PRIVATE-TOKEN"] = token
+              if basic:
+                  headers["Authorization"] = "Basic " + base64.b64encode(
+                      (basic[0] + ":" + basic[1]).encode()).decode()
+              body = None
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+                  body = json.dumps(data).encode()
+              req = urllib.request.Request(base + path, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+                      try:
+                          return response.status, json.loads(raw)
+                      except json.JSONDecodeError:
+                          return response.status, raw.decode(errors="replace")
+              except urllib.error.HTTPError as error:
+                  return error.code, error.read().decode(errors="replace")
+
+          def must(method, path, data=None, token=None, status=201):
+              code, value = request(method, path, data, token)
+              if code != status:
+                  raise RuntimeError(f"{method} {path}: HTTP {code}; {str(value)[:350]}")
+              return value
+
+          suffix = os.environ["GITHUB_RUN_ID"]
+          group = must("POST", "/api/v4/groups",
+                       {"name": "Owned registry split " + suffix,
+                        "path": "l108-owned-" + suffix, "visibility": "private"},
+                       root_token)
+          gid = group["id"]
+          a = must("POST", "/api/v4/projects",
+                   {"name": "trusted-a", "path": "trusted-a",
+                    "namespace_id": gid, "visibility": "private",
+                    "initialize_with_readme": True}, root_token)
+          b = must("POST", "/api/v4/projects",
+                   {"name": "lower-b", "path": "lower-b",
+                    "namespace_id": gid, "visibility": "private"}, root_token)
+          branch_code = None
+          for _ in range(30):
+              branch_code, branch_info = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/branches/main",
+                  token=root_token)
+              if branch_code == 200:
+                  break
+              time.sleep(1)
+          summary["trusted_a_main_http"] = branch_code
+          if branch_code != 200:
+              raise RuntimeError("Trusted A main branch was not initialized")
+          if not branch_info.get("protected"):
+              must("POST", f"/api/v4/projects/{a['id']}/protected_branches",
+                   {"name": "main", "push_access_level": 40,
+                    "merge_access_level": 40}, root_token)
+          protected_code, _ = request(
+              "GET", f"/api/v4/projects/{a['id']}/protected_branches/main",
+              token=root_token)
+          summary["controls"].append({"case": "a_main_protected_ref",
+                                      "http": protected_code})
+          if protected_code != 200:
+              raise RuntimeError("Trusted A main is not protected")
+          users = {}
+          for role in ("publisher", "reader", "victim"):
+              user = must("POST", "/api/v4/users",
+                          {"username": "l108" + role + suffix,
+                           "name": "Owned " + role,
+                           "email": "l108" + role + suffix + "@example.invalid",
+                           "password": secrets.token_urlsafe(32),
+                           "skip_confirmation": True},
+                          root_token)
+              users[role] = user
+          must("POST", f"/api/v4/projects/{b['id']}/members",
+               {"user_id": users["publisher"]["id"], "access_level": 30}, root_token)
+          must("POST", f"/api/v4/groups/{gid}/members",
+               {"user_id": users["reader"]["id"], "access_level": 20}, root_token)
+          must("POST", f"/api/v4/projects/{a['id']}/members",
+               {"user_id": users["victim"]["id"], "access_level": 40}, root_token)
+          tokens = {}
+          token_ids = {}
+          for role, user in users.items():
+              token_result = must(
+                  "POST", f"/api/v4/users/{user['id']}/personal_access_tokens",
+                  {"name": "l108-ephemeral-" + role, "scopes": ["api"],
+                   "expires_at": (datetime.date.today() + datetime.timedelta(days=1)).isoformat()},
+                  root_token)
+              tokens[role] = token_result["token"]
+              token_ids[role] = token_result["id"]
+              print("::add-mask::" + tokens[role])
+          summary["group_id"] = gid
+          summary["projects"] = {"trusted_a": a["id"], "lower_b": b["id"]}
+          summary["roles"] = {"publisher": "Developer on B only",
+                              "reader": "Reporter on group",
+                              "victim": "Maintainer on A only"}
+          protected_bytes = tokens["victim"].encode()
+          protected_file.write_bytes(protected_bytes)
+          protected_file.chmod(0o600)
+          summary["protected_file"] = {"mode": oct(protected_file.stat().st_mode & 0o777),
+                                       "sha256": hashlib.sha256(protected_bytes).hexdigest(),
+                                       "kind": "ephemeral owned GitLab A-Maintainer PAT"}
+
+          ci_secret = "INERT_L108_CI_" + secrets.token_urlsafe(32)
+          ci_secret_sha256 = hashlib.sha256(ci_secret.encode()).hexdigest()
+          created_ci_code, created_ci_variable = request(
+              "POST", f"/api/v4/projects/{a['id']}/variables",
+              {"key": "A_ONLY_CI_MARKER", "value": ci_secret,
+               "protected": True, "masked": True}, root_token)
+          if (created_ci_code != 201 or
+                  created_ci_variable.get("protected") is not True or
+                  created_ci_variable.get("masked") is not True):
+              raise RuntimeError(f"A-only CI variable setup failed: HTTP {created_ci_code}")
+          summary["ci_variable"] = {"key": "A_ONLY_CI_MARKER",
+                                    "protected": True, "masked": True,
+                                    "sha256": ci_secret_sha256}
+          b_variable_code, _ = request(
+              "GET", f"/api/v4/projects/{a['id']}/variables/A_ONLY_CI_MARKER",
+              token=tokens["publisher"])
+          summary["controls"].append({"case": "b_only_a_ci_variable_denied",
+                                      "http": b_variable_code})
+          if b_variable_code not in (403, 404):
+              raise RuntimeError("B-only publisher could read A CI variable")
+
+          runner_create_code, runner_result = request(
+              "POST", "/api/v4/user/runners",
+              {"runner_type": "project_type", "project_id": a["id"],
+               "description": "owned-l108-protected-ci-" + suffix,
+               "tag_list": "l108-owned-ci-" + suffix,
+               "run_untagged": False, "access_level": "ref_protected"},
+              root_token)
+          if runner_create_code != 201 or not runner_result.get("token"):
+              raise RuntimeError(f"A runner creation failed: HTTP {runner_create_code}")
+          runner_token = runner_result["token"]
+          print("::add-mask::" + runner_token)
+          summary["a_project_runner"] = {"id": runner_result["id"],
+                                         "scope": "project_type",
+                                         "access_level": "ref_protected"}
+          runner_dir = temp / "gitlab-runner"
+          runner_dir.mkdir(mode=0o700, exist_ok=True)
+          runner_config = runner_dir / "config.toml"
+          runner_config.write_text(
+              "concurrent = 1\ncheck_interval = 2\n"
+              "[[runners]]\n"
+              "  name = \"owned-l108-ci\"\n"
+              "  url = \"http://127.0.0.1:8929\"\n"
+              "  token = " + json.dumps(runner_token) + "\n"
+              "  executor = \"shell\"\n"
+              "  shell = \"bash\"\n")
+          runner_config.chmod(0o600)
+          subprocess.run(
+              ["docker", "run", "--detach", "--rm", "--name",
+               "l108-owned-ci-runner", "--network", "host", "--volume",
+               str(runner_dir) + ":/etc/gitlab-runner",
+               "--volume", os.environ["DOTNET_ROOT"] + ":/usr/share/dotnet:ro",
+               "--env", "DOTNET_ROOT=/usr/share/dotnet",
+               "--env", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
+               "--env", "PATH=/usr/share/dotnet:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+               "gitlab/gitlab-runner:ubuntu-v19.6.1"],
+              check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+              text=True)
+          runner_online = False
+          for _ in range(45):
+              runner_code, runner_info = request(
+                  "GET", f"/api/v4/runners/{runner_result['id']}",
+                  token=root_token)
+              if runner_code == 200 and runner_info.get("status") == "online":
+                  runner_online = True
+                  break
+              time.sleep(2)
+          summary["controls"].append({"case": "a_project_runner_online",
+                                      "http": runner_code,
+                                      "online": runner_online})
+          if not runner_online:
+              raise RuntimeError("Owned A project runner did not become online")
+          icu_install = subprocess.run(
+              ["docker", "exec", "--user", "root", "l108-owned-ci-runner",
+               "bash", "-c", "apt-get update -qq && apt-get install -y -qq libicu-dev"],
+              capture_output=True, text=True, timeout=180)
+          summary["controls"].append({"case": "a_runner_official_icu_dependency",
+                                      "exit": icu_install.returncode})
+          if icu_install.returncode:
+              raise RuntimeError("A runner ICU setup failed: " + icu_install.stderr[-500:])
+          mounted_sdk = subprocess.run(
+              ["docker", "exec", "l108-owned-ci-runner", "dotnet", "--version"],
+              capture_output=True, text=True, timeout=30)
+          summary["controls"].append({"case": "a_runner_mounted_sdk",
+                                      "exit": mounted_sdk.returncode,
+                                      "version": mounted_sdk.stdout.strip()})
+          if mounted_sdk.returncode or mounted_sdk.stdout.strip() != "11.0.100":
+              raise RuntimeError("A runner lacks exact mounted SDK: " + mounted_sdk.stderr[-300:])
+
+          lower_events = pathlib.Path("/tmp") / ("l108-events-" + suffix + ".jsonl")
+          retained_event = pathlib.Path("/tmp") / ("l108-retained-" + suffix + ".json")
+          after_removal_event = pathlib.Path("/tmp") / ("l108-after-removal-" + suffix + ".json")
+          rotation_event = pathlib.Path("/tmp") / ("l108-rotation-" + suffix + ".json")
+          after_rotation_event = pathlib.Path("/tmp") / ("l108-after-rotation-" + suffix + ".json")
+          after_token_revoke_event = pathlib.Path("/tmp") / ("l108-after-token-revoke-" + suffix + ".json")
+          ci_variable_event = pathlib.Path("/tmp") / ("l108-ci-variable-" + suffix + ".json")
+          ci_read_event = pathlib.Path("/tmp") / ("l108-ci-read-" + suffix + ".json")
+          ci_write_event = pathlib.Path("/tmp") / ("l108-ci-write-" + suffix + ".json")
+          project_token_file = pathlib.Path("/tmp") / ("l108-project-token-" + suffix)
+          lower_port = pathlib.Path("/tmp") / ("l108-port-" + suffix)
+          lower_server = pathlib.Path("/tmp") / ("l108-server-" + suffix + ".py")
+          lower_server.write_text(textwrap.dedent(f"""
+              import hashlib, json, os, pathlib, urllib.error, urllib.request
+              from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+              BASE = {base!r}
+              PROJECT = {a["id"]!r}
+              EVENTS = pathlib.Path({str(lower_events)!r})
+              RETAINED_EVENT = pathlib.Path({str(retained_event)!r})
+              AFTER_REMOVAL_EVENT = pathlib.Path({str(after_removal_event)!r})
+              ROTATION_EVENT = pathlib.Path({str(rotation_event)!r})
+              AFTER_ROTATION_EVENT = pathlib.Path({str(after_rotation_event)!r})
+              AFTER_TOKEN_REVOKE_EVENT = pathlib.Path({str(after_token_revoke_event)!r})
+              CI_VARIABLE_EVENT = pathlib.Path({str(ci_variable_event)!r})
+              CI_READ_EVENT = pathlib.Path({str(ci_read_event)!r})
+              CI_WRITE_EVENT = pathlib.Path({str(ci_write_event)!r})
+              PROJECT_TOKEN_FILE = pathlib.Path({str(project_token_file)!r})
+              PORT = pathlib.Path({str(lower_port)!r})
+              SUFFIX = {suffix!r}
+              EXPIRES = {(datetime.date.today() + datetime.timedelta(days=2)).isoformat()!r}
+              ROTATED_EXPIRES = {(datetime.date.today() + datetime.timedelta(days=5)).isoformat()!r}
+              count = 0
+              class Handler(BaseHTTPRequestHandler):
+                  def do_POST(self):
+                      global count
+                      if self.path == "/ci-variable":
+                          value = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                          CI_VARIABLE_EVENT.write_text(json.dumps({{
+                              "uid": os.getuid(),
+                              "sha256": hashlib.sha256(value).hexdigest(),
+                              "length": len(value)
+                          }}))
+                          self.send_response(204)
+                          self.end_headers()
+                          return
+                      count += 1
+                      token = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                      path = "owned-l108-downstream-" + SUFFIX + "-" + str(count) + ".txt"
+                      payload = json.dumps({{
+                          "branch": "main",
+                          "content": "INERT_L108_PROTECTED_WRITE_" + str(count),
+                          "commit_message": "Owned L108 authorization control"
+                      }}).encode()
+                      req = urllib.request.Request(
+                          BASE + f"/api/v4/projects/{{PROJECT}}/repository/files/{{path}}",
+                          data=payload,
+                          headers={{"PRIVATE-TOKEN": token.decode(),
+                                   "Content-Type": "application/json"}},
+                          method="POST")
+                      try:
+                          with urllib.request.urlopen(req, timeout=45) as response:
+                              status = response.status
+                      except urllib.error.HTTPError as error:
+                          status = error.code
+                      event = {{"uid": os.getuid(), "token_sha256": hashlib.sha256(token).hexdigest(),
+                               "gitlab_write_http": status, "path": path}}
+                      if count == 3:
+                          mint_payload = json.dumps({{
+                              "name": "owned-l108-retained-" + SUFFIX,
+                              "scopes": ["api"], "access_level": 40,
+                              "expires_at": EXPIRES
+                          }}).encode()
+                          mint_request = urllib.request.Request(
+                              BASE + f"/api/v4/projects/{{PROJECT}}/access_tokens",
+                              data=mint_payload,
+                              headers={{"PRIVATE-TOKEN": token.decode(),
+                                       "Content-Type": "application/json"}},
+                              method="POST")
+                          try:
+                              with urllib.request.urlopen(mint_request, timeout=45) as response:
+                                  mint_status = response.status
+                                  minted = json.load(response)
+                          except urllib.error.HTTPError as error:
+                              mint_status = error.code
+                              minted = {{}}
+                          event["project_token_create_http"] = mint_status
+                          if mint_status == 201 and minted.get("token"):
+                              project_token = minted["token"]
+                              PROJECT_TOKEN_FILE.write_text(project_token)
+                              PROJECT_TOKEN_FILE.chmod(0o600)
+                              event["project_token_sha256"] = hashlib.sha256(
+                                  project_token.encode()).hexdigest()
+                              event["project_token_id"] = minted.get("id")
+                              event["project_token_expires_at"] = minted.get("expires_at")
+                      with EVENTS.open("a") as out:
+                          out.write(json.dumps(event) + "\\n")
+                      self.send_response(204)
+                      self.end_headers()
+                  def do_GET(self):
+                      if self.path == "/rotate-project-token" and PROJECT_TOKEN_FILE.exists():
+                          old_token = PROJECT_TOKEN_FILE.read_text()
+                          rotate_payload = json.dumps({{
+                              "expires_at": ROTATED_EXPIRES
+                          }}).encode()
+                          rotate_request = urllib.request.Request(
+                              BASE + f"/api/v4/projects/{{PROJECT}}/access_tokens/self/rotate",
+                              data=rotate_payload,
+                              headers={{"PRIVATE-TOKEN": old_token,
+                                       "Content-Type": "application/json"}},
+                              method="POST")
+                          try:
+                              with urllib.request.urlopen(rotate_request, timeout=45) as response:
+                                  rotate_status = response.status
+                                  rotated = json.load(response)
+                          except urllib.error.HTTPError as error:
+                              rotate_status = error.code
+                              rotated = {{}}
+                          rotation = {{"uid": os.getuid(), "rotation_http": rotate_status,
+                                      "old_token_sha256": hashlib.sha256(
+                                          old_token.encode()).hexdigest(),
+                                      "requested_expires_at": ROTATED_EXPIRES}}
+                          if rotate_status == 200 and rotated.get("token"):
+                              new_token = rotated["token"]
+                              PROJECT_TOKEN_FILE.write_text(new_token)
+                              PROJECT_TOKEN_FILE.chmod(0o600)
+                              rotation["new_token_sha256"] = hashlib.sha256(
+                                  new_token.encode()).hexdigest()
+                              rotation["rotated_token_id"] = rotated.get("id")
+                              rotation["rotated_expires_at"] = rotated.get("expires_at")
+                              old_path = "owned-l108-old-rotated-denied-" + SUFFIX + ".txt"
+                              old_payload = json.dumps({{
+                                  "branch": "main", "content": "INERT_OLD_ROTATED_DENIED",
+                                  "commit_message": "Owned old-token denial control"
+                              }}).encode()
+                              old_request = urllib.request.Request(
+                                  BASE + f"/api/v4/projects/{{PROJECT}}/repository/files/{{old_path}}",
+                                  data=old_payload,
+                                  headers={{"PRIVATE-TOKEN": old_token,
+                                           "Content-Type": "application/json"}},
+                                  method="POST")
+                              try:
+                                  with urllib.request.urlopen(old_request, timeout=45) as response:
+                                      old_status = response.status
+                              except urllib.error.HTTPError as error:
+                                  old_status = error.code
+                              rotation["old_token_write_http"] = old_status
+                              rotation["old_token_denied_path"] = old_path
+                          ROTATION_EVENT.write_text(json.dumps(rotation))
+                          self.send_response(204)
+                          self.end_headers()
+                          return
+                      if self.path == "/read-ci-variable" and PROJECT_TOKEN_FILE.exists():
+                          project_token = PROJECT_TOKEN_FILE.read_text()
+                          ci_request = urllib.request.Request(
+                              BASE + f"/api/v4/projects/{{PROJECT}}/variables/A_ONLY_CI_MARKER",
+                              headers={{"PRIVATE-TOKEN": project_token}}, method="GET")
+                          try:
+                              with urllib.request.urlopen(ci_request, timeout=45) as response:
+                                  ci_status = response.status
+                                  ci_response = json.load(response)
+                          except urllib.error.HTTPError as error:
+                              ci_status = error.code
+                              ci_response = {{}}
+                          ci_value = ci_response.get("value", "")
+                          CI_READ_EVENT.write_text(json.dumps({{
+                              "uid": os.getuid(), "http": ci_status,
+                              "project_token_sha256": hashlib.sha256(
+                                  project_token.encode()).hexdigest(),
+                              "value_sha256": hashlib.sha256(ci_value.encode()).hexdigest(),
+                              "length": len(ci_value)
+                          }}))
+                          self.send_response(204)
+                          self.end_headers()
+                          return
+                      if self.path == "/write-ci-config" and PROJECT_TOKEN_FILE.exists():
+                          project_token = PROJECT_TOKEN_FILE.read_text()
+                          port = PORT.read_text().strip()
+                          job_script = (
+                              'printf %s "$A_ONLY_CI_MARKER" | '
+                              'curl --silent --show-error --fail --output /dev/null '
+                              '--request POST --data-binary @- '
+                              'http://127.0.0.1:' + port + '/ci-variable')
+                          ci_config = (
+                              "stages: [witness]\\n"
+                              "owned_l108_ci:\\n"
+                              "  stage: witness\\n"
+                              "  tags: [l108-owned-ci-" + SUFFIX + "]\\n"
+                              "  script:\\n"
+                              "    - " + json.dumps("set +x") + "\\n"
+                              "    - " + json.dumps(job_script) + "\\n"
+                              "    - " + json.dumps("echo OWNED_L108_CI_JOB") + "\\n")
+                          ci_payload = json.dumps({{
+                              "branch": "main", "content": ci_config,
+                              "commit_message": "Owned L108 protected CI witness"
+                          }}).encode()
+                          ci_request = urllib.request.Request(
+                              BASE + f"/api/v4/projects/{{PROJECT}}/repository/files/.gitlab-ci.yml",
+                              data=ci_payload,
+                              headers={{"PRIVATE-TOKEN": project_token,
+                                       "Content-Type": "application/json"}},
+                              method="POST")
+                          try:
+                              with urllib.request.urlopen(ci_request, timeout=45) as response:
+                                  ci_write_status = response.status
+                          except urllib.error.HTTPError as error:
+                              ci_write_status = error.code
+                          CI_WRITE_EVENT.write_text(json.dumps({{
+                              "uid": os.getuid(), "http": ci_write_status,
+                              "project_token_sha256": hashlib.sha256(
+                                  project_token.encode()).hexdigest(),
+                              "ci_config_sha256": hashlib.sha256(
+                                  ci_config.encode()).hexdigest(),
+                              "path": ".gitlab-ci.yml"
+                          }}))
+                          self.send_response(204)
+                          self.end_headers()
+                          return
+                      if self.path not in ("/retained", "/after-member-removal",
+                                           "/after-project-token-rotation",
+                                           "/after-project-token-revoke") or not PROJECT_TOKEN_FILE.exists():
+                          self.send_response(404)
+                          self.end_headers()
+                          return
+                      project_token = PROJECT_TOKEN_FILE.read_text()
+                      if self.path == "/retained":
+                          path = "owned-l108-retained-" + SUFFIX + ".txt"
+                          content = "INERT_L108_RETAINED_AFTER_REVOKE"
+                          event_path = RETAINED_EVENT
+                      elif self.path == "/after-member-removal":
+                          path = "owned-l108-after-member-removal-" + SUFFIX + ".txt"
+                          content = "INERT_L108_AFTER_MEMBER_REMOVAL"
+                          event_path = AFTER_REMOVAL_EVENT
+                      elif self.path == "/after-project-token-rotation":
+                          path = "owned-l108-after-token-rotation-" + SUFFIX + ".txt"
+                          content = "INERT_L108_AFTER_TOKEN_ROTATION"
+                          event_path = AFTER_ROTATION_EVENT
+                      else:
+                          path = "owned-l108-after-token-revoke-" + SUFFIX + ".txt"
+                          content = "INERT_L108_AFTER_TOKEN_REVOKE_DENIED"
+                          event_path = AFTER_TOKEN_REVOKE_EVENT
+                      payload = json.dumps({{
+                          "branch": "main", "content": content,
+                          "commit_message": "Owned L108 retained-token control"
+                      }}).encode()
+                      request = urllib.request.Request(
+                          BASE + f"/api/v4/projects/{{PROJECT}}/repository/files/{{path}}",
+                          data=payload,
+                          headers={{"PRIVATE-TOKEN": project_token,
+                                   "Content-Type": "application/json"}},
+                          method="POST")
+                      try:
+                          with urllib.request.urlopen(request, timeout=45) as response:
+                              status = response.status
+                      except urllib.error.HTTPError as error:
+                          status = error.code
+                      event_path.write_text(json.dumps({{
+                          "uid": os.getuid(), "project_token_sha256": hashlib.sha256(
+                              project_token.encode()).hexdigest(),
+                          "gitlab_write_http": status, "path": path
+                      }}))
+                      self.send_response(204)
+                      self.end_headers()
+                  def log_message(self, *_):
+                      pass
+              server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+              PORT.write_text(str(server.server_port))
+              server.serve_forever()
+          """))
+          lower_server.chmod(0o644)
+          lower_process = subprocess.Popen(
+              ["sudo", "-u", "nobody", "python3", "-u", str(lower_server)],
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          for _ in range(100):
+              if lower_port.exists():
+                  break
+              if lower_process.poll() is not None:
+                  raise RuntimeError("Lower receiver stopped before readiness")
+              time.sleep(0.1)
+          if not lower_port.exists():
+              raise RuntimeError("Lower receiver did not start")
+          callback = "http://127.0.0.1:" + lower_port.read_text().strip() + "/owned-receiver"
+          def read_events():
+              if not lower_events.exists():
+                  return []
+              return [json.loads(line) for line in lower_events.read_text().splitlines()]
+
+          denied_file = subprocess.run(
+              ["sudo", "-u", "nobody", "cat", str(protected_file)],
+              capture_output=True, timeout=15)
+          summary["controls"].append({"case": "lower_os_read_protected_file",
+                                      "exit": denied_file.returncode})
+          if denied_file.returncode == 0:
+              raise RuntimeError("Lower OS identity read protected file")
+
+          denied_get, _ = request("GET", f"/api/v4/projects/{a['id']}",
+                                  token=tokens["publisher"])
+          summary["controls"].append({"case": "publisher_get_trusted_a", "http": denied_get})
+          if denied_get not in (403, 404):
+              raise RuntimeError("Publisher unexpectedly reads trusted A project")
+          denied_write, _ = request(
+              "POST",
+              f"/api/v4/projects/{a['id']}/repository/files/owned-l108-lower-denied.txt",
+              {"branch": "main", "content": "INERT_DENIED",
+               "commit_message": "Owned denied authorization control"},
+              token=tokens["publisher"])
+          summary["controls"].append({"case": "lower_publisher_write_trusted_a",
+                                      "http": denied_write})
+          if denied_write not in (403, 404):
+              raise RuntimeError("Lower publisher unexpectedly wrote trusted A repository")
+          denied_ci_write, _ = request(
+              "POST", f"/api/v4/projects/{a['id']}/repository/files/.gitlab-ci.yml",
+              {"branch": "main", "content": "stages: [witness]",
+               "commit_message": "Owned denied CI control"},
+              token=tokens["publisher"])
+          summary["controls"].append({"case": "b_only_a_ci_config_write_denied",
+                                      "http": denied_ci_write})
+          if denied_ci_write not in (403, 404):
+              raise RuntimeError("B-only publisher wrote A CI configuration")
+          denied_mint, _ = request(
+              "POST", f"/api/v4/projects/{a['id']}/access_tokens",
+              {"name": "owned-l108-lower-denied", "scopes": ["api"],
+               "access_level": 40,
+               "expires_at": (datetime.date.today() + datetime.timedelta(days=2)).isoformat()},
+              token=tokens["publisher"])
+          summary["controls"].append({"case": "lower_publisher_mint_trusted_a_token",
+                                      "http": denied_mint})
+          if denied_mint not in (403, 404):
+              raise RuntimeError("Lower publisher unexpectedly minted trusted A project token")
+          reader_get, _ = request("GET", f"/api/v4/projects/{a['id']}",
+                                  token=tokens["reader"])
+          summary["controls"].append({"case": "reader_get_trusted_a", "http": reader_get})
+          if reader_get != 200:
+              raise RuntimeError("Reader cannot access trusted A project")
+          basic_index, _ = request(
+              "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
+              basic=(users["reader"]["username"], tokens["reader"]))
+          summary["controls"].append({"case": "reader_basic_group_index", "http": basic_index})
+          if basic_index != 200:
+              raise RuntimeError(f"Reader Basic auth failed on group index: {basic_index}")
+
+          def make_package(series, marker):
+              package_id = f"Owned.RegistryProbe.{suffix}.{series}"
+              command = "ownedprobe" + series.lower()
+              directory = temp / "source" / series / marker
+              directory.mkdir(parents=True, exist_ok=True)
+              project = directory / "Probe.csproj"
+              project.write_text(
+                  '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+                  '<TargetFramework>net11.0</TargetFramework><OutputType>Exe</OutputType>'
+                  '<PackAsTool>true</PackAsTool><ToolCommandName>' + command + '</ToolCommandName>'
+                  '<PackageId>' + package_id + '</PackageId><Version>1.0.0</Version>'
+                  '<Authors>OwnedLab</Authors></PropertyGroup></Project>')
+              program = 'System.Console.WriteLine("OWNED_' + marker + '");'
+              if series.startswith("Impact") and marker == "B":
+                  program = (
+                      'using System.Net.Http; '
+                      'var path = System.Environment.GetEnvironmentVariable("L108_PROTECTED_PATH"); '
+                      'var url = System.Environment.GetEnvironmentVariable("L108_OWNED_RECEIVER"); '
+                      'if (path != null && url != null) { '
+                      'using var client = new HttpClient(); '
+                      'var response = client.PostAsync(url, '
+                      'new ByteArrayContent(System.IO.File.ReadAllBytes(path))).GetAwaiter().GetResult(); '
+                      'response.EnsureSuccessStatusCode(); } '
+                      'System.Console.WriteLine("OWNED_B");')
+              if series == "Scheduled" and marker == "B":
+                  program = (
+                      "using System.Net.Http; "
+                      "var secret = System.Environment.GetEnvironmentVariable(\"A_ONLY_CI_MARKER\"); "
+                      "var url = System.Environment.GetEnvironmentVariable(\"L108_OWNED_RECEIVER\"); "
+                      "if (secret != null && url != null) { "
+                      "using var client = new HttpClient(); "
+                      "var body = System.Text.Encoding.UTF8.GetBytes(secret); "
+                      "var response = client.PostAsync(url, new ByteArrayContent(body)).GetAwaiter().GetResult(); "
+                      "response.EnsureSuccessStatusCode(); } "
+                      "System.Console.WriteLine(\"OWNED_SCHEDULED_B\");")
+              (directory / "Program.cs").write_text(program)
+              output = temp / "built" / series / marker
+              output.mkdir(parents=True, exist_ok=True)
+              result = subprocess.run(
+                  ["dotnet", "pack", str(project), "-c", "Release", "-o", str(output),
+                   "--nologo", "--verbosity", "quiet"],
+                  capture_output=True, text=True, timeout=180)
+              if result.returncode:
+                  raise RuntimeError("dotnet pack failed: " + (result.stdout + result.stderr)[-700:])
+              package = next(output.glob("*.nupkg"))
+              return package_id, command, package
+
+          packages = {}
+          for series in ("Primary", "Reverse", "Impact", "ImpactReverse", "Scheduled"):
+              for marker in ("A", "B"):
+                  packages[(series, marker)] = make_package(series, marker)
+
+          certificate_dir = temp / "signing"
+          certificate_dir.mkdir()
+          certificate = certificate_dir / "author.pem"
+          key = certificate_dir / "author.key"
+          pfx = certificate_dir / "author.pfx"
+          pfx_password = secrets.token_urlsafe(32)
+          subprocess.run(
+              ["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256",
+               "-nodes", "-keyout", str(key), "-out", str(certificate),
+               "-days", "2", "-subj", "/CN=Owned-L108-Author"],
+              check=True, capture_output=True, timeout=60)
+          subprocess.run(
+              ["openssl", "pkcs12", "-export", "-out", str(pfx),
+               "-inkey", str(key), "-in", str(certificate),
+               "-passout", "pass:" + pfx_password],
+              check=True, capture_output=True, timeout=30)
+          cert_der = subprocess.check_output(
+              ["openssl", "x509", "-in", str(certificate), "-outform", "DER"])
+          certificate_fingerprint = hashlib.sha256(cert_der).hexdigest().upper()
+          summary["author_certificate_sha256"] = certificate_fingerprint
+          attacker_certificate = certificate_dir / "other-author.pem"
+          attacker_key = certificate_dir / "other-author.key"
+          attacker_pfx = certificate_dir / "other-author.pfx"
+          attacker_pfx_password = secrets.token_urlsafe(32)
+          subprocess.run(
+              ["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256",
+               "-nodes", "-keyout", str(attacker_key), "-out", str(attacker_certificate),
+               "-days", "2", "-subj", "/CN=Owned-L108-Other-Author"],
+              check=True, capture_output=True, timeout=60)
+          subprocess.run(
+              ["openssl", "pkcs12", "-export", "-out", str(attacker_pfx),
+               "-inkey", str(attacker_key), "-in", str(attacker_certificate),
+               "-passout", "pass:" + attacker_pfx_password],
+              check=True, capture_output=True, timeout=30)
+          attacker_cert_der = subprocess.check_output(
+              ["openssl", "x509", "-in", str(attacker_certificate), "-outform", "DER"])
+          attacker_fingerprint = hashlib.sha256(attacker_cert_der).hexdigest().upper()
+          summary["other_author_certificate_sha256"] = attacker_fingerprint
+          signer_xml = (
+              '<config><add key="signatureValidationMode" value="require"/></config>'
+              '<trustedSigners><author name="OwnedL108Author"><certificate fingerprint="' +
+              certificate_fingerprint +
+              '" hashAlgorithm="SHA256" allowUntrustedRoot="true"/></author></trustedSigners>')
+          for series in ("Impact", "ImpactReverse", "Scheduled"):
+              for marker in ("A", "B"):
+                  package = packages[(series, marker)][2]
+                  signer_pfx = pfx if marker == "A" else attacker_pfx
+                  signer_password = pfx_password if marker == "A" else attacker_pfx_password
+                  signed = subprocess.run(
+                      ["dotnet", "nuget", "sign", str(package),
+                       "--certificate-path", str(signer_pfx),
+                       "--certificate-password", signer_password,
+                       "--allow-untrusted-root", "--overwrite", "--verbosity", "quiet"],
+                      capture_output=True, text=True, timeout=120)
+                  if signed.returncode:
+                      raise RuntimeError("Owned " + marker + " signing failed: " +
+                                         (signed.stdout + signed.stderr).replace(
+                                             signer_password, "[masked]")[-600:])
+          verification_config = temp / "signed-policy.config"
+          verification_config.write_text(
+              '<?xml version="1.0"?><configuration><packageSources><clear/></packageSources>' +
+              signer_xml + '</configuration>')
+          for marker in ("A", "B"):
+              package = packages[("Impact", marker)][2]
+              checked = subprocess.run(
+                  ["dotnet", "nuget", "verify", "--all", str(package),
+                   "--configfile", str(verification_config)],
+                  capture_output=True, text=True, timeout=120)
+              output = checked.stdout + checked.stderr
+              summary["controls"].append(
+                  {"case": "direct_verify_impact_" + marker, "exit": checked.returncode,
+                   "nu3004": "NU3004" in output, "nu3008": "NU3008" in output,
+                   "nu3034": "NU3034" in output, "nu3018": "NU3018" in output,
+                   "package_sha256": hashlib.sha256(package.read_bytes()).hexdigest()})
+              if (marker == "A" and checked.returncode != 0) or (
+                      marker == "B" and checked.returncode == 0):
+                  raise RuntimeError("Direct signing control failed for " + marker +
+                                     ": " + output[-700:])
+          other_author_config = temp / "other-author-policy.config"
+          other_author_config.write_text(
+              '<?xml version="1.0"?><configuration><packageSources><clear/></packageSources>'
+              '<config><add key="signatureValidationMode" value="require"/></config>'
+              '<trustedSigners><author name="OwnedL108OtherAuthor"><certificate fingerprint="' +
+              attacker_fingerprint +
+              '" hashAlgorithm="SHA256" allowUntrustedRoot="true"/></author></trustedSigners>'
+              '</configuration>')
+          other_checked = subprocess.run(
+              ["dotnet", "nuget", "verify", "--all", str(packages[("Impact", "B")][2]),
+               "--configfile", str(other_author_config)],
+              capture_output=True, text=True, timeout=120)
+          summary["controls"].append(
+              {"case": "direct_verify_impact_B_with_other_author_trusted",
+               "exit": other_checked.returncode})
+          if other_checked.returncode:
+              raise RuntimeError("Other author's B signature was invalid: " +
+                                 (other_checked.stdout + other_checked.stderr)[-700:])
+
+          def package_hash(package):
+              return hashlib.sha256(package.read_bytes()).hexdigest()
+
+          def push(series, marker, project_id, token, expect_success=True,
+                   lower_os=False):
+              package = packages[(series, marker)][2]
+              source = f"{base}/api/v4/projects/{project_id}/packages/nuget/index.json"
+              package_for_push = package
+              if lower_os:
+                  package_for_push = pathlib.Path("/tmp") / (
+                      "l108-owned-" + suffix + "-" + series.lower() + "-" +
+                      marker.lower() + ".nupkg")
+                  shutil.copyfile(package, package_for_push)
+                  package_for_push.chmod(0o644)
+              cmd = [shutil.which("dotnet"), "nuget", "push", str(package_for_push),
+                     "--source", source, "--api-key", token,
+                     "--allow-insecure-connections", "--no-symbols", "--force-english-output"]
+              if lower_os:
+                  cmd = ["sudo", "-u", "nobody", "curl", "--silent", "--show-error",
+                         "--request", "PUT", "--form",
+                         "package=@" + str(package_for_push),
+                         "--user", users["publisher"]["username"] + ":" + token,
+                         "--output", "/dev/null", "--write-out", "%{http_code}",
+                         f"{base}/api/v4/projects/{project_id}/packages/nuget/"]
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+              accepted = (result.returncode == 0 and
+                          (result.stdout.strip() in ("200", "201") if lower_os else True))
+              summary["controls"].append(
+                  {"case": f"push_{series}_{marker}_to_{project_id}",
+                   "exit": result.returncode,
+                   "lower_os": lower_os,
+                   "http": result.stdout.strip() if lower_os else None,
+                   "package_sha256": package_hash(package)})
+              if lower_os and not expect_success and result.stdout.strip() not in (
+                      "401", "403", "404"):
+                  raise RuntimeError("Denied lower-OS push did not reach GitLab authorization")
+              if accepted != expect_success:
+                  output = (result.stdout + result.stderr).replace(token, "[masked]")
+                  raise RuntimeError("Unexpected push result: " + output[-800:])
+
+          def restore(series, case, expected_marker, expected_package, password=None,
+                      strict=False, invoke=True, exfil=False):
+              package_id, command, _ = packages[(series, "A")]
+              directory = temp / "consumers" / case
+              directory.mkdir(parents=True, exist_ok=True)
+              (directory / ".config").mkdir(exist_ok=True)
+              manifest = {"version": 1, "isRoot": True,
+                          "tools": {package_id.lower(): {"version": "1.0.0",
+                                                         "commands": [command]}}}
+              (directory / ".config" / "dotnet-tools.json").write_text(json.dumps(manifest))
+              if password is None:
+                  password = tokens["reader"]
+              config = directory / "NuGet.Config"
+              config.write_text(
+                  '<?xml version="1.0"?><configuration><packageSources><clear/>'
+                  '<add key="ownedgroup" value="' + base + f'/api/v4/groups/{gid}/-/packages/nuget/index.json" '
+                  'protocolVersion="3" allowInsecureConnections="true"/></packageSources>'
+                  '<packageSourceCredentials><ownedgroup><add key="Username" value="' +
+                  users["reader"]["username"] + '"/>'
+                  '<add key="ClearTextPassword" value="' + escape(password) +
+                  '"/></ownedgroup></packageSourceCredentials>' +
+                  (signer_xml if strict else '') + '</configuration>')
+              os.chmod(config, 0o600)
+              env = os.environ.copy()
+              env["DOTNET_CLI_HOME"] = str(directory / "cli-home")
+              env["NUGET_PACKAGES"] = str(directory / "packages")
+              env["NUGET_HTTP_CACHE_PATH"] = str(directory / "http-cache")
+              env["DOTNET_NOLOGO"] = "1"
+              env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+              env["DOTNET_NUGET_SIGNATURE_VERIFICATION"] = "true"
+              command_line = ["dotnet", "tool", "restore",
+                              "--tool-manifest", str(directory / ".config" / "dotnet-tools.json"),
+                              "--configfile", str(config), "--no-cache", "--verbosity", "minimal"]
+              result = subprocess.run(command_line, cwd=directory, env=env,
+                                      capture_output=True, text=True, timeout=180)
+              if expected_marker is None:
+                  summary["controls"].append({"case": case, "restore_exit": result.returncode})
+                  if result.returncode == 0:
+                      raise RuntimeError("Wrong-credential restore unexpectedly succeeded")
+                  return
+              if result.returncode:
+                  output = (result.stdout + result.stderr).replace(password, "[masked]")
+                  raise RuntimeError("Restore failed: " + output[-800:])
+              post_before = len(read_events())
+              if exfil:
+                  env["L108_PROTECTED_PATH"] = str(protected_file)
+                  env["L108_OWNED_RECEIVER"] = callback
+              run = (subprocess.run(["dotnet", "tool", "run", command],
+                                    cwd=directory, env=env, capture_output=True,
+                                    text=True, timeout=90) if invoke else None)
+              stored = list((directory / "packages").rglob("*.nupkg"))
+              stored_entries = sorted(
+                  [{"path": str(p.relative_to(directory)), "sha256": package_hash(p)}
+                   for p in stored], key=lambda x: x["path"])
+              if (run is not None and run.returncode) or not stored:
+                  exit_code = run.returncode if run else None
+                  raise RuntimeError(f"Invocation or archive storage failed: {exit_code}, {len(stored)}")
+              marker = run.stdout.strip() if run else None
+              expected_hash = package_hash(packages[(series, expected_package)][2])
+              post_after = read_events()
+              summary["controls"].append(
+                  {"case": case, "restore_exit": result.returncode,
+                   "invoke_exit": run.returncode if run else None, "output": marker,
+                   "strict": strict, "explicit_invoke": invoke,
+                   "post_count_before": post_before, "post_count_after": len(post_after),
+                   "stored_archives": stored_entries, "expected_sha256": expected_hash})
+              if ((invoke and marker != "OWNED_" + expected_marker) or
+                      expected_hash not in [x["sha256"] for x in stored_entries]):
+                  raise RuntimeError(f"{case}: wrong selected package")
+              expected_posts = post_before + (1 if exfil and invoke else 0)
+              if len(post_after) != expected_posts:
+                  raise RuntimeError(f"{case}: unexpected protected POST count")
+              if exfil and invoke and post_after[-1]["token_sha256"] != (
+                      hashlib.sha256(protected_bytes).hexdigest()):
+                  raise RuntimeError(f"{case}: protected POST body mismatch")
+              if exfil and invoke and (
+                      post_after[-1]["uid"] != 65534 or
+                      post_after[-1]["gitlab_write_http"] != 201):
+                  raise RuntimeError(f"{case}: lower receiver failed protected A write")
+              return directory, env
+
+          def exec_one_shot(case):
+              package_id = packages[("Impact", "A")][0]
+              directory = temp / "one-shot" / case
+              directory.mkdir(parents=True, exist_ok=True)
+              config = directory / "NuGet.Config"
+              shutil.copyfile(temp / "consumers" / "signed_a_only" / "NuGet.Config", config)
+              os.chmod(config, 0o600)
+              env = os.environ.copy()
+              env["DOTNET_CLI_HOME"] = str(directory / "cli-home")
+              env["NUGET_PACKAGES"] = str(directory / "packages")
+              env["NUGET_HTTP_CACHE_PATH"] = str(directory / "http-cache")
+              env["DOTNET_NUGET_SIGNATURE_VERIFICATION"] = "true"
+              env["DOTNET_NOLOGO"] = "1"
+              env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+              env["L108_PROTECTED_PATH"] = str(protected_file)
+              env["L108_OWNED_RECEIVER"] = callback
+              before = len(read_events())
+              command_line = ["dotnet", "tool", "exec", package_id + "@1.0.0",
+                              "--yes", "--configfile", str(config),
+                              "--no-http-cache", "--verbosity", "minimal"]
+              result = subprocess.run(command_line, cwd=directory, env=env,
+                                      capture_output=True, text=True, timeout=180)
+              output = result.stdout + result.stderr
+              events = read_events()
+              stored = sorted(
+                  {package_hash(path) for path in directory.rglob("*.nupkg")})
+              expected_hash = package_hash(packages[("Impact", "B")][2])
+              summary["controls"].append(
+                  {"case": case, "exit": result.returncode,
+                   "output_marker": "OWNED_B" in output.splitlines(),
+                   "post_count_before": before, "post_count_after": len(events),
+                   "stored_archive_hashes": stored,
+                   "expected_sha256": expected_hash})
+              if (result.returncode or "OWNED_B" not in output.splitlines() or
+                      len(events) != before + 1 or
+                      events[-1]["token_sha256"] != hashlib.sha256(protected_bytes).hexdigest() or
+                      events[-1]["uid"] != 65534 or
+                      events[-1]["gitlab_write_http"] != 201 or
+                      events[-1].get("project_token_create_http") != 201 or
+                      not events[-1].get("project_token_sha256")):
+                  raise RuntimeError("One-shot signed-tool policy consequence failed: " +
+                                     output.replace(tokens["reader"], "[masked]")[-700:])
+
+          try:
+              push("Primary", "A", a["id"], root_token)
+              restore("Primary", "primary_a_only", "A", "A")
+              restore("Primary", "wrong_reader_credential", None, "A",
+                      password="invalid-l108-owned-token")
+              push("Primary", "B", a["id"], tokens["publisher"], expect_success=False)
+              push("Primary", "B", b["id"], tokens["publisher"])
+              restore("Primary", "primary_b_newer", "B", "B")
+              restore("Primary", "primary_b_repeat", "B", "B")
+              push("Reverse", "B", b["id"], tokens["publisher"])
+              restore("Reverse", "reverse_b_only", "B", "B")
+              push("Reverse", "A", a["id"], root_token)
+              restore("Reverse", "reverse_a_newer", "A", "A")
+
+              index_code, index = request(
+                  "GET", f"/api/v4/groups/{gid}/-/packages/nuget/index.json",
+                  token=tokens["reader"])
+              summary["group_index_http"] = index_code
+              if index_code == 200:
+                  summary["index_resource_types"] = sorted(
+                      str(x.get("@type")) for x in index.get("resources", []))
+                  if any("RepositorySignatures" in value
+                         for value in summary["index_resource_types"]):
+                      raise RuntimeError("Group feed unexpectedly advertises RepositorySignatures")
+              else:
+                  raise RuntimeError("Reader cannot retrieve group service index")
+
+              push("Impact", "A", a["id"], root_token)
+              restore("Impact", "signed_a_only", "A", "A", strict=True)
+              push("Impact", "B", a["id"], tokens["publisher"],
+                   expect_success=False, lower_os=True)
+              push("Impact", "B", b["id"], tokens["publisher"], lower_os=True)
+              restore("Impact", "unsigned_b_restore_only", "B", "B",
+                      strict=True, invoke=False)
+              restore("Impact", "unsigned_b_protected_post", "B", "B",
+                      strict=True, exfil=True)
+              restore("Impact", "unsigned_b_protected_repeat", "B", "B",
+                      strict=True, exfil=True)
+              exec_one_shot("one_shot_wrong_author_b_protected_write")
+              push("ImpactReverse", "B", b["id"], tokens["publisher"],
+                   lower_os=True)
+              restore("ImpactReverse", "reverse_unsigned_b_restore_only", "B", "B",
+                      strict=True, invoke=False)
+              push("ImpactReverse", "A", a["id"], root_token)
+              restore("ImpactReverse", "reverse_signed_a_selected", "A", "A",
+                      strict=True)
+              events = read_events()
+              summary["downstream_events"] = events
+              summary["protected_post_count"] = len(events)
+              summary["all_protected_posts_match"] = all(
+                  event["token_sha256"] == hashlib.sha256(protected_bytes).hexdigest()
+                  for event in events)
+              if len(events) != 3 or not summary["all_protected_posts_match"]:
+                  raise RuntimeError("Unexpected final protected POST state")
+              for number, event in enumerate(events, start=1):
+                  code, content = request(
+                      "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                      event["path"] + "/raw?ref=main", token=root_token)
+                  expected = "INERT_L108_PROTECTED_WRITE_" + str(number)
+                  summary["controls"].append(
+                      {"case": f"trusted_a_written_by_lower_receiver_{number}",
+                       "http": code, "content_sha256":
+                       hashlib.sha256(str(content).encode()).hexdigest(),
+                       "expected_sha256": hashlib.sha256(expected.encode()).hexdigest()})
+                  if code != 200 or content != expected:
+                      raise RuntimeError("Protected A repository file readback mismatch")
+              if not project_token_file.exists():
+                  raise RuntimeError("Lower receiver did not retain project token")
+              project_token_stat = project_token_file.stat()
+              summary["controls"].append({
+                  "case": "retained_token_lower_os_file",
+                  "uid": project_token_stat.st_uid,
+                  "mode": oct(project_token_stat.st_mode & 0o777)})
+              if project_token_stat.st_uid != 65534 or (
+                      project_token_stat.st_mode & 0o777) != 0o600:
+                  raise RuntimeError("Retained token was not held only by lower UID")
+              revoked_code, _ = request(
+                  "DELETE", f"/api/v4/personal_access_tokens/{token_ids['victim']}",
+                  token=root_token)
+              summary["controls"].append({"case": "victim_pat_revoked",
+                                          "http": revoked_code})
+              if revoked_code != 204:
+                  raise RuntimeError("Victim PAT revocation did not complete")
+              old_code, _ = request("GET", f"/api/v4/projects/{a['id']}",
+                                    token=tokens["victim"])
+              summary["controls"].append({"case": "revoked_victim_pat_rejected",
+                                          "http": old_code})
+              if old_code not in (401, 403):
+                  raise RuntimeError("Revoked victim PAT remained usable")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/retained", timeout=60) as response:
+                  retained_trigger_http = response.status
+              summary["controls"].append({"case": "lower_retained_action_trigger",
+                                          "http": retained_trigger_http})
+              if retained_trigger_http != 204 or not retained_event.exists():
+                  raise RuntimeError("Lower retained-token action did not run")
+              retained = json.loads(retained_event.read_text())
+              summary["retained_project_token_event"] = retained
+              if (retained["uid"] != 65534 or
+                      retained["project_token_sha256"] != events[-1]["project_token_sha256"] or
+                      retained["gitlab_write_http"] != 201):
+                  raise RuntimeError("Retained project token failed after victim revocation")
+              retained_code, retained_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  retained["path"] + "/raw?ref=main", token=root_token)
+              expected_retained = "INERT_L108_RETAINED_AFTER_REVOKE"
+              summary["controls"].append({
+                  "case": "trusted_a_written_after_victim_revoke",
+                  "http": retained_code,
+                  "content_sha256": hashlib.sha256(str(retained_content).encode()).hexdigest(),
+                  "expected_sha256": hashlib.sha256(expected_retained.encode()).hexdigest()})
+              if retained_code != 200 or retained_content != expected_retained:
+                  raise RuntimeError("Retained project token A write readback mismatch")
+              removed_code, _ = request(
+                  "DELETE", f"/api/v4/projects/{a['id']}/members/{users['victim']['id']}",
+                  token=root_token)
+              summary["controls"].append({"case": "victim_direct_a_membership_removed",
+                                          "http": removed_code})
+              if removed_code != 204:
+                  raise RuntimeError("Victim A membership removal failed")
+              member_code, _ = request(
+                  "GET", f"/api/v4/projects/{a['id']}/members/{users['victim']['id']}",
+                  token=root_token)
+              summary["controls"].append({"case": "victim_a_membership_absent",
+                                          "http": member_code})
+              if member_code != 404:
+                  raise RuntimeError("Victim A membership remained after removal")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/after-member-removal", timeout=60) as response:
+                  after_removal_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_after_member_removal_trigger",
+                  "http": after_removal_trigger_http})
+              if after_removal_trigger_http != 204 or not after_removal_event.exists():
+                  raise RuntimeError("After-member-removal lower action did not run")
+              after_removal = json.loads(after_removal_event.read_text())
+              summary["after_member_removal_event"] = after_removal
+              if (after_removal["uid"] != 65534 or
+                      after_removal["project_token_sha256"] !=
+                      events[-1]["project_token_sha256"] or
+                      after_removal["gitlab_write_http"] != 201):
+                  raise RuntimeError("Retained token failed after victim membership removal")
+              after_code, after_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  after_removal["path"] + "/raw?ref=main", token=root_token)
+              expected_after = "INERT_L108_AFTER_MEMBER_REMOVAL"
+              summary["controls"].append({
+                  "case": "trusted_a_written_after_victim_membership_removed",
+                  "http": after_code,
+                  "content_sha256": hashlib.sha256(str(after_content).encode()).hexdigest(),
+                  "expected_sha256": hashlib.sha256(expected_after.encode()).hexdigest()})
+              if after_code != 200 or after_content != expected_after:
+                  raise RuntimeError("Post-removal A write readback mismatch")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/rotate-project-token", timeout=60) as response:
+                  rotation_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_project_token_rotation_trigger",
+                  "http": rotation_trigger_http})
+              if rotation_trigger_http != 204 or not rotation_event.exists():
+                  raise RuntimeError("Lower project-token self-rotation did not run")
+              rotation = json.loads(rotation_event.read_text())
+              summary["project_token_rotation_event"] = rotation
+              if (rotation["uid"] != 65534 or rotation["rotation_http"] != 200 or
+                      rotation["old_token_sha256"] !=
+                      events[-1]["project_token_sha256"] or
+                      not rotation.get("new_token_sha256") or
+                      rotation["new_token_sha256"] == rotation["old_token_sha256"] or
+                      datetime.date.fromisoformat(rotation["rotated_expires_at"]) <=
+                      datetime.date.fromisoformat(events[-1]["project_token_expires_at"]) or
+                      rotation["old_token_write_http"] not in (401, 403)):
+                  raise RuntimeError("Lower project-token renewal or old-token denial failed")
+              old_absent_code, _ = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  rotation["old_token_denied_path"] + "/raw?ref=main", token=root_token)
+              summary["controls"].append({
+                  "case": "old_rotated_token_write_absent_from_a", "http": old_absent_code})
+              if old_absent_code != 404:
+                  raise RuntimeError("Old rotated project token unexpectedly wrote A")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/after-project-token-rotation", timeout=60) as response:
+                  after_rotation_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_after_project_token_rotation_trigger",
+                  "http": after_rotation_trigger_http})
+              if after_rotation_trigger_http != 204 or not after_rotation_event.exists():
+                  raise RuntimeError("Post-rotation lower action did not run")
+              after_rotation = json.loads(after_rotation_event.read_text())
+              summary["after_project_token_rotation_event"] = after_rotation
+              if (after_rotation["uid"] != 65534 or
+                      after_rotation["project_token_sha256"] !=
+                      rotation["new_token_sha256"] or
+                      after_rotation["gitlab_write_http"] != 201):
+                  raise RuntimeError("Rotated project token failed private A write")
+              rotated_code, rotated_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  after_rotation["path"] + "/raw?ref=main", token=root_token)
+              expected_rotated = "INERT_L108_AFTER_TOKEN_ROTATION"
+              summary["controls"].append({
+                  "case": "trusted_a_written_by_rotated_project_token",
+                  "http": rotated_code,
+                  "content_sha256": hashlib.sha256(str(rotated_content).encode()).hexdigest(),
+                  "expected_sha256": hashlib.sha256(expected_rotated.encode()).hexdigest()})
+              if rotated_code != 200 or rotated_content != expected_rotated:
+                  raise RuntimeError("Rotated project token A write readback mismatch")
+              if ci_variable_event.exists() or ci_read_event.exists():
+                  raise RuntimeError("A-only CI secret reached lower receiver before CI action")
+              pipelines_before_code, pipelines_before = request(
+                  "GET", f"/api/v4/projects/{a['id']}/pipelines?ref=main&per_page=5",
+                  token=root_token)
+              summary["controls"].append({
+                  "case": "no_prior_a_ci_pipeline",
+                  "http": pipelines_before_code,
+                  "count": len(pipelines_before) if isinstance(pipelines_before, list) else -1})
+              if pipelines_before_code != 200 or pipelines_before:
+                  raise RuntimeError("A pipeline already existed before lower CI write")
+
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/read-ci-variable", timeout=60) as response:
+                  ci_read_trigger_http = response.status
+              if ci_read_trigger_http != 204 or not ci_read_event.exists():
+                  raise RuntimeError("Lower CI variable read did not finish")
+              ci_read = json.loads(ci_read_event.read_text())
+              summary["lower_a_ci_variable_read"] = ci_read
+              if (ci_read["uid"] != 65534 or ci_read["http"] != 200 or
+                      ci_read["project_token_sha256"] != rotation["new_token_sha256"] or
+                      ci_read["value_sha256"] != ci_secret_sha256 or
+                      ci_read["length"] != len(ci_secret)):
+                  raise RuntimeError("Rotated lower token could not read protected A CI variable")
+
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/write-ci-config", timeout=60) as response:
+                  ci_write_trigger_http = response.status
+              if ci_write_trigger_http != 204 or not ci_write_event.exists():
+                  raise RuntimeError("Lower A CI configuration write did not finish")
+              ci_write = json.loads(ci_write_event.read_text())
+              summary["lower_a_ci_config_write"] = ci_write
+              if (ci_write["uid"] != 65534 or ci_write["http"] != 201 or
+                      ci_write["project_token_sha256"] != rotation["new_token_sha256"]):
+                  raise RuntimeError("Rotated lower token did not write A CI configuration")
+              config_code, config_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/"
+                  ".gitlab-ci.yml/raw?ref=main", token=root_token)
+              summary["controls"].append({
+                  "case": "lower_ci_config_root_readback", "http": config_code,
+                  "content_sha256": hashlib.sha256(
+                      str(config_content).encode()).hexdigest()})
+              if (config_code != 200 or
+                      hashlib.sha256(str(config_content).encode()).hexdigest() !=
+                      ci_write["ci_config_sha256"]):
+                  raise RuntimeError("A CI configuration readback did not match lower write")
+
+              pipeline_id = None
+              pipeline_status = None
+              job_record = None
+              for _ in range(150):
+                  pipeline_list_code, pipeline_list = request(
+                      "GET", f"/api/v4/projects/{a['id']}/pipelines?ref=main&per_page=5",
+                      token=root_token)
+                  if pipeline_list_code == 200 and pipeline_list:
+                      pipeline_id = pipeline_list[0]["id"]
+                      pipeline_code, pipeline = request(
+                          "GET", f"/api/v4/projects/{a['id']}/pipelines/{pipeline_id}",
+                          token=root_token)
+                      pipeline_status = pipeline.get("status") if pipeline_code == 200 else None
+                      jobs_code, jobs = request(
+                          "GET", f"/api/v4/projects/{a['id']}/pipelines/{pipeline_id}/jobs",
+                          token=root_token)
+                      if jobs_code == 200:
+                          job_record = next(
+                              (job for job in jobs if job.get("name") == "owned_l108_ci"),
+                              None)
+                      if (pipeline_status == "success" and job_record and
+                              job_record.get("status") == "success" and
+                              ci_variable_event.exists()):
+                          break
+                      if pipeline_status in ("failed", "canceled", "skipped"):
+                          break
+                  time.sleep(2)
+              summary["a_ci_pipeline"] = {
+                  "id": pipeline_id, "status": pipeline_status,
+                  "job_id": job_record.get("id") if job_record else None,
+                  "job_status": job_record.get("status") if job_record else None,
+                  "runner_id": ((job_record.get("runner") or {}).get("id")
+                                if job_record else None)}
+              if (pipeline_status != "success" or not job_record or
+                      job_record.get("status") != "success" or
+                      (job_record.get("runner") or {}).get("id") !=
+                      runner_result["id"] or not ci_variable_event.exists()):
+                  raise RuntimeError("Protected A CI job did not execute on owned runner")
+              ci_variable_received = json.loads(ci_variable_event.read_text())
+              summary["ci_variable_received_by_lower_uid"] = ci_variable_received
+              if (ci_variable_received["uid"] != 65534 or
+                      ci_variable_received["sha256"] != ci_secret_sha256 or
+                      ci_variable_received["length"] != len(ci_secret)):
+                  raise RuntimeError("A CI job did not deliver exact A-only variable to lower UID")
+
+              project_revoke_code, _ = request(
+                  "DELETE", f"/api/v4/projects/{a['id']}/access_tokens/" +
+                  str(rotation["rotated_token_id"]), token=root_token)
+              summary["controls"].append({"case": "retained_project_token_revoked",
+                                          "http": project_revoke_code})
+              if project_revoke_code != 204:
+                  raise RuntimeError("Project token revocation failed")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/after-project-token-revoke", timeout=60) as response:
+                  revoked_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_after_project_token_revoke_trigger",
+                  "http": revoked_trigger_http})
+              if revoked_trigger_http != 204 or not after_token_revoke_event.exists():
+                  raise RuntimeError("Post-token-revocation lower action did not run")
+              after_revoke = json.loads(after_token_revoke_event.read_text())
+              summary["after_project_token_revoke_event"] = after_revoke
+              if (after_revoke["uid"] != 65534 or
+                      after_revoke["project_token_sha256"] !=
+                      rotation["new_token_sha256"] or
+                      after_revoke["gitlab_write_http"] not in (401, 403)):
+                  raise RuntimeError("Revoked project token unexpectedly wrote A")
+              absent_code, _ = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  after_revoke["path"] + "/raw?ref=main", token=root_token)
+              summary["controls"].append({
+                  "case": "revoked_token_write_absent_from_a", "http": absent_code})
+              if absent_code != 404:
+                  raise RuntimeError("Revoked project token file unexpectedly exists")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/read-ci-variable", timeout=60) as response:
+                  ci_read_after_revoke_trigger = response.status
+              ci_read_after_revoke = json.loads(ci_read_event.read_text())
+              summary["controls"].append({
+                  "case": "revoked_lower_token_a_ci_variable_denied",
+                  "trigger_http": ci_read_after_revoke_trigger,
+                  "gitlab_http": ci_read_after_revoke["http"],
+                  "uid": ci_read_after_revoke["uid"]})
+              if (ci_read_after_revoke_trigger != 204 or
+                      ci_read_after_revoke["uid"] != 65534 or
+                      ci_read_after_revoke["project_token_sha256"] !=
+                      rotation["new_token_sha256"] or
+                      ci_read_after_revoke["http"] not in (401, 403)):
+                  raise RuntimeError("Revoked project token still read A-only CI variable")
+              # A-owned workflow and schedule are fixed before the B-only publisher's upload.
+              # The pipeline-source rule excludes push-triggered execution.
+              reset_event = subprocess.run(
+                  ["sudo", "rm", "-f", str(ci_variable_event)],
+                  capture_output=True, text=True, timeout=20)
+              summary["controls"].append({
+                  "case": "trusted_a_resets_prior_lower_ci_event",
+                  "exit": reset_event.returncode,
+                  "event_absent": not ci_variable_event.exists()})
+              if reset_event.returncode or ci_variable_event.exists():
+                  raise RuntimeError("Cannot reset lower-owned CI event before schedule")
+              push("Scheduled", "A", a["id"], root_token)
+              restore("Scheduled", "scheduled_a_only", "A", "A", strict=True)
+              scheduled_a = packages[("Scheduled", "A")][2]
+              scheduled_b = packages[("Scheduled", "B")][2]
+              for marker, package in (("A", scheduled_a), ("B", scheduled_b)):
+                  check = subprocess.run(
+                      ["dotnet", "nuget", "verify", "--all", str(package),
+                       "--configfile", str(verification_config)],
+                      capture_output=True, text=True, timeout=120)
+                  check_text = check.stdout + check.stderr
+                  summary["controls"].append({
+                      "case": "scheduled_direct_verify_" + marker,
+                      "exit": check.returncode, "nu3034": "NU3034" in check_text,
+                      "nu3018": "NU3018" in check_text,
+                      "package_sha256": package_hash(package)})
+                  if (marker == "A" and check.returncode != 0) or (
+                          marker == "B" and (check.returncode == 0 or
+                                             "NU3034" not in check_text)):
+                      raise RuntimeError("Scheduled package signing control failed")
+
+              for key, value, masked in (
+                      ("L108_READER_USER", users["reader"]["username"], False),
+                      ("L108_READER_TOKEN", tokens["reader"], True),
+                      ("L108_OWNED_RECEIVER", "http://127.0.0.1:" +
+                       lower_port.read_text().strip() + "/ci-variable", False)):
+                  code, result = request(
+                      "POST", f"/api/v4/projects/{a['id']}/variables",
+                      {"key": key, "value": value, "protected": True, "masked": masked},
+                      root_token)
+                  summary["controls"].append({"case": "scheduled_a_variable_" + key,
+                                              "http": code, "protected": True})
+                  if code != 201 or result.get("protected") is not True:
+                      raise RuntimeError("A scheduled variable setup failed: " + key)
+
+              scheduled_id = packages[("Scheduled", "A")][0]
+              source_url = base + f"/api/v4/groups/{gid}/-/packages/nuget/index.json"
+              ci_xml = (
+                  '<?xml version="1.0"?><configuration><packageSources><clear/>'
+                  '<add key="ownedgroup" value="' + source_url + '" protocolVersion="3" '
+                  'allowInsecureConnections="true"/></packageSources>'
+                  '<packageSourceCredentials><ownedgroup>'
+                  '<add key="Username" value="$L108_READER_USER"/>'
+                  '<add key="ClearTextPassword" value="$L108_READER_TOKEN"/>'
+                  '</ownedgroup></packageSourceCredentials>' + signer_xml + '</configuration>')
+              scheduled_script = (
+                  "set +x\n"
+                  "cat > NuGet.Config <<'L108EOF'\n" + ci_xml + "\nL108EOF\n"
+                  "sed -i \"s/\\$L108_READER_USER/$L108_READER_USER/g; "
+                  "s/\\$L108_READER_TOKEN/$L108_READER_TOKEN/g\" NuGet.Config\n"
+                  "chmod 600 NuGet.Config\n"
+                  "export DOTNET_CLI_HOME=\"$CI_PROJECT_DIR/.owned-cli\"\n"
+                  "export NUGET_PACKAGES=\"$CI_PROJECT_DIR/.owned-packages\"\n"
+                  "export DOTNET_NUGET_SIGNATURE_VERIFICATION=true\n"
+                  "dotnet tool exec " + scheduled_id +
+                  "@1.0.0 --yes --configfile NuGet.Config --no-http-cache --verbosity minimal\n"
+                  "find .owned-cli .owned-packages -name '*.nupkg' -exec sha256sum {} + 2>/dev/null || true")
+              scheduled_yaml = (
+                  'workflow:\n  rules:\n'
+                  '    - if: \'$CI_PIPELINE_SOURCE == "schedule"\'\n'
+                  '      when: always\n    - when: never\n'
+                  'stages: [witness]\n'
+                  'owned_l108_scheduled:\n  stage: witness\n'
+                  '  tags: [l108-owned-ci-' + suffix + ']\n'
+                  '  script:\n    - ' + json.dumps(scheduled_script) + '\n')
+              config_put_code, config_put = request(
+                  "PUT", f"/api/v4/projects/{a['id']}/repository/files/.gitlab-ci.yml",
+                  {"branch": "main", "content": scheduled_yaml,
+                   "commit_message": "Owned preexisting scheduled tool workflow"}, root_token)
+              summary["controls"].append({"case": "trusted_a_scheduled_ci_config",
+                                          "http": config_put_code,
+                                          "sha256": hashlib.sha256(scheduled_yaml.encode()).hexdigest()})
+              if config_put_code != 200:
+                  raise RuntimeError("A owner could not set scheduled CI config")
+              schedule_code, schedule = request(
+                  "POST", f"/api/v4/projects/{a['id']}/pipeline_schedules",
+                  {"description": "Owned L108 scheduled witness", "ref": "main",
+                   "cron": "* * * * *", "cron_timezone": "UTC", "active": True},
+                  root_token)
+              summary["controls"].append({"case": "trusted_a_schedule_created",
+                                          "http": schedule_code,
+                                          "active": schedule.get("active") if isinstance(schedule, dict) else None})
+              if schedule_code != 201 or schedule.get("active") is not True:
+                  raise RuntimeError("A owner schedule creation failed")
+              if ci_variable_event.exists():
+                  raise RuntimeError("A-only variable reached lower receiver before B scheduled package upload")
+              pre_b_pipeline_code, pre_b_pipelines = request(
+                  "GET", f"/api/v4/projects/{a['id']}/pipelines?per_page=20",
+                  token=root_token)
+              if pre_b_pipeline_code != 200:
+                  raise RuntimeError("Cannot inspect A pre-B pipelines")
+              pre_b_ids = {item["id"] for item in pre_b_pipelines}
+              summary["controls"].append({"case": "pre_b_scheduled_no_secret_event",
+                                          "event_absent": True, "pipeline_count": len(pre_b_pipelines)})
+
+              push("Scheduled", "B", a["id"], tokens["publisher"],
+                   expect_success=False, lower_os=True)
+              push("Scheduled", "B", b["id"], tokens["publisher"], lower_os=True)
+              post_b_pipeline_code, post_b_pipelines = request(
+                  "GET", f"/api/v4/projects/{a['id']}/pipelines?per_page=20",
+                  token=root_token)
+              if post_b_pipeline_code != 200:
+                  raise RuntimeError("Cannot inspect A post-B pipeline baseline")
+              post_b_ids = {item["id"] for item in post_b_pipelines}
+              baseline_ids = pre_b_ids | post_b_ids
+              scheduled_pipeline = None
+              scheduled_job = None
+              scheduled_trace = ""
+              for _ in range(420):
+                  code, pipelines = request(
+                      "GET", f"/api/v4/projects/{a['id']}/pipelines?per_page=20",
+                      token=root_token)
+                  if code == 200:
+                      for entry in pipelines:
+                          if entry["id"] in baseline_ids or entry.get("source") != "schedule":
+                              continue
+                          detail_code, detail = request(
+                              "GET", f"/api/v4/projects/{a['id']}/pipelines/{entry['id']}",
+                              token=root_token)
+                          jobs_code, jobs = request(
+                              "GET", f"/api/v4/projects/{a['id']}/pipelines/{entry['id']}/jobs",
+                              token=root_token)
+                          if detail_code != 200 or jobs_code != 200:
+                              continue
+                          job = next((x for x in jobs if x.get("name") == "owned_l108_scheduled"), None)
+                          if detail.get("status") == "success" and job and job.get("status") == "success":
+                              trace_code, trace = request(
+                                  "GET", f"/api/v4/projects/{a['id']}/jobs/{job['id']}/trace",
+                                  token=root_token)
+                              if trace_code == 200 and "OWNED_SCHEDULED_B" in trace:
+                                  scheduled_pipeline, scheduled_job, scheduled_trace = detail, job, trace
+                                  break
+                          if detail.get("status") in ("failed", "canceled"):
+                              summary["scheduled_failure"] = {
+                                  "pipeline_id": detail.get("id"), "status": detail.get("status"),
+                                  "job_status": job.get("status") if job else None}
+                      if scheduled_pipeline and ci_variable_event.exists():
+                          break
+                  time.sleep(2)
+              summary["scheduled_ci"] = {
+                  "schedule_id": schedule["id"],
+                  "pipeline_id": scheduled_pipeline.get("id") if scheduled_pipeline else None,
+                  "source": scheduled_pipeline.get("source") if scheduled_pipeline else None,
+                  "status": scheduled_pipeline.get("status") if scheduled_pipeline else None,
+                  "job_id": scheduled_job.get("id") if scheduled_job else None,
+                  "runner_id": (scheduled_job.get("runner") or {}).get("id") if scheduled_job else None,
+                  "wrong_author_marker_in_trace": "OWNED_SCHEDULED_B" in scheduled_trace,
+                  "b_archive_sha256_in_trace": package_hash(scheduled_b) in scheduled_trace}
+              if (not scheduled_pipeline or scheduled_pipeline.get("source") != "schedule" or
+                      not scheduled_job or
+                      (scheduled_job.get("runner") or {}).get("id") != runner_result["id"] or
+                      not ci_variable_event.exists()):
+                  raise RuntimeError("Scheduled A protected runner did not execute B tool")
+              scheduled_received = json.loads(ci_variable_event.read_text())
+              summary["scheduled_ci_variable_received_by_lower_uid"] = scheduled_received
+              if (scheduled_received["uid"] != 65534 or
+                      scheduled_received["sha256"] != ci_secret_sha256 or
+                      scheduled_received["length"] != len(ci_secret)):
+                  raise RuntimeError("Scheduled B tool did not deliver protected A CI variable")
+          except Exception as error:
+              redacted = str(error)
+              for secret in [root_token, ci_secret, runner_token, *tokens.values()]:
+                  redacted = redacted.replace(secret, "[masked]")
+              if project_token_file.exists():
+                  lower_token_read = subprocess.run(
+                      ["sudo", "cat", str(project_token_file)],
+                      capture_output=True, text=True, timeout=20)
+                  if lower_token_read.returncode == 0 and lower_token_read.stdout.strip():
+                      redacted = redacted.replace(
+                          lower_token_read.stdout.strip(), "[masked]")
+              summary["error"] = redacted[:800]
+              raise
+          finally:
+              lower_process.terminate()
+              lower_process.wait(timeout=10)
+              out = pathlib.Path("l108-result.json")
+              out.write_text(json.dumps(summary, indent=2) + "\n")
+              print("RESULT_SUMMARY=" + json.dumps(summary, separators=(",", ":")))
+          PY
+
+      - name: Upload redacted registry result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-nuget-protected-ci-result
+          path: l108-result.json
+          if-no-files-found: ignore
+
+      - name: Stop ephemeral GitLab
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force l108-owned-ci-runner >/dev/null 2>&1 || true
+          docker rm --force l108-owned-gitlab >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/l108-root-token"
