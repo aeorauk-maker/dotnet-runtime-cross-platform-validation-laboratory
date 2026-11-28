@@ -1,0 +1,57 @@
+name: rank-14-eop062-gha-service-topology
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - '.github/workflows/rank-14-eop062-gha-service-topology.yml'
+  workflow_dispatch:
+jobs:
+  topology:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      sidecar:
+        image: mcr.microsoft.com/dotnet/sdk:11.0
+        entrypoint: sleep
+        command: infinity
+        options: --user 1001:1001 --cap-drop ALL --security-opt no-new-privileges
+        volumes:
+          - /tmp:/tmp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - name: Check actual service actor authority and endpoint
+        env:
+          SERVICE_ID: ${{ job.services.sidecar.id }}
+        run: |
+          set -euo pipefail
+          test -n "$SERVICE_ID"
+          host_uid=$(id -u)
+          actor_uid=$(docker exec "$SERVICE_ID" id -u)
+          test "$host_uid" = "$actor_uid"
+          echo "HOST_ACTOR_UID_MATCH=$host_uid"
+          test -z "$(docker inspect -f '{{.HostConfig.PidMode}}' "$SERVICE_ID")"
+          echo 'ACTOR_PID_MODE=separate'
+          host_pid_ns=$(readlink /proc/1/ns/pid)
+          actor_pid_ns=$(docker exec "$SERVICE_ID" readlink /proc/1/ns/pid)
+          test "$host_pid_ns" != "$actor_pid_ns"
+          echo 'ACTOR_PID_NAMESPACE_SEPARATE=true'
+          test "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/tmp"}}shared{{end}}{{end}}' "$SERVICE_ID")" = shared
+          marker="/tmp/eop062-r14-${GITHUB_RUN_ID}-service-marker"
+          printf 'host-owned' > "$marker"
+          docker exec -e MARKER="$marker" "$SERVICE_ID" sh -c 'test "$(cat "$MARKER")" = host-owned'
+          docker exec -e MARKER="$marker" "$SERVICE_ID" sh -c 'printf actor-owned > "$MARKER"'
+          test "$(cat "$marker")" = actor-owned
+          rm -f "$marker"
+          echo 'EXACT_TMP_SHARED=read-write'
+          docker exec -e WORKSPACE="$GITHUB_WORKSPACE" "$SERVICE_ID" sh -c '
+            test ! -e "$WORKSPACE/README.md"
+            test ! -e "/proc/1/root$WORKSPACE/README.md"
+            test ! -S /var/run/docker.sock
+            test -z "${GITHUB_TOKEN:-}"
+            echo ACTOR_WORKSPACE_PROCFS_DOCKER_AND_JOB_TOKEN_DENIED
+          '
+          test "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/tmp"}}tmp{{else}}other{{end}} {{end}}' "$SERVICE_ID")" = 'tmp '
+          echo 'SERVICE_ONLY_TMP_MOUNT=true'
+          echo 'RESULT=PASS'
