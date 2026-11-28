@@ -23,4 +23,4 @@ jobs:
         with:
           dotnet-version: 11.0.100
       - name: Run isolated inert NuGet package-publish chain
-        run: python3 runner_nu001_v4.py
+        run: python3 runner_nu001_v5.py
