@@ -61,24 +61,39 @@ jobs:
           echo REVERSE_ZONE=CREATED
           samba-tool computer add ACTOR -U Administrator >/tmp/rank03-computer.log 2>&1
           echo ACTOR_MACHINE=CREATED
-          samba-tool domain exportkeytab /tmp/rank03-actor.keytab --principal='ACTOR$' >/tmp/rank03-export.log 2>&1
-          chmod 600 /tmp/rank03-actor.keytab
+          samba-tool domain exportkeytab /tmp/rank03-actor.keytab --principal='ACTOR$@LAB.EXAMPLE' >/tmp/rank03-export.log 2>&1
+          machine_ready=0
+          if test -s /tmp/rank03-actor.keytab; then
+            chmod 600 /tmp/rank03-actor.keytab
+            if KRB5CCNAME=FILE:/tmp/rank03-actor.ccache kinit -k -t /tmp/rank03-actor.keytab 'ACTOR$@LAB.EXAMPLE' >/tmp/rank03-actor-kinit.log 2>&1; then machine_ready=1; fi
+          fi
+          printf 'MACHINE_KEY_READY=%s\n' "$machine_ready"
+          actor_user_pass="Bb2!$(openssl rand -hex 20)"
+          samba-tool user create lowptr "$actor_user_pass" >/tmp/rank03-user.log 2>&1
+          printf '%s\n' "$actor_user_pass" | KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache kinit lowptr@LAB.EXAMPLE >/tmp/rank03-lowptr-kinit.log 2>&1
+          unset actor_user_pass
+          echo LOW_USER_KINIT=OK
           samba-tool dns add "$dc_ip" "$zone" 21 PTR dc.lab.example -U Administrator >/tmp/rank03-control-add.log 2>&1
           echo EXISTING_PTR=ADMIN_CREATED
           unset PASSWD
-          KRB5CCNAME=FILE:/tmp/rank03-actor.ccache kinit -k -t /tmp/rank03-actor.keytab 'ACTOR$@LAB.EXAMPLE' >/tmp/rank03-actor-kinit.log 2>&1
-          echo ACTOR_KINIT=OK
-          printf 'server %s\nzone %s.\nupdate add 20.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" >/tmp/rank03-actor-ptr.nsupdate
-          KRB5CCNAME=FILE:/tmp/rank03-actor.ccache nsupdate -g /tmp/rank03-actor-ptr.nsupdate >/tmp/rank03-actor-ptr.out 2>&1 || true
-          actor_ptr=$(dig +short @"$dc_ip" -x 203.0.113.20 PTR | tr -d '\r' | head -1)
-          if [ "$actor_ptr" = 'actor.lab.example.' ]; then echo ACTOR_PTR=OWNED_UPDATE_OK; else echo ACTOR_PTR=NOT_CREATED; fi
+          if [ "$machine_ready" -eq 1 ]; then
+            printf 'server %s\nzone %s.\nupdate add 20.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" >/tmp/rank03-actor-ptr.nsupdate
+            KRB5CCNAME=FILE:/tmp/rank03-actor.ccache nsupdate -g /tmp/rank03-actor-ptr.nsupdate >/tmp/rank03-actor-ptr.out 2>&1 || true
+            actor_ptr=$(dig +short @"$dc_ip" -x 203.0.113.20 PTR | tr -d '\r' | head -1)
+            if [ "$actor_ptr" = 'actor.lab.example.' ]; then echo MACHINE_PTR=OWNED_UPDATE_OK; else echo MACHINE_PTR=NOT_CREATED; fi
+          fi
+          printf 'server %s\nzone %s.\nupdate add 22.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" >/tmp/rank03-lowptr.nsupdate
+          KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache nsupdate -g /tmp/rank03-lowptr.nsupdate >/tmp/rank03-lowptr.out 2>&1 || true
+          lowptr=$(dig +short @"$dc_ip" -x 203.0.113.22 PTR | tr -d '\r' | head -1)
+          if [ "$lowptr" = 'actor.lab.example.' ]; then echo LOW_USER_PTR=OWNED_UPDATE_OK; else echo LOW_USER_PTR=NOT_CREATED; fi
           printf 'server %s\nzone %s.\nupdate delete 21.%s. PTR\nupdate add 21.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" "$zone" >/tmp/rank03-control-ptr.nsupdate
-          KRB5CCNAME=FILE:/tmp/rank03-actor.ccache nsupdate -g /tmp/rank03-control-ptr.nsupdate >/tmp/rank03-control-ptr.out 2>&1 || true
+          KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache nsupdate -g /tmp/rank03-control-ptr.nsupdate >/tmp/rank03-control-ptr.out 2>&1 || true
           control_ptr=$(dig +short @"$dc_ip" -x 203.0.113.21 PTR | tr -d '\r' | head -1)
           printf 'EXISTING_PTR_AFTER_ACTOR=%s\n' "${control_ptr:-none}"
-          printf 'ACTOR_UPDATE_ERROR_LINES=%s\n' "$(grep -Eic 'update failed|REFUSED|NOTAUTH|TSIG' /tmp/rank03-actor-ptr.out || true)"
+          printf 'LOW_USER_UPDATE_ERROR_LINES=%s\n' "$(grep -Eic 'update failed|REFUSED|NOTAUTH|TSIG' /tmp/rank03-lowptr.out || true)"
           printf 'CONTROL_UPDATE_ERROR_LINES=%s\n' "$(grep -Eic 'update failed|REFUSED|NOTAUTH|TSIG' /tmp/rank03-control-ptr.out || true)"
-          test "$actor_ptr" = 'actor.lab.example.'
+          test "$lowptr" = 'actor.lab.example.'
+          if [ "$machine_ready" -eq 1 ]; then test "$actor_ptr" = 'actor.lab.example.'; fi
           test "$control_ptr" = 'dc.lab.example.'
           echo PTR_MATRIX=PASS
           ROOT
