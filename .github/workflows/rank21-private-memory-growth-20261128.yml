@@ -1,0 +1,86 @@
+name: Rank 21 sealed memory growth
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-fd-capacity-20261128
+    paths:
+      - .github/workflows/rank21-private-memory-growth-20261128.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Restore isolated encrypted fixture
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_KEY"
+          mkdir -p "$RUNNER_TEMP/pa30-r21"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v12-accept-progress-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' '722a7ebfd55c7841654f4422512709e70c1f5ee2ba878e44af60f53716bfd2ff' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
+      - name: Measure stock server during external socket schedule
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pa30-r21"
+          mkdir -p docker-context
+          cat > docker-context/Dockerfile <<'DOCKER'
+          FROM mcr.microsoft.com/dotnet/aspnet:11.0
+          USER root
+          RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 lsof >/dev/null && rm -rf /var/lib/apt/lists/*
+          DOCKER
+          docker build -q -t pa30-r21-external:local docker-context > docker-image.txt
+          docker run --rm pa30-r21-external:local dotnet --list-runtimes > container_runtime.txt
+          ( while true; do
+              cid="$(docker ps --filter 'name=^/pa30-r21-' --format '{{.ID}}' | head -n 1)"
+              if test -n "$cid"; then
+                pid="$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true)"
+                if test -n "$pid" && test -r "/proc/$pid/status"; then
+                  printf '%s pid=%s ' "$(date +%s.%N)" "$pid"
+                  awk '/^(VmRSS|VmSize|VmPeak|VmHWM|Threads):/ {printf "%s=%s%s ", $1,$2,$3} END {print ""}' "/proc/$pid/status" || true
+                  awk '/^MemAvailable:/ {print "host_MemAvailable_kB=" $2}' /proc/meminfo
+                fi
+              fi
+              sleep 0.5
+            done ) > memory_progress.txt 2>/dev/null &
+          monitor_pid=$!
+          set +e
+          L054_DOCKER_HOST=1 L054_DOCKER_IMAGE=pa30-r21-external:local python3 private_entry.py
+          result=$?
+          set -e
+          kill "$monitor_pid" 2>/dev/null || true
+          wait "$monitor_pid" 2>/dev/null || true
+          exit "$result"
+      - name: Seal detailed evidence
+        if: always()
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pa30-r21"
+          tar -czf private-evidence.tar.gz --ignore-failed-read status.txt build.log run.stdout container_runtime.txt memory_progress.txt socket_evidence evidence 2>/dev/null || true
+          test -s private-evidence.tar.gz
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in private-evidence.tar.gz -out "$GITHUB_WORKSPACE/pa30-r21-memory-evidence.enc" -pass env:PRIVATE_KEY
+          rm -f private-evidence.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pa30-r21-sealed-memory-evidence
+          path: pa30-r21-memory-evidence.enc
+          retention-days: 1
+      - name: Check validation result
+        if: always()
+        shell: bash
+        run: |
+          test "$(cat "$RUNNER_TEMP/pa30-r21/status.txt")" = pass
