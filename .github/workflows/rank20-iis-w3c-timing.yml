@@ -101,6 +101,51 @@ jobs:
             Write-Host "first_seen_after_request_count=$seenAtRequest"
             Write-Host "first_seen_elapsed_ms=$seenAtMs"
             Write-Host "log_file_count=$(@(Get-ChildItem -Path "$env:SystemDrive\inetpub\logs\LogFiles" -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue).Count)"
+            $naturalFull = $false
+            $naturalElapsedMs = -1
+            for ($k = 0; $k -lt 150; $k++) {
+              $files = @(Get-ChildItem -Path "$env:SystemDrive\inetpub\logs\LogFiles" -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue)
+              foreach ($file in $files) {
+                $lines = @(Get-Content -Path $file.FullName -ErrorAction SilentlyContinue)
+                if ($lines -match [regex]::Escape($query)) {
+                  $naturalFull = $true
+                  $naturalElapsedMs = $start.ElapsedMilliseconds
+                  break
+                }
+              }
+              if ($naturalFull) { break }
+              Start-Sleep -Seconds 1
+            }
+            Write-Host "full_query_visible_without_site_stop=$naturalFull"
+            Write-Host "natural_full_query_elapsed_ms=$naturalElapsedMs"
+            if ($naturalFull) {
+              $readerName = 'rank20reader'
+              $readerPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+              $securePassword = ConvertTo-SecureString $readerPassword -AsPlainText -Force
+              New-LocalUser -Name $readerName -Password $securePassword | Out-Null
+              $credential = [pscredential]::new(".\$readerName", $securePassword)
+              $actorScript = 'C:\Users\Public\Documents\rank20-reader.ps1'
+              $actorOutput = 'C:\Users\Public\Documents\rank20-reader.out'
+              @'
+          $ErrorActionPreference = 'Stop'
+          $q = 'access_token=' + ('A' * 284)
+          $found = $false
+          $fs = @(Get-ChildItem -Path 'C:\inetpub\logs\LogFiles' -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue)
+          foreach ($f in $fs) {
+            $ls = @(Get-Content -Path $f.FullName -ErrorAction SilentlyContinue)
+            if ($ls -match [regex]::Escape($q)) { $found = $true; break }
+          }
+          Write-Output "actor_full_query_visible=$found"
+          '@ | Set-Content -Path $actorScript
+              try {
+                $actor = Start-Process -FilePath "$PSHOME\pwsh.exe" -ArgumentList @('-NoProfile','-File',$actorScript) -Credential $credential -Wait -PassThru -RedirectStandardOutput $actorOutput
+                Write-Host "actor_exit_code=$($actor.ExitCode)"
+                $actorLines = @(Get-Content -Path $actorOutput -ErrorAction SilentlyContinue)
+                foreach ($line in $actorLines) {
+                  if ($line -match '^actor_full_query_visible=(True|False)$') { Write-Host $line }
+                }
+              } catch { Write-Host "actor_start_error_type=$($_.Exception.GetType().Name)" }
+            }
             Stop-Website -Name $siteName
             Start-Sleep -Seconds 3
             $files = @(Get-ChildItem -Path "$env:SystemDrive\inetpub\logs\LogFiles" -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue)
