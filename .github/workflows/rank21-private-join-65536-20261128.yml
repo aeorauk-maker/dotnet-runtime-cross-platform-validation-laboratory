@@ -1,4 +1,4 @@
-name: Rank 21 targeted FD headroom
+name: Rank 21 estimated FD headroom
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - pa30-rank21-l054-fd-capacity-20261128
     paths:
       - .github/workflows/rank21-private-join-65536-20261128.yml
-      - rank21-lab-v21-native-targeted-headroom-20261128.enc
+      - rank21-lab-v22-native-estimated-headroom-20261128.enc
   workflow_dispatch:
 
 permissions:
@@ -30,8 +30,8 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_KEY"
           mkdir -p "$RUNNER_TEMP/pa30-r21"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v21-native-targeted-headroom-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
-          printf '%s  %s\n' '9e23148d73545642621c1bd28173ff75ca1ec19e695c1b65b91844b7a0cad632' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v22-native-estimated-headroom-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' '55a6ee80dd67f81f9352d95280672adcc3ea1b4ff6768db0465ba95f09146c44' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
           unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
 
       - name: Build and run isolated validation
