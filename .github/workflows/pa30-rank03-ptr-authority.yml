@@ -20,7 +20,10 @@ jobs:
           systemctl stop samba-ad-dc smbd nmbd winbind >/dev/null 2>&1 || true
           dc_ip=$(hostname -I | awk '{print $1}')
           test -n "$dc_ip"
+          dc_iface=$(ip -o -4 addr show | awk -v ip="$dc_ip" '{split($4,a,"/"); if (a[1] == ip) {print $2; exit}}')
+          test -n "$dc_iface"
           printf 'DC_IP=%s\n' "$dc_ip"
+          printf 'DC_INTERFACE=%s\n' "$dc_iface"
           pass="Aa1!$(openssl rand -hex 20)"
           printf '%s' "$pass" >/tmp/rank03-admin-pass
           chmod 600 /tmp/rank03-admin-pass
@@ -32,7 +35,7 @@ jobs:
             grep -Ei 'error|exception|failed' /tmp/rank03-provision.log | tail -8 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
             exit 2
           fi
-          sed -i '/^\[global\]/a interfaces = eth0' /etc/samba/smb.conf
+          sed -i "/^\[global\]/a interfaces = $dc_iface" /etc/samba/smb.conf
           sed -i '/^\[global\]/a bind interfaces only = yes' /etc/samba/smb.conf
           sed -i '/^\[global\]/a server services = -s3fs, -winbindd' /etc/samba/smb.conf
           printf '[libdefaults]\n default_realm = LAB.EXAMPLE\n dns_lookup_kdc = false\n[realms]\n LAB.EXAMPLE = {\n  kdc = %s\n }\n' "$dc_ip" >/tmp/rank03-krb5.conf
