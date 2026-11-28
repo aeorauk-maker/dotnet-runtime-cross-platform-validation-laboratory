@@ -1,0 +1,25 @@
+name: Rank 14 EOP062 Windows Low-file actor publish rollback
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-roslyn-windows-lowfile-publish.ps1
+      - .github/workflows/rank-14-eop062-windows-lowfile-publish.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-lowfile-publish-join:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test Low-file actor false success in one-call ASP.NET Core publish
+        shell: pwsh
+        run: .\eop062-roslyn-windows-lowfile-publish.ps1
