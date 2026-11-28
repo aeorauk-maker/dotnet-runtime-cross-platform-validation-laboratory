@@ -570,6 +570,23 @@ try {
 $ErrorActionPreference = 'Stop'
 $log = '__LOG__'
 function Record([string]$value) { [System.IO.File]::AppendAllText($log, "$value`n") }
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class LowSelfNative {
+    [StructLayout(LayoutKind.Sequential)] public struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] public struct MandatoryLabel { public SidAndAttributes Label; }
+    [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool ConvertStringSidToSid(string sid, out IntPtr output);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern uint GetLengthSid(IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool SetTokenInformation(IntPtr token, int infoClass, IntPtr label, int length);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr buffer, int length, out int returnLength);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool EqualSid(IntPtr a, IntPtr b);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr handle);
+}
+"@
 function ReadExact($stream, [int]$size) {
     $buffer = [byte[]]::new($size)
     $offset = 0
@@ -581,6 +598,34 @@ function ReadExact($stream, [int]$size) {
     return ,$buffer
 }
 try {
+    $ownToken = [IntPtr]::Zero
+    $lowSid = [IntPtr]::Zero
+    $labelBuffer = [IntPtr]::Zero
+    $ilBuffer = [IntPtr]::Zero
+    try {
+        if (-not [LowSelfNative]::OpenProcessToken([LowSelfNative]::GetCurrentProcess(), 0x88, [ref]$ownToken)) { throw "Self token open failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+        if (-not [LowSelfNative]::ConvertStringSidToSid('S-1-16-4096', [ref]$lowSid)) { throw 'Low SID conversion failed' }
+        $headerLength = [Runtime.InteropServices.Marshal]::SizeOf([type][LowSelfNative+MandatoryLabel])
+        $labelLength = $headerLength + [int][LowSelfNative]::GetLengthSid($lowSid)
+        $labelBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($labelLength)
+        $entry = [LowSelfNative+MandatoryLabel]::new()
+        $entry.Label.Sid = $lowSid
+        $entry.Label.Attributes = 0x20
+        [Runtime.InteropServices.Marshal]::StructureToPtr($entry, $labelBuffer, $false)
+        if (-not [LowSelfNative]::SetTokenInformation($ownToken, 25, $labelBuffer, $labelLength)) { throw "Self low downgrade failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+        $ilNeeded = 0
+        [void][LowSelfNative]::GetTokenInformation($ownToken, 25, [IntPtr]::Zero, 0, [ref]$ilNeeded)
+        $ilBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($ilNeeded)
+        if (-not [LowSelfNative]::GetTokenInformation($ownToken, 25, $ilBuffer, $ilNeeded, [ref]$ilNeeded)) { throw 'Self low verification query failed' }
+        $ilEntry = [Runtime.InteropServices.Marshal]::PtrToStructure($ilBuffer, [type][LowSelfNative+MandatoryLabel])
+        if (-not [LowSelfNative]::EqualSid($ilEntry.Label.Sid, $lowSid)) { throw 'Self token did not become Low IL' }
+        Record 'LOW_SELF_DOWNGRADE=VERIFIED'
+    } finally {
+        if ($ilBuffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($ilBuffer) }
+        if ($labelBuffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($labelBuffer) }
+        if ($lowSid -ne [IntPtr]::Zero) { [void][LowSelfNative]::LocalFree($lowSid) }
+        if ($ownToken -ne [IntPtr]::Zero) { [void][LowSelfNative]::CloseHandle($ownToken) }
+    }
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     Record "LOW_OWNER=$($identity.Owner.Value) LOW_USER=$($identity.User.Value)"
     try {
@@ -624,18 +669,12 @@ try {
     [System.IO.File]::WriteAllText($actorScript, $actorContent)
     $actorCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$actorScript`"")
     $roslynActorProc = [MicNative+ProcessInfo]::new()
-    $actorLaunched = [MicNative]::CreateProcessAsUserW($standardLow, $pwshExe, $actorCommand,
-        [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero,
-        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)
-    if (-not $actorLaunched) {
-        $asUserError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        Write-Host "STANDARD_LOW_CREATE_AS_USER_ERROR=$asUserError"
-        $actorCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$actorScript`"")
-        $actorLaunched = [MicNative]::CreateProcessWithTokenW($standardLow, 0, $pwshExe, $actorCommand,
-            0, [IntPtr]::Zero, (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)
-        if (-not $actorLaunched) { throw "Standard low actor launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-        Write-Host 'STANDARD_LOW_LAUNCH=CreateProcessWithTokenW'
-    } else { Write-Host 'STANDARD_LOW_LAUNCH=CreateProcessAsUserW' }
+    if (-not [MicNative]::CreateProcessWithLogonW($testUser, '.', $testPassword,
+        1, $pwshExe, $actorCommand, 0, [IntPtr]::Zero,
+        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)) {
+        throw "Standard actor logon launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    Write-Host 'STANDARD_LOW_LAUNCH=CreateProcessWithLogonW_then_self_downgrade'
     $actorReady = $false
     for ($attempt = 0; $attempt -lt 150; $attempt++) {
         $actorState = [System.IO.File]::ReadAllText($actorResult)
