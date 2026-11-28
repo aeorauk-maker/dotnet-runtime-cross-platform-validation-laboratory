@@ -1,0 +1,25 @@
+name: Rank 14 EOP062 Windows automatic run reverse schedule
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-roslyn-windows-lowfile-run-reverse.ps1
+      - .github/workflows/rank-14-eop062-windows-lowfile-run-reverse.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-lowfile-run-reverse:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test builder-first then attacker-first automatic ASP.NET Core run
+        shell: pwsh
+        run: .\eop062-roslyn-windows-lowfile-run-reverse.ps1
