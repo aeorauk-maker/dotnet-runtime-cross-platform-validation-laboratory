@@ -119,11 +119,16 @@ jobs:
           make_request denied forbidden.test forbidden.test
           
           openssl verify -CAfile root.pem -untrusted issuer.pem allowed-issued.pem
-          openssl verify -CAfile root.pem -untrusted issuer.pem attack-issued.pem
+          if openssl verify -CAfile root.pem -untrusted issuer.pem attack-issued.pem; then
+            echo 'A31_LINUX_OPENSSL_ATTACK_CHAIN_ACCEPTED'
+          else
+            echo 'A31_LINUX_OPENSSL_ATTACK_CHAIN_DENIED'
+          fi
           if openssl verify -CAfile root.pem -untrusted issuer.pem denied-issued.pem; then
             echo 'A31_UNEXPECTED_FORBIDDEN_SAN_CHAIN_VALID'
             exit 1
           fi
+          echo 'A31_LINUX_OPENSSL_FORBIDDEN_SAN_CHAIN_DENIED'
           if openssl x509 -in attack-issued.pem -noout -text | grep -q 'X509v3 Subject Alternative Name'; then
             echo 'A31_UNEXPECTED_ATTACK_SAN'
             exit 1
