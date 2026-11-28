@@ -1,4 +1,4 @@
-name: Rank 21 sealed memory growth
+name: Rank 21 trigger-before-snapshot join
 on:
   push:
     branches:
@@ -25,8 +25,8 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_KEY"
           mkdir -p "$RUNNER_TEMP/pa30-r21"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v12-accept-progress-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
-          printf '%s  %s\n' '722a7ebfd55c7841654f4422512709e70c1f5ee2ba878e44af60f53716bfd2ff' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v14-trigger-before-lsof-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' 'b0f0bfc3e6da3524f1edb079fa9457dd302270405b53cf3b42da6af3e6340933' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
           unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
       - name: Measure stock server during external socket schedule
         shell: bash
