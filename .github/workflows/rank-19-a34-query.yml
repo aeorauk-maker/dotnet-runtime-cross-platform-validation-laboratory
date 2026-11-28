@@ -50,7 +50,6 @@ jobs:
             $env:A34_TEST_IP = $ip
             $env:A34_SCOPE_1 = [string]$ids[0]
             $env:A34_SCOPE_2 = [string]$ids[1]
-            $env:DOTNET_ROLL_FORWARD = 'Disable'
             foreach ($tfm in @('net10.0', 'net11.0')) {
               $dll = Join-Path $state "bin/Release/$tfm/a34lab.dll"
               $log = Join-Path $state "$tfm.log"
