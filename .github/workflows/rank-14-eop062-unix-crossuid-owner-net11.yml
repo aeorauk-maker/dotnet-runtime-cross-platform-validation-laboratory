@@ -1,0 +1,18 @@
+name: Rank 14 EOP062 Unix cross-UID pipe owner control
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - 'eop062-unix-crossuid-owner-net11.sh'
+      - '.github/workflows/rank-14-eop062-unix-crossuid-owner-net11.yml'
+jobs:
+  unix-owner-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - name: Test two-UID released runtime owner check
+        run: bash ./eop062-unix-crossuid-owner-net11.sh
