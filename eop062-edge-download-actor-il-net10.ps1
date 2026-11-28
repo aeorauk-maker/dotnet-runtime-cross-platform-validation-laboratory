@@ -44,6 +44,11 @@ catch (Exception e) { Console.WriteLine($"PIPE_CREATE_OR_CONNECT=DENIED TYPE={e.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+if (process.argv[4]) {
+  process.env.USERPROFILE = process.argv[4];
+  process.env.LOCALAPPDATA = path.join(process.argv[4], 'AppData', 'Local');
+  process.env.APPDATA = path.join(process.argv[4], 'AppData', 'Roaming');
+}
 process.env.TEMP = path.dirname(process.argv[3]);
 process.env.TMP = process.env.TEMP;
 const { chromium } = require('playwright');
@@ -66,11 +71,11 @@ server.listen(0,'127.0.0.1',async () => {
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     const [download] = await Promise.all([page.waitForEvent('download',{timeout:20000}),page.getByText('Download').click()]);
-    const path = await download.path();
-    fs.renameSync(path,target);
+    const savedPath = await download.path();
+    fs.renameSync(savedPath,target);
     console.log(`EDGE_DOWNLOAD=COMPLETE SUGGESTED=${download.suggestedFilename()}`);
   } catch (e) {
-    console.log(`EDGE_DOWNLOAD=FAILED TYPE=${e.name} MESSAGE=${String(e.message).split('\n')[0]}`);
+    console.log(`EDGE_DOWNLOAD=FAILED TYPE=${e.name} MESSAGE=${String(e.message).replace(/\r?\n/g,' | ').slice(0,2500)}`);
     process.exitCode = 2;
   } finally {
     if (browser) await browser.close();
@@ -141,6 +146,7 @@ $stdPass = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerato
 if ($LASTEXITCODE -ne 0) { throw 'Standard account creation failed' }
 try {
     $stdIdentity = "$env:COMPUTERNAME\$stdName"
+    $stdProfile = Join-Path $env:SystemDrive "Users\$stdName"
     $stdSecure = ConvertTo-SecureString $stdPass -AsPlainText -Force
     $stdCredential = [pscredential]::new($stdIdentity, $stdSecure)
     & icacls.exe $lab /grant "${stdIdentity}:(OI)(CI)M" | Out-Null
@@ -151,7 +157,7 @@ try {
     $stdNodeOut = Join-Path $lab 'standard-node-out.txt'
     $stdNodeErr = Join-Path $lab 'standard-node-err.txt'
     $nodeExe = (Get-Command node.exe).Source
-    $nodeProcess = Start-Process -FilePath $nodeExe -Credential $stdCredential -ArgumentList @($nodeSource, $original, $stdDownloaded) -RedirectStandardOutput $stdNodeOut -RedirectStandardError $stdNodeErr -PassThru -Wait
+    $nodeProcess = Start-Process -FilePath $nodeExe -Credential $stdCredential -LoadUserProfile -ArgumentList @($nodeSource, $original, $stdDownloaded, $stdProfile) -RedirectStandardOutput $stdNodeOut -RedirectStandardError $stdNodeErr -PassThru -Wait
     Write-Host "STANDARD_EDGE_EXIT=$($nodeProcess.ExitCode) NODE_OUT=$(([IO.File]::ReadAllText($stdNodeOut)).Trim()) NODE_ERR=$(([IO.File]::ReadAllText($stdNodeErr)).Trim())"
     if ($nodeProcess.ExitCode -ne 0 -or -not (Test-Path $stdDownloaded)) { Write-Host 'STANDARD_EDGE_DOWNLOAD_UNAVAILABLE'; exit 0 }
     $stdHashEqual = ((Get-FileHash $stdDownloaded -Algorithm SHA256).Hash -eq $originalHash)
@@ -172,7 +178,7 @@ try {
         } catch { 'HOST_CONNECT=NO TYPE=' + $_.Exception.GetType().Name }
     }
     try {
-        $stdActor = Start-Process -FilePath $stdDownloaded -Credential $stdCredential -ArgumentList @($protected, $stdPipe) -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr -PassThru -Wait
+        $stdActor = Start-Process -FilePath $stdDownloaded -Credential $stdCredential -LoadUserProfile -ArgumentList @($protected, $stdPipe) -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr -PassThru -Wait
         $stdHost = Receive-Job $hostJob -Wait
         $stdText = ([IO.File]::ReadAllText($stdOut)).Trim() -replace "`r?`n", ';'
         $stdErrorText = ([IO.File]::ReadAllText($stdErr)).Trim() -replace "`r?`n", ';'
