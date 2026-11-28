@@ -1,0 +1,89 @@
+name: Identity token lifecycle control
+on:
+  workflow_dispatch:
+
+jobs:
+  identity-token-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install released SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Verify stock Identity token order
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p identity-token-lifecycle
+          cd identity-token-lifecycle
+          cat > IdentityTokenLifecycle.csproj <<'CSPROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net11.0</TargetFramework>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <FrameworkReference Include="Microsoft.AspNetCore.App" />
+              <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="11.0.0" />
+              <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="11.0.0" />
+            </ItemGroup>
+          </Project>
+          CSPROJ
+          cat > Program.cs <<'CS'
+          using Microsoft.AspNetCore.Identity;
+          using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+          using Microsoft.EntityFrameworkCore;
+          using Microsoft.Extensions.DependencyInjection;
+          
+          var services = new ServiceCollection();
+          services.AddLogging();
+          services.AddDataProtection();
+          services.AddDbContext<LabDb>(options => options.UseInMemoryDatabase("identity-token-lifecycle"));
+          services.AddIdentityCore<IdentityUser>()
+              .AddEntityFrameworkStores<LabDb>()
+              .AddDefaultTokenProviders();
+          
+          using var provider = services.BuildServiceProvider();
+          await using var scope = provider.CreateAsyncScope();
+          var users = scope.ServiceProvider.GetRequiredService<UserManager<IdentityUser>>();
+          var db = scope.ServiceProvider.GetRequiredService<LabDb>();
+          await db.Database.EnsureCreatedAsync();
+          
+          static void Require(bool value, string label)
+          {
+              if (!value) throw new InvalidOperationException(label);
+              Console.WriteLine("PASS " + label);
+          }
+          
+          static void RequireSuccess(IdentityResult result, string label)
+              => Require(result.Succeeded, label);
+          
+          var user = new IdentityUser("owned@lab.test") { Email = "owned@lab.test", EmailConfirmed = true };
+          RequireSuccess(await users.CreateAsync(user, "Original!12345"), "owned-user-created");
+          RequireSuccess(await users.SetTwoFactorEnabledAsync(user, true), "two-factor-enabled");
+          var stampBefore = await users.GetSecurityStampAsync(user);
+          var token = await users.GeneratePasswordResetTokenAsync(user);
+          var codes = (await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 10))?.ToArray();
+          Require(codes is { Length: 10 }, "recovery-codes-generated");
+          Require(stampBefore == await users.GetSecurityStampAsync(user), "recovery-generation-preserved-security-stamp");
+          RequireSuccess(await users.ResetPasswordAsync(user, token, "Changed!23456"), "preexisting-reset-token-survived-recovery-generation");
+          Require(stampBefore != await users.GetSecurityStampAsync(user), "password-reset-rotated-security-stamp");
+          Require(await users.CheckPasswordAsync(user, "Changed!23456"), "new-password-valid");
+          Require(!await users.CheckPasswordAsync(user, "Original!12345"), "old-password-invalid");
+          RequireSuccess(await users.RedeemTwoFactorRecoveryCodeAsync(user, codes![0]), "new-code-survived-password-reset");
+          Require(!(await users.RedeemTwoFactorRecoveryCodeAsync(user, codes[0])).Succeeded, "recovery-code-single-use");
+          
+          var reverse = new IdentityUser("reverse@lab.test") { Email = "reverse@lab.test", EmailConfirmed = true };
+          RequireSuccess(await users.CreateAsync(reverse, "Original!12345"), "reverse-user-created");
+          var staleToken = await users.GeneratePasswordResetTokenAsync(reverse);
+          RequireSuccess(await users.SetTwoFactorEnabledAsync(reverse, true), "reverse-two-factor-enabled");
+          Require(!(await users.ResetPasswordAsync(reverse, staleToken, "Changed!23456")).Succeeded,
+              "stamp-change-rejected-earlier-reset-token");
+          
+          public sealed class LabDb(DbContextOptions<LabDb> options) : IdentityDbContext<IdentityUser>(options)
+          {
+          }
+          CS
+          dotnet run --configuration Release
