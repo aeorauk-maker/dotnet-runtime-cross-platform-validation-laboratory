@@ -1,0 +1,83 @@
+name: Rank 20 IIS W3C timing discriminator
+
+on:
+  push:
+    branches:
+      - rank20-iis-w3c-timing-20261128
+
+permissions:
+  contents: read
+
+jobs:
+  iis-default-log:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Test default query logging and post-response visibility
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $features = @(Get-WindowsFeature -Name Web-Server,Web-Scripting-Tools)
+          $missing = @($features | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name })
+          if ($missing.Count -gt 0) {
+            $install = Install-WindowsFeature -Name $missing -IncludeManagementTools
+            if (-not $install.Success -or $install.RestartNeeded -ne 'No') {
+              throw "IIS feature installation did not complete without restart"
+            }
+          }
+          Import-Module WebAdministration
+          $siteName = 'Rank20IisW3cTiming'
+          $port = 38421
+          $root = Join-Path $env:RUNNER_TEMP 'rank20-iis-w3c-timing'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Set-Content -Path (Join-Path $root 'index.html') -Value 'owned inert IIS log timing fixture'
+          New-Website -Name $siteName -PhysicalPath $root -Port $port -IPAddress '127.0.0.1' | Out-Null
+          $site = Get-Website -Name $siteName
+          $siteId = [int]$site.Id
+          $logDir = "C:\inetpub\logs\LogFiles\W3SVC$siteId"
+          $defaultLog = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name '.'
+          $flags = [string]$defaultLog.logExtFileFlags
+          Write-Host "default_logging_enabled=$($defaultLog.enabled)"
+          Write-Host "default_query_field=$($flags -match 'UriQuery')"
+          Write-Host "default_cookie_field=$($flags -match 'Cookie')"
+          $token = ('A' * 284)
+          $query = "access_token=$token"
+          $url = "http://127.0.0.1:$port/index.html?$query"
+          $start = [System.Diagnostics.Stopwatch]::StartNew()
+          $response = Invoke-WebRequest -Uri $url -UseBasicParsing
+          Write-Host "victim_status=$([int]$response.StatusCode)"
+          $visible = $false
+          $full = $false
+          $elapsedMs = -1
+          for ($i = 0; $i -lt 150; $i++) {
+            $files = @(Get-ChildItem -Path $logDir -Filter '*.log' -File -ErrorAction SilentlyContinue)
+            foreach ($file in $files) {
+              $lines = @(Get-Content -Path $file.FullName -ErrorAction SilentlyContinue)
+              if ($lines -match 'index\.html') {
+                $visible = $true
+                if ($lines -match [regex]::Escape($query)) {
+                  $full = $true
+                  $elapsedMs = $start.ElapsedMilliseconds
+                  break
+                }
+              }
+            }
+            if ($full) { break }
+            Start-Sleep -Milliseconds 200
+          }
+          Write-Host "row_visible_within_30s=$visible"
+          Write-Host "full_query_visible_within_30s=$full"
+          Write-Host "full_query_elapsed_ms=$elapsedMs"
+          if (-not $full) {
+            Stop-Website -Name $siteName
+            Start-Sleep -Seconds 2
+            $files = @(Get-ChildItem -Path $logDir -Filter '*.log' -File -ErrorAction SilentlyContinue)
+            $afterStop = $false
+            foreach ($file in $files) {
+              $lines = @(Get-Content -Path $file.FullName -ErrorAction SilentlyContinue)
+              if ($lines -match [regex]::Escape($query)) { $afterStop = $true; break }
+            }
+            Write-Host "full_query_after_site_stop=$afterStop"
+          }
+          if ([int]$response.StatusCode -ne 200) { throw "Static victim request failed" }
+          if (-not ($flags -match 'UriQuery')) { throw "Default query field was absent" }
