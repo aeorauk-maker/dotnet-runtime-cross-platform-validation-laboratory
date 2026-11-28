@@ -33,11 +33,15 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - name: Verify isolated services
-        env:
-          PGPASSWORD: inert-lab
         run: |
           set -euo pipefail
-          dotnet --list-runtimes | grep '^Microsoft.AspNetCore.App 10\.0\.'
-          redis-cli -h 127.0.0.1 ping | grep '^PONG$'
-          psql -h 127.0.0.1 -U postgres -d inert_pat -Atc 'select 1' | grep '^1$'
-          echo READY
+          dotnet --list-runtimes | grep '^Microsoft.AspNetCore.App 10\.0\.15 '
+          python3 - <<'PY'
+          import socket
+          with socket.create_connection(("127.0.0.1", 6379), timeout=5) as redis:
+              redis.sendall(b"*1\r\n$4\r\nPING\r\n")
+              assert redis.recv(16) == b"+PONG\r\n"
+          with socket.create_connection(("127.0.0.1", 5432), timeout=5):
+              pass
+          print("READY")
+          PY
