@@ -243,10 +243,10 @@ jobs:
             openssl req -new -sha256 -key actor-leaf.key -subj '/CN=forbidden.test' -addext 'subjectAltName=DNS:forbidden.test' -out denied.csr; openssl x509 -req -sha256 -in denied.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out denied-issued.pem -extfile <(echo 'basicConstraints=critical,CA:FALSE'; echo 'keyUsage=critical,digitalSignature'; echo 'extendedKeyUsage=serverAuth'; echo 'subjectAltName=DNS:forbidden.test'); echo 'A31_ADMIN_SIGNED_FORBIDDEN_SAN_TLS_NEGATIVE'
 
           else
-            make_request attack forbidden.test '' Denied
-            make_request denied forbidden.test forbidden.test Denied
+            make_request attack forbidden.test '' CreatedOnly
+            make_request denied forbidden.test forbidden.test CreatedOnly
             
-            echo 'A31_STRICT_POLICY_NO_USE_DEFAULT_APPROVER_OFF_DENIAL_PASS'
+            sleep 15; for label in attack denied; do kubectl -n a31-tenant get certificaterequest "a31-$label" -o json | python3 -c 'import json,sys; s=json.load(sys.stdin).get("status",{}); c=s.get("conditions",[]); assert not s.get("certificate"); assert not any(x.get("type") in ("Approved","Denied") and x.get("status")=="True" for x in c)' ; done; echo 'A31_NO_POLICY_USE_AUTO_OFF_PENDING_NO_CERT_PASS'
           fi
 
           openssl req -new -sha256 -key actor-leaf.key -subj '/CN=allowed.test' -addext 'subjectAltName=DNS:allowed.test' -out allowed.csr; openssl x509 -req -sha256 -in allowed.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out allowed-issued.pem -extfile <(echo 'basicConstraints=critical,CA:FALSE'; echo 'keyUsage=critical,digitalSignature'; echo 'extendedKeyUsage=serverAuth'; echo 'subjectAltName=DNS:allowed.test'); echo 'A31_ADMIN_SIGNED_ALLOWED_SAN_TLS_POSITIVE'; openssl verify -CAfile root.pem -untrusted issuer.pem allowed-issued.pem
