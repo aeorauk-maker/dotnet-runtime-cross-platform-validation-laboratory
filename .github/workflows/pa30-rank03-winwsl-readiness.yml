@@ -149,22 +149,10 @@ jobs:
             wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $capStart
             & './bindprobe/bin/Release/net10.0/bindprobe.exe'
           } finally {
-            $capStop = @'
-          if test -f /tmp/rank03-tcpdump.pid; then kill $(cat /tmp/rank03-tcpdump.pid) 2>/dev/null || true; fi
-          sleep 1
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('/tmp/rank03-ldap.pcap')
-          if not p.exists():
-              print('LDAP_CAPTURE=MISSING')
-          else:
-              b = p.read_bytes()
-              print('LDAP_CAPTURE_BYTES=' + str(len(b)))
-              print('LDAP_NTLMSSP_PRESENT=' + str(b'NTLMSSP' in b))
-              print('LDAP_KERBEROS_OID_PRESENT=' + str(bytes.fromhex('06092a864886f712010202') in b))
-          PY
-          '@
+            $capStop = 'if test -f /tmp/rank03-tcpdump.pid; then kill $(cat /tmp/rank03-tcpdump.pid) 2>/dev/null || true; fi; sleep 1'
             wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $capStop
+            $capReport = 'from pathlib import Path; b=Path("/tmp/rank03-ldap.pcap").read_bytes(); print("LDAP_CAPTURE_BYTES="+str(len(b))); print("LDAP_NTLMSSP_PRESENT="+str(b"NTLMSSP" in b)); print("LDAP_KERBEROS_OID_PRESENT="+str(bytes.fromhex("06092a864886f712010202") in b))'
+            wsl.exe --distribution Ubuntu-24.04 --user root --exec python3 -c $capReport
             if ($saved.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses $saved }
             else { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ResetServerAddresses }
             Remove-Item Env:PA30_BIND_PASS -ErrorAction SilentlyContinue
