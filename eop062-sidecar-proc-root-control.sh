@@ -2,9 +2,11 @@
 set -euo pipefail
 
 suffix="$(date +%s)-$$"
-victim="eop062-r14-proc-victim-${suffix}"
-volume="eop062-r14-proc-tmp-${suffix}"
+victim="eop062-r14-proc-victim-$suffix"
+volume="eop062-r14-proc-tmp-$suffix"
 lab="$(mktemp -d)"
+runner_uid="$(id -u)"
+runner_gid="$(id -g)"
 cleanup() {
   docker rm -f "$victim" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
@@ -14,18 +16,17 @@ trap cleanup EXIT
 
 mkdir "$lab/source"
 printf 'original\n' > "$lab/source/protected.txt"
-chown -R 1654:1654 "$lab/source"
 chmod 0700 "$lab/source"
 chmod 0600 "$lab/source/protected.txt"
 docker volume create "$volume" >/dev/null
 
-docker run -d --name "$victim" --network none --user 1654:1654 \
+docker run -d --name "$victim" --network none --user "$runner_uid:$runner_gid" \
   --cap-drop ALL --security-opt no-new-privileges \
   -v "$lab/source:/src:rw" -v "$volume:/tmp" \
   alpine:3.21 sh -c 'sleep 90' >/dev/null
 
 echo 'CASE=separate-pid-same-uid-shared-tmp'
-docker run --rm --network none --user 1654:1654 \
+docker run --rm --network none --user "$runner_uid:$runner_gid" \
   --cap-drop ALL --security-opt no-new-privileges \
   -v "$volume:/tmp" alpine:3.21 sh -c '
     test ! -e /src/protected.txt
@@ -36,7 +37,7 @@ docker run --rm --network none --user 1654:1654 \
 test "$(cat "$lab/source/protected.txt")" = 'original'
 
 echo 'CASE=shared-pid-same-uid-shared-tmp'
-docker run --rm --network none --pid="container:$victim" --user 1654:1654 \
+docker run --rm --network none --pid="container:$victim" --user "$runner_uid:$runner_gid" \
   --cap-drop ALL --security-opt no-new-privileges \
   -v "$volume:/tmp" alpine:3.21 sh -c '
     test ! -e /src/protected.txt
