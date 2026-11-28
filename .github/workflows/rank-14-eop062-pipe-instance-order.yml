@@ -1,0 +1,22 @@
+name: Rank 14 EOP062 same-owner pipe instance order
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - eop062-pipe-instance-order.ps1
+      - .github/workflows/rank-14-eop062-pipe-instance-order.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-pipe-instance-order:
+    runs-on: windows-2022
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test live Medium server against Low same-owner instance
+        shell: pwsh
+        run: .\eop062-pipe-instance-order.ps1
