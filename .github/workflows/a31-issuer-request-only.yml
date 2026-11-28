@@ -67,7 +67,7 @@ jobs:
             --as="$actor" -n a31-tenant)" = yes
           test "$(kubectl auth can-i get certificaterequests.cert-manager.io \
             --as="$actor" -n a31-tenant)" = yes
-          test "$(kubectl auth can-i get secret a31-ca-key \
+          test "$(kubectl auth can-i get secret/a31-ca-key \
             --as="$actor" -n cert-manager)" = no
           if kubectl --as="$actor" -n cert-manager get secret a31-ca-key \
             -o name >/dev/null 2>&1; then
