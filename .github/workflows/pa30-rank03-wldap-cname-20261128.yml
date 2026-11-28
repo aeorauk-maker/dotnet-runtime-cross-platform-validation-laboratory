@@ -1,4 +1,4 @@
-name: Rank03 Windows LDAP CNAME target trace
+name: Rank03 Windows LDAP cold A CNAME A target control
 on:
   push:
     branches: [pa30-rank03-wldap-cname-20261128]
@@ -28,13 +28,15 @@ jobs:
           using System.Threading;
           using System.Threading.Tasks;
 
+          bool cnameMode = args.Length != 0 && args[0] == "cname";
+          Console.WriteLine($"DNS_MODE={(cnameMode ? "CNAME" : "DIRECT_A")} PID={Environment.ProcessId}");
           using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(18));
           using var dns = new UdpClient(new IPEndPoint(IPAddress.Loopback, 53));
           var dnsServer = Task.Run(async () => {
               try {
                   while (!deadline.IsCancellationRequested) {
                       var packet = await dns.ReceiveAsync(deadline.Token);
-                      var response = Reply(packet.Buffer);
+                      var response = Reply(packet.Buffer, cnameMode);
                       if (response.Length != 0) await dns.SendAsync(response, packet.RemoteEndPoint, deadline.Token);
                   }
               } catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
@@ -52,13 +54,6 @@ jobs:
                   await stream.WriteAsync(invalidBind, deadline.Token);
               } catch (Exception ex) { Console.WriteLine($"LOOPBACK_SERVER_CLASS={ex.GetType().Name}"); }
           });
-          try {
-              var lookup = Dns.GetHostEntry("lab.example");
-              Console.WriteLine($"FORWARD_CANONICAL={lookup.HostName}");
-              Console.WriteLine($"FORWARD_ADDRESSES={string.Join(',', lookup.AddressList)}");
-          } catch (Exception ex) { Console.WriteLine($"FORWARD_CLASS={ex.GetType().Name}"); }
-          try { Console.WriteLine($"REVERSE_CANONICAL={Dns.GetHostEntry(IPAddress.Loopback).HostName}"); }
-          catch (Exception ex) { Console.WriteLine($"REVERSE_CLASS={ex.GetType().Name}"); }
           var identifier = new LdapDirectoryIdentifier("lab.example", true, false);
           using var connection = new LdapConnection(identifier);
           connection.SessionOptions.ProtocolVersion = 3;
@@ -82,7 +77,7 @@ jobs:
           static void Answer(Stream s, byte[] owner, int type, byte[] data) {
               s.Write(owner); U16(s, type); U16(s, 1); U32(s, 30); U16(s, data.Length); s.Write(data);
           }
-          static byte[] Reply(byte[] q) {
+          static byte[] Reply(byte[] q, bool cnameMode) {
               if (q.Length < 17) return Array.Empty<byte>();
               var labels = new List<string>(); int p = 12;
               while (p < q.Length && q[p] != 0) {
@@ -94,15 +89,17 @@ jobs:
               int type = (q[p+1] << 8) | q[p+2]; int end = p + 5;
               if (name is "lab.example" or "actor.lab.example" or "1.0.0.127.in-addr.arpa")
                   Console.WriteLine($"DNS_QUERY={name} TYPE={type}");
-              bool alias = name == "lab.example" && type == 1;
+              bool alias = cnameMode && name == "lab.example" && type == 1;
+              bool direct = !cnameMode && name == "lab.example" && type == 1;
               bool actor = name == "actor.lab.example" && type == 1;
-              bool ptr = name == "1.0.0.127.in-addr.arpa" && type == 12;
+              bool ptr = false; // Keep reverse naming absent in both cases.
               using var m = new MemoryStream();
               m.Write(q, 0, 2); U16(m, name.EndsWith("lab.example") || ptr ? 0x8180 : 0x8183);
-              U16(m, 1); U16(m, alias ? 2 : actor || ptr ? 1 : 0); U16(m, 0); U16(m, 0);
+              U16(m, 1); U16(m, alias ? 2 : direct || actor || ptr ? 1 : 0); U16(m, 0); U16(m, 0);
               m.Write(q, 12, end - 12);
               byte[] pointer = { 0xC0, 0x0C };
               if (alias) { Answer(m, pointer, 5, Encode("actor.lab.example")); Answer(m, Encode("actor.lab.example"), 1, new byte[] {127, 0, 0, 1}); }
+              if (direct) Answer(m, pointer, 1, new byte[] {127, 0, 0, 1});
               if (actor) Answer(m, pointer, 1, new byte[] {127, 0, 0, 1});
               if (ptr) Answer(m, pointer, 12, Encode("actor.lab.example"));
               return m.ToArray();
@@ -111,7 +108,7 @@ jobs:
           dotnet build probe/probe.csproj --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host 'RELEASED_PACKAGE=System.DirectoryServices.Protocols/10.0.15'
-      - name: Trace CNAME and PTR effect on Wldap32 service name
+      - name: Trace cold direct A CNAME direct A service targets
         shell: pwsh
         run: |
           $dnsClients = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop)
@@ -128,7 +125,10 @@ jobs:
           try {
             Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses @('127.0.0.1')
             ipconfig /flushdns | Out-Null
-            & './probe/bin/Release/net10.0/probe.exe'
+            foreach ($mode in @('a', 'cname', 'a')) {
+              ipconfig /flushdns | Out-Null
+              & './probe/bin/Release/net10.0/probe.exe' $mode
+            }
           } finally {
             if ($original.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses $original }
             else { Set-DnsClientServerAddress -InterfaceIndex $index -ResetServerAddresses }
@@ -137,7 +137,7 @@ jobs:
           }
           netsh trace convert "input=$etl" "output=$txt" | Out-Null
           if (Test-Path $txt) {
-            $matches = Select-String -Path $txt -Pattern "make spn|servicename for bind|DnsSupplied|DomainName is|AREC_EXCLUSIVE|Connection->hostname" | Select-Object -First 20
+            $matches = Select-String -Path $txt -Pattern "make spn|servicename for bind|DnsSupplied|DomainName is|AREC_EXCLUSIVE|Connection->hostname" | Select-Object -First 90
             foreach ($match in $matches) {
               $safe = $match.Line -replace '[A-Fa-f0-9]{32,}', '[redacted]'
               Write-Host "LDAP_TRACE=$safe"
