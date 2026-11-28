@@ -821,14 +821,14 @@ try {
         "WINDIR=$env:SystemRoot"
     ) | Sort-Object
     $appEnvironmentPtr = [Runtime.InteropServices.Marshal]::StringToHGlobalUni(($appEnvironment -join "`0") + "`0`0")
-    Write-Host 'RUN_ENVIRONMENT=explicit-minimal-profile-independent'
+    Write-Host 'RUN_ENVIRONMENT=CreateProcessWithLogonW_profile_plus_inert_lab_variables'
     $runLog = Join-Path $labRoot 'forged-run.log'
     $runLauncher = Join-Path $labRoot 'forged-run.cmd'
-    [System.IO.File]::WriteAllText($runLauncher, "@echo off`r`n`"$dotnetExe`" run --project `"$project`" --no-restore --no-launch-profile -c Debug > `"$runLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n")
+    [System.IO.File]::WriteAllText($runLauncher, "@echo off`r`nset `"ASPNETCORE_URLS=$baseUrl`"`r`nset `"EOP062_MARKER=$markerPath`"`r`nset `"DOTNET_CLI_HOME=$labRoot`"`r`n`"$dotnetExe`" run --project `"$project`" --no-restore --no-launch-profile -c Debug > `"$runLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n")
     $appCommand = [System.Text.StringBuilder]::new("`"$cmdExe`" /D /C `"$runLauncher`"")
     Write-Host "FORGED_RUN_COMMAND=$appCommand"
     if (-not [MicNative]::CreateProcessWithLogonW($testUser, '.', $testPassword,
-        1, $cmdExe, $appCommand, 0x400, $appEnvironmentPtr,
+        1, $cmdExe, $appCommand, 0, [IntPtr]::Zero,
         $labRoot, [ref]$startup, [ref]$appProc)) {
         throw "Standard-account dotnet run launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
