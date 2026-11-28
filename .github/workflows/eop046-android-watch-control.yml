@@ -599,7 +599,7 @@ jobs:
           dotnet --info
           java -version
           echo "ANDROID_HOME=$ANDROID_HOME"
-          sudo -E "$(command -v dotnet)" workload install android --version 11.0.100.1
+          sudo -H env -u XDG_RUNTIME_DIR ANDROID_HOME="$ANDROID_HOME" DOTNET_CLI_HOME="$RUNNER_TEMP/eop046-root-dotnet" "$(command -v dotnet)" workload install android --version 11.0.100.1
           dotnet workload list
       - name: Install emulator image and build controlled app
         shell: bash
