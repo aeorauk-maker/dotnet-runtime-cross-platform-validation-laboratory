@@ -613,10 +613,14 @@ try {
         $sidBytes = [byte[]]::new($sidLength)
         [Runtime.InteropServices.Marshal]::Copy($lowSid, $sidBytes, 0, $sidLength)
         [Runtime.InteropServices.Marshal]::Copy($sidBytes, 0, $sidCopy, $sidLength)
+        $sidAndAttributes = [LowSelfNative+SidAndAttributes]::new()
+        $sidAndAttributes.Sid = $sidCopy
+        $sidAndAttributes.Attributes = 0x20
         $entry = [LowSelfNative+MandatoryLabel]::new()
-        $entry.Label.Sid = $sidCopy
-        $entry.Label.Attributes = 0x20
+        $entry.Label = $sidAndAttributes
         [Runtime.InteropServices.Marshal]::StructureToPtr($entry, $labelBuffer, $false)
+        $checkEntry = [Runtime.InteropServices.Marshal]::PtrToStructure($labelBuffer, [type][LowSelfNative+MandatoryLabel])
+        if ($checkEntry.Label.Sid -ne $sidCopy -or $checkEntry.Label.Attributes -ne 0x20) { throw 'Self low label buffer construction failed' }
         if (-not [LowSelfNative]::SetTokenInformation($ownToken, 25, $labelBuffer, $labelLength)) { throw "Self low downgrade failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
         $ilNeeded = 0
         [void][LowSelfNative]::GetTokenInformation($ownToken, 25, [IntPtr]::Zero, 0, [ref]$ilNeeded)
