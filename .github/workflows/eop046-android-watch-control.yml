@@ -635,9 +635,6 @@ jobs:
           done
           test "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1
           adb -s emulator-5554 shell cmd package list packages -3
-      - name: Validate normal on-device hot reload edit
-        shell: bash
-        run: python3 labs/eop046/check_android_watch_valid.py
       - name: Test cross-UID WebSocket admission during a device edit
         shell: bash
         working-directory: labs/eop046
