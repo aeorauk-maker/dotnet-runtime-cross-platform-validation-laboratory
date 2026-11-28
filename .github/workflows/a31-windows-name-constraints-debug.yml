@@ -101,7 +101,11 @@ jobs:
                   try {
                       using var tcp = await listener.AcceptTcpClientAsync();
                       using var tls = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
-                      var certContext = SslStreamCertificateContext.Create(cert,
+                      const string testPassword = "A31-owned-inert-key";
+                      using var serverCert = X509CertificateLoader.LoadPkcs12(
+                          cert.Export(X509ContentType.Pkcs12, testPassword), testPassword,
+                          X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.PersistKeySet);
+                      var certContext = SslStreamCertificateContext.Create(serverCert,
                           intermediate is null ? null : new X509Certificate2Collection { intermediate });
                       await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions {
                           ServerCertificateContext = certContext,
