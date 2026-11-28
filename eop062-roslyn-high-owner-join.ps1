@@ -90,6 +90,7 @@ $disabledSids = [IntPtr]::Zero
 $groupsBuffer = [IntPtr]::Zero
 $ilBuffer = [IntPtr]::Zero
 $low = [IntPtr]::Zero
+$lowHighOwner = [IntPtr]::Zero
 $lowSid = [IntPtr]::Zero
 $lowLabelBuffer = [IntPtr]::Zero
 $proc = [MicNative+ProcessInfo]::new()
@@ -253,7 +254,7 @@ try {
     # EOP-062 prerequisite: a same-user low-integrity server must be accepted
     # by an ordinary medium-integrity CurrentUserOnly client. No Roslyn bytes
     # or project data are used in this generic transport discriminator.
-    if (-not [MicNative]::CreateRestrictedToken($token, 0, 0, [IntPtr]::Zero,
+    if (-not [MicNative]::CreateRestrictedToken($token, 0, 1, $disabledSids,
         0, [IntPtr]::Zero, 0, [IntPtr]::Zero, [ref]$low)) {
         throw "Low CreateRestrictedToken failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
@@ -424,6 +425,32 @@ try {
         throw 'Low to medium generic CurrentUserOnly matrix did not reach protected transport terminal'
     }
 
+    # Keep the proven generic Low-to-Medium owner matrix intact. For the
+    # product-only high-owner probe, retain the elevated token's groups and
+    # lower only its mandatory integrity level. This is an artificial lab token.
+    if (-not [MicNative]::CreateRestrictedToken($token, 0, 0, [IntPtr]::Zero,
+        0, [IntPtr]::Zero, 0, [IntPtr]::Zero, [ref]$lowHighOwner)) {
+        throw "High-owner Low token creation failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    if (-not [MicNative]::SetTokenInformation($lowHighOwner, 25, $lowLabelBuffer, $lowLabelLength)) {
+        throw "High-owner Low integrity set failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    $highOwnerIlNeeded = 0
+    [void][MicNative]::GetTokenInformation($lowHighOwner, 25, [IntPtr]::Zero, 0, [ref]$highOwnerIlNeeded)
+    if ($highOwnerIlNeeded -le 0) { throw 'High-owner Low integrity query size failed' }
+    $highOwnerIlBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($highOwnerIlNeeded)
+    try {
+        if (-not [MicNative]::GetTokenInformation($lowHighOwner, 25, $highOwnerIlBuffer, $highOwnerIlNeeded, [ref]$highOwnerIlNeeded)) {
+            throw "High-owner Low integrity query failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+        }
+        $highOwnerIl = [Runtime.InteropServices.Marshal]::PtrToStructure($highOwnerIlBuffer, [type][MicNative+MandatoryLabel])
+        $highOwnerLow = [MicNative]::EqualSid($highOwnerIl.Label.Sid, $lowSid)
+        Write-Host "HIGH_OWNER_LOW_TOKEN=$highOwnerLow"
+        if (-not $highOwnerLow) { throw 'Product actor token is not Low integrity' }
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($highOwnerIlBuffer)
+    }
+
     # Product join: use the installed SDK and its ordinary default pipe name.
     $sdkVersion = (& dotnet --version).Trim()
     Write-Host "installed-sdk=$sdkVersion"
@@ -550,7 +577,7 @@ try {
     [System.IO.File]::WriteAllText($actorScript, $actorContent)
     $actorCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$actorScript`"")
     $roslynActorProc = [MicNative+ProcessInfo]::new()
-    if (-not [MicNative]::CreateProcessAsUserW($low, $pwshExe, $actorCommand,
+    if (-not [MicNative]::CreateProcessAsUserW($lowHighOwner, $pwshExe, $actorCommand,
         [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero,
         (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)) {
         throw "Low Roslyn actor launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
@@ -599,9 +626,8 @@ try {
     if ($labelBuffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($labelBuffer) }
     if ($lowSid -ne [IntPtr]::Zero) { [void][MicNative]::LocalFree($lowSid) }
     if ($lowLabelBuffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($lowLabelBuffer) }
+    if ($lowHighOwner -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($lowHighOwner) }
     if ($low -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($low) }
     if ($medium -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($medium) }
     if ($token -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($token) }
 }
-
-# Trigger isolated high-owner run after workflow registration.
