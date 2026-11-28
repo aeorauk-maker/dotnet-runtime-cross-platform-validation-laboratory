@@ -1,0 +1,41 @@
+name: Windows case-sensitive cache prerequisite
+
+on:
+  push:
+    branches:
+      - rank-01-windows-cs-prereq-20261128
+
+permissions:
+  contents: read
+
+jobs:
+  case-sensitive-cache:
+    runs-on: windows-2022
+    steps:
+      - name: Check Windows directory behavior with .NET
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "OS: $([Environment]::OSVersion.VersionString)"
+          Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
+          $base = Join-Path $env:RUNNER_TEMP 'rank01-case-prerequisite'
+          $normal = Join-Path $base 'normal'
+          $sensitive = Join-Path $base 'sensitive'
+          [IO.Directory]::CreateDirectory($normal) | Out-Null
+          [IO.Directory]::CreateDirectory($sensitive) | Out-Null
+          fsutil.exe file queryCaseSensitiveInfo $normal
+          if ($LASTEXITCODE -ne 0) { throw 'Normal flag query failed' }
+          [IO.Directory]::CreateDirectory((Join-Path $normal 'alpha')) | Out-Null
+          [IO.Directory]::CreateDirectory((Join-Path $normal 'ALPHA')) | Out-Null
+          $normalNames = @(Get-ChildItem -LiteralPath $normal -Directory | ForEach-Object Name)
+          Write-Host "Normal child count: $($normalNames.Count) names: $($normalNames -join ',')"
+          fsutil.exe file setCaseSensitiveInfo $sensitive enable
+          if ($LASTEXITCODE -ne 0) { throw 'Could not enable directory case sensitivity' }
+          fsutil.exe file queryCaseSensitiveInfo $sensitive
+          if ($LASTEXITCODE -ne 0) { throw 'Sensitive flag query failed' }
+          [IO.Directory]::CreateDirectory((Join-Path $sensitive 'alpha')) | Out-Null
+          [IO.Directory]::CreateDirectory((Join-Path $sensitive 'ALPHA')) | Out-Null
+          $sensitiveNames = @(Get-ChildItem -LiteralPath $sensitive -Directory | ForEach-Object Name)
+          Write-Host "Sensitive child count: $($sensitiveNames.Count) names: $($sensitiveNames -join ',')"
+          if ($normalNames.Count -ne 1) { throw 'Normal control was not case-insensitive' }
+          if ($sensitiveNames.Count -ne 2) { throw 'Sensitive root did not preserve distinct children' }
