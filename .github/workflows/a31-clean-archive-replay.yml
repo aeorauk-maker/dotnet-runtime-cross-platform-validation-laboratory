@@ -65,7 +65,7 @@ jobs:
                               if any(term in line.lower() for term in
                                      ('a31_generator_verify', 'error', 'unknown option', 'invalid', 'unable',
                                       'verification failed', 'no such file', 'usage:'))]
-                      print('A31_GENERATOR_SAFE_ERROR=' + repr(safe[:8]))
+                      print('A31_GENERATOR_SAFE_ERROR=' + repr(safe[:8])); print('A31_PYTHON_TRACE=' + repr(result.stderr[-2500:]))
                   raise SystemExit(1)
               proof = json.loads(result.stdout)
               assert proof['result'] == 'pass'
