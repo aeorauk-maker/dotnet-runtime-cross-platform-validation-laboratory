@@ -545,6 +545,47 @@ jobs:
                   raise RuntimeError(f"{case}: lower receiver failed protected A write")
               return directory, env
 
+          def exec_one_shot(case):
+              package_id = packages[("Impact", "A")][0]
+              directory = temp / "one-shot" / case
+              directory.mkdir(parents=True, exist_ok=True)
+              config = directory / "NuGet.Config"
+              shutil.copyfile(temp / "consumers" / "signed_a_only" / "NuGet.Config", config)
+              os.chmod(config, 0o600)
+              env = os.environ.copy()
+              env["DOTNET_CLI_HOME"] = str(directory / "cli-home")
+              env["NUGET_PACKAGES"] = str(directory / "packages")
+              env["NUGET_HTTP_CACHE_PATH"] = str(directory / "http-cache")
+              env["DOTNET_NUGET_SIGNATURE_VERIFICATION"] = "true"
+              env["DOTNET_NOLOGO"] = "1"
+              env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+              env["L108_PROTECTED_PATH"] = str(protected_file)
+              env["L108_OWNED_RECEIVER"] = callback
+              before = len(read_events())
+              command_line = ["dotnet", "tool", "exec", package_id + "@1.0.0",
+                              "--yes", "--configfile", str(config),
+                              "--no-http-cache", "--verbosity", "minimal"]
+              result = subprocess.run(command_line, cwd=directory, env=env,
+                                      capture_output=True, text=True, timeout=180)
+              output = result.stdout + result.stderr
+              events = read_events()
+              stored = sorted(
+                  {package_hash(path) for path in directory.rglob("*.nupkg")})
+              expected_hash = package_hash(packages[("Impact", "B")][2])
+              summary["controls"].append(
+                  {"case": case, "exit": result.returncode,
+                   "output_marker": "OWNED_B" in output.splitlines(),
+                   "post_count_before": before, "post_count_after": len(events),
+                   "stored_archive_hashes": stored,
+                   "expected_sha256": expected_hash})
+              if (result.returncode or "OWNED_B" not in output.splitlines() or
+                      len(events) != before + 1 or
+                      events[-1]["token_sha256"] != hashlib.sha256(protected_bytes).hexdigest() or
+                      events[-1]["uid"] != 65534 or
+                      events[-1]["gitlab_write_http"] != 201):
+                  raise RuntimeError("One-shot signed-tool policy consequence failed: " +
+                                     output.replace(tokens["reader"], "[masked]")[-700:])
+
           try:
               push("Primary", "A", a["id"], root_token)
               restore("Primary", "primary_a_only", "A", "A")
@@ -583,6 +624,7 @@ jobs:
                       strict=True, exfil=True)
               restore("Impact", "unsigned_b_protected_repeat", "B", "B",
                       strict=True, exfil=True)
+              exec_one_shot("one_shot_wrong_author_b_protected_write")
               push("ImpactReverse", "B", b["id"], tokens["publisher"],
                    lower_os=True)
               restore("ImpactReverse", "reverse_unsigned_b_restore_only", "B", "B",
@@ -596,7 +638,7 @@ jobs:
               summary["all_protected_posts_match"] = all(
                   event["token_sha256"] == hashlib.sha256(protected_bytes).hexdigest()
                   for event in events)
-              if len(events) != 2 or not summary["all_protected_posts_match"]:
+              if len(events) != 3 or not summary["all_protected_posts_match"]:
                   raise RuntimeError("Unexpected final protected POST state")
               for number, event in enumerate(events, start=1):
                   code, content = request(
