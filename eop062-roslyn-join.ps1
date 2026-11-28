@@ -500,6 +500,21 @@ try {
         return $buildExit
     }
 
+    $prevalidExit = Invoke-MediumBuild 'prevalid' '-p:UseSharedCompilation=false'
+    $prevalidOutput = if (Test-Path $outputDll) { (& $dotnetExe $outputDll | Out-String).Trim() } else { '<absent>' }
+    Write-Host "PREVALID_NO_ACTOR exit=$prevalidExit output=$prevalidOutput"
+    if ($prevalidExit -eq 0) {
+        if ($prevalidOutput -ne 'SECURE_NEW') { throw 'No-actor medium build did not produce secured output' }
+        [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("PUBLIC_OLD");')
+        & $dotnetExe build $project --no-restore -v:minimal '-p:UseSharedCompilation=false' | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Could not reseed public baseline after no-actor control' }
+        & icacls.exe $labRoot /setintegritylevel M /T | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Could not relabel reseeded lab medium' }
+        $oldHash = (Get-FileHash $outputDll -Algorithm SHA256).Hash
+        [System.IO.File]::WriteAllText($source, 'System.Console.WriteLine("SECURE_NEW");')
+        Write-Host "RESEEDED_PUBLIC hash=$oldHash"
+    }
+
     $actorResult = Join-Path $labRoot 'roslyn-low-result.txt'
     [System.IO.File]::WriteAllText($actorResult, '')
     & icacls.exe $actorResult /setintegritylevel L | Out-Host
