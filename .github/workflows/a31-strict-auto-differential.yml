@@ -224,7 +224,8 @@ jobs:
           make_request allowed allowed.test allowed.test Approved
           if [ "$AUTOAPPROVAL" = true ]; then
             make_request attack forbidden.test '' Approved
-            make_request denied forbidden.test forbidden.test Approved
+            openssl req -new -sha256 -key actor-leaf.key -subj '/CN=forbidden.test' -addext 'subjectAltName=DNS:forbidden.test' -out denied.csr; openssl x509 -req -sha256 -in denied.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out denied-issued.pem -extfile <(printf '%s
+' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' 'extendedKeyUsage=serverAuth' 'subjectAltName=DNS:forbidden.test'); echo 'A31_ADMIN_SIGNED_FORBIDDEN_SAN_TLS_NEGATIVE'
           else
             make_request attack forbidden.test '' Denied
             make_request denied forbidden.test forbidden.test Denied
