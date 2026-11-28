@@ -26,6 +26,7 @@ OWNER = secrets.token_hex(32)
 LOW = secrets.token_hex(32)
 SRC = ROOT / "src"
 SRC.mkdir()
+SRC.chmod(0o777)  # ephemeral runner bind; actor has no mount of this path
 ACTOR_DIR = ROOT / "actor"
 ACTOR_DIR.mkdir()
 shutil.copyfile(Path(__file__).with_name("eop062-fake-compiler.pl"), ACTOR_DIR / "fake.pl")
@@ -162,7 +163,9 @@ try:
     (SRC / "AdminApp.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net11.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>\n')
     write_source(False)
     run(["docker", "volume", "create", VOLUME])
-    uid, gid = os.getuid(), os.getgid()
+    # The official SDK image's named nonroot account is app (1654). Roslyn
+    # hashes that username into the compiler pipe name used by fake.pl.
+    uid, gid = 1654, 1654
     run(["docker", "run", "-d", "--name", VICTIM, "--user", f"{uid}:{gid}",
          "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
          "-p", f"127.0.0.1:{PORT}:{PORT}",
@@ -192,7 +195,7 @@ try:
     MARKER.unlink()
     assert not ROLE.exists()
     stop_app()
-    shutil.copy2(SRC / "old-public.dll", dll)
+    docker_exec("cp /src/admin/old-public.dll /src/admin/bin/Release/net11.0/AdminApp.dll")
     assert_eq("RESEEDED_PUBLIC_DLL", sha(dll), old_hash)
     time.sleep(1.2)
     PROGRAM.touch()
