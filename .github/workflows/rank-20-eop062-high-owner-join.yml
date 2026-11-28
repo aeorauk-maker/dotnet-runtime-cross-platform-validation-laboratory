@@ -1,0 +1,26 @@
+name: Rank 20 EOP062 high-owner Low IL Roslyn join
+
+on:
+  push:
+    branches:
+      - rank-20-eop062-windows-20261127
+    paths:
+      - eop062-roslyn-high-owner-join.ps1
+      - .github/workflows/rank-20-eop062-high-owner-join.yml
+
+permissions:
+  contents: read
+
+jobs:
+  high-owner-join:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Test low-integrity preclaim of elevated Roslyn builder
+        shell: pwsh
+        run: .\eop062-roslyn-high-owner-join.ps1
+
