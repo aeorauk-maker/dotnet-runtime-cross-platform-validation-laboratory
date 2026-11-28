@@ -72,7 +72,7 @@ jobs:
           var systemMarkerPath = Path.Combine(root, "protected", "system-only.txt");
           var probeSource = Path.Combine(app.Environment.ContentRootPath, "probe-fixture");
           var probeDestination = Path.Combine(root, "attacker", "serviceprobe");
-          var serviceCommand = "\"" + Path.Combine(probeDestination, "Pa30SystemProbe.exe") + "\" \"" + systemMarkerPath + "\"";
+          var serviceCommand = "\"" + Path.Combine(probeDestination, "Pa30SystemProbe.exe") + "\"";
           app.MapGet("/", () => $"PID={Environment.ProcessId}");
           app.MapGet("/arm", () => {
               _ = Task.Run(() => {
@@ -160,16 +160,21 @@ jobs:
           using Microsoft.Extensions.DependencyInjection;
           using Microsoft.Extensions.Hosting;
           using System.Security.Principal;
-          var marker = args[0];
           var log = Path.Combine(AppContext.BaseDirectory, "probe.log");
-          Host.CreateDefaultBuilder(Array.Empty<string>())
-              .ConfigureServices(services => services.AddHostedService<ProbeWorker>())
-              .UseWindowsService(options => options.ServiceName = "Pa30L105ScmProof")
-              .Build().Run();
+          File.WriteAllText(log, "MAIN_ENTERED=True ARGC=" + args.Length);
+          try {
+              Host.CreateDefaultBuilder(Array.Empty<string>())
+                  .ConfigureServices(services => services.AddHostedService<ProbeWorker>())
+                  .UseWindowsService(options => options.ServiceName = "Pa30L105ScmProof")
+                  .Build().Run();
+          } catch (Exception ex) {
+              File.AppendAllText(log, "\nHOST_EXCEPTION=" + ex.GetType().Name + " HRESULT=" + ex.HResult + " MESSAGE=" + ex.Message);
+              throw;
+          }
           sealed class ProbeWorker : BackgroundService {
               protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
                   var log = Path.Combine(AppContext.BaseDirectory, "probe.log");
-                  var marker = Environment.GetCommandLineArgs()[1];
+                  var marker = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "marker.path"));
                   try {
                       var sid = WindowsIdentity.GetCurrent().User?.Value ?? "UNKNOWN";
                       File.WriteAllText(log, "STARTED_SID=" + sid + "\nSERVICE_RUNNING=True");
@@ -186,6 +191,7 @@ jobs:
           }
           '@ | Set-Content -Path (Join-Path $probeProject 'Program.cs') -Encoding utf8
           dotnet publish (Join-Path $probeProject 'Pa30SystemProbe.csproj') -c Release -p:UseAppHost=true -o $probePublished | Out-Host
+          Set-Content -Path (Join-Path $probePublished 'marker.path') -Value $systemMarker -NoNewline
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $probePublished 'Pa30SystemProbe.exe'))) { throw 'Service probe publish failed' }
           Write-Host "SERVICE_PROBE_EXE_SHA256=$((Get-FileHash (Join-Path $probePublished 'Pa30SystemProbe.exe') -Algorithm SHA256).Hash)"
           $appcmd = Join-Path $env:windir 'System32/inetsrv/appcmd.exe'
@@ -340,6 +346,9 @@ jobs:
           Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; StartTime=$timerWaitStart} -ErrorAction SilentlyContinue |
             Where-Object { $_.Message -match 'Pa30L105ScmProof' } |
             Select-Object -First 8 TimeCreated,Id,Message | Format-List | Out-Host
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$timerWaitStart} -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'Pa30SystemProbe|Pa30L105ScmProof' } |
+            Select-Object -First 8 TimeCreated,Id,ProviderName,Message | Format-List | Out-Host
           $servicePersistent = $serviceBefore.State -eq 'Running' -and $serviceBefore.StartMode -eq 'Auto' -and $serviceBefore.StartName -eq 'LocalSystem' -and $serviceBefore.ProcessId -gt 0
           Write-Host "WORKER_GONE_BEFORE_DELAYED_MARKER=$workerGone SERVICE_RUNNING_AFTER_WORKER_STOP=$servicePersistent SERVICE_START_MODE=$($serviceBefore.StartMode) SERVICE_ACCOUNT=$($serviceBefore.StartName) SERVICE_PID=$($serviceBefore.ProcessId)"
           if (-not $workerGone -or -not $servicePersistent) { throw 'Service did not outlive monitor and worker' }
