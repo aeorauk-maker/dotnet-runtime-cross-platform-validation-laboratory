@@ -84,7 +84,13 @@ jobs:
                       try { File.WriteAllText(writePath, "should-not-write"); log.WriteLine("DIRECT_WRITE_DENIED=False"); }
                       catch (Exception ex) { log.WriteLine($"DIRECT_WRITE_DENIED={ex is UnauthorizedAccessException} TYPE={ex.GetType().Name}"); }
                       Directory.CreateDirectory(probeDestination);
-                      foreach (var file in Directory.GetFiles(probeSource)) File.Copy(file, Path.Combine(probeDestination, Path.GetFileName(file)), true);
+                      foreach (var file in Directory.GetFiles(probeSource, "*", SearchOption.AllDirectories)) {
+                          var relative = Path.GetRelativePath(probeSource, file);
+                          var target = Path.Combine(probeDestination, relative);
+                          Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                          File.Copy(file, target, true);
+                      }
+                      log.WriteLine($"SERVICE_CONTROLLER_PRESENT={Directory.GetFiles(probeDestination, "System.ServiceProcess.ServiceController.dll", SearchOption.AllDirectories).Length > 0}");
                       log.WriteLine($"PAYLOAD_PLACED_AS_APPPOOL={File.Exists(Path.Combine(probeDestination, "Pa30SystemProbe.exe"))}");
                       var directScm = Native.OpenSCManager(null, null, Native.SC_MANAGER_CREATE_SERVICE);
                       var directScmError = directScm == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
@@ -381,6 +387,7 @@ jobs:
           $probeLog = if (Test-Path $probeLogPath) { Get-Content $probeLogPath -Raw } else { '' }
           $probeSidSystem = [bool]($probeLog -match 'STARTED_SID=S-1-5-18') -and [bool]($probeLog -match 'SYSTEM_MARKER_WRITTEN_AFTER_DELAY=True')
           $payloadPlaced = $finalTrace -match 'PAYLOAD_PLACED_AS_APPPOOL=True'
+          $controllerDllPlaced = $finalTrace -match 'SERVICE_CONTROLLER_PRESENT=True'
           Write-Host "SERVICE_PROBE_LOG=$($probeLog.Replace("`r"," ").Replace("`n"," | "))"
           Write-Host "SERVICE_PROBE_PLACED_BY_APPPOOL=$payloadPlaced SERVICE_PROBE_SYSTEM_SID=$probeSidSystem MARKER_BYTES=$(if (Test-Path $systemMarker) { (Get-Item $systemMarker).Length } else { -1 })"
           sc.exe qc $serviceName | Out-Host
@@ -394,5 +401,5 @@ jobs:
           Write-Host "FAKE_INSTANCE_RECEIVED_CLIENT=$fakeReceived FIRST_BYTE_OK=$firstByteOk IMPERSONATED_ADMIN_SID=$impersonatedSidOk IMPERSONATION_LEVEL_OK=$levelOk PROTECTED_MATCH=$protectedMatch PROTECTED_WRITE=$writeObserved PROTECTED_WRITE_MATCH=$writeMatch WORKER_GONE_AFTER=$workerGone SERVICE_STOPPED_CLEANLY=$stopped"
           if (-not $fakeReceived -or -not $firstByteOk -or -not $impersonatedSidOk -or -not $levelOk -or -not $protectedMatch -or -not $writeObserved -or -not $writeMatch -or -not $workerGone -or -not $servicePersistent -or -not $serviceSurvived -or -not $stopped) { throw 'Default IIS app-pool post-runtime privileged effect failed' }
           Write-Host 'PA30_NET10_MONITOR_PERSISTENT_SERVICE_ADMIN_WRITE_ALL_ASSERTIONS_PASSED=True'
-          if (-not $directScmDenied -or -not $adminSystemDenied -or -not $payloadPlaced -or -not $scmOpened -or -not $serviceCreated -or -not $serviceStartAttempted -or -not $probeSidSystem -or -not $systemSidWritten) { throw 'SCM service SYSTEM terminal not proved' }
+          if (-not $directScmDenied -or -not $adminSystemDenied -or -not $payloadPlaced -or -not $controllerDllPlaced -or -not $scmOpened -or -not $serviceCreated -or -not $serviceStartAttempted -or -not $probeSidSystem -or -not $systemSidWritten) { throw 'SCM service SYSTEM terminal not proved' }
           Write-Host 'PA30_L105_MONITOR_PERSISTENT_SERVICE_SYSTEM_PROTECTED_ACTION_PASSED=True'
