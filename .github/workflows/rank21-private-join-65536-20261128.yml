@@ -1,4 +1,4 @@
-name: Rank 21 ambient host inherited limit repeat
+name: Rank 21 native fast refresh
 
 on:
   push:
@@ -30,8 +30,8 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_KEY"
           mkdir -p "$RUNNER_TEMP/pa30-r21"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v16-ambient-host-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
-          printf '%s  %s\n' '431911f8bcc89b6a2211eb0add47a49fadd278e6ebc85cb2f8bc009950ad9d5b' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v18-native-fast-trigger-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' '965f84ed9d85786492c91797568b16085a4fc4e74a89927d3c314722474f53fe' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
           unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
 
       - name: Build and run isolated validation
