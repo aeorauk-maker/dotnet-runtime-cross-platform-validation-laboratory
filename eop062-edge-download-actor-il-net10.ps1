@@ -199,7 +199,7 @@ try {
     @'
 const fs = require('fs');
 const path = require('path');
-const profile = process.argv[2], target = process.argv[3];
+const profile = process.argv[2], target = process.argv[3], directUrl = process.argv[4];
 process.env.USERPROFILE = profile;
 process.env.LOCALAPPDATA = path.join(profile, 'AppData', 'Local');
 process.env.APPDATA = path.join(profile, 'AppData', 'Roaming');
@@ -212,14 +212,22 @@ const { chromium } = require('playwright');
     browser = await chromium.launch({channel:'msedge',headless:true});
     const context = await browser.newContext({acceptDownloads:true});
     const page = await context.newPage();
-    await page.goto('https://live.sysinternals.com/tools/');
-    const downloadPromise = page.waitForEvent('download',{timeout:30000});
-    await page.getByRole('link',{name:/^sigcheck\.exe$/i}).click();
+    let downloadPromise;
+    if (directUrl) {
+      downloadPromise = page.waitForEvent('download',{timeout:30000});
+      await page.goto(directUrl).catch(e => {
+        if (!String(e.message).includes('ERR_ABORTED')) throw e;
+      });
+    } else {
+      await page.goto('https://live.sysinternals.com/tools/');
+      downloadPromise = page.waitForEvent('download',{timeout:30000});
+      await page.getByRole('link',{name:/^sigcheck\.exe$/i}).click();
+    }
     const download = await downloadPromise;
     fs.renameSync(await download.path(), target);
-    console.log('PUBLIC_EDGE_DOWNLOAD=COMPLETE SUGGESTED=' + download.suggestedFilename());
+    console.log((directUrl ? 'EXACT' : 'PUBLIC') + '_EDGE_DOWNLOAD=COMPLETE SUGGESTED=' + download.suggestedFilename());
   } catch (e) {
-    console.log('PUBLIC_EDGE_DOWNLOAD=FAILED TYPE=' + e.name + ' MESSAGE=' + String(e.message).replace(/\r?\n/g,' | ').slice(0,1500));
+    console.log((directUrl ? 'EXACT' : 'PUBLIC') + '_EDGE_DOWNLOAD=FAILED TYPE=' + e.name + ' MESSAGE=' + String(e.message).replace(/\r?\n/g,' | ').slice(0,1500));
     process.exitCode = 2;
   } finally {
     if (browser) await browser.close();
@@ -242,6 +250,51 @@ const { chromium } = require('playwright');
         Write-Host "PUBLIC_FILE_SIGNATURE=$($publicSig.Status) SIGNER=$($publicSig.SignerCertificate.Subject)"
         Write-Host 'EOP062_PUBLIC_INTERNET_ZONE_CONTROL_COMPLETE'
     } else { Write-Host 'EOP062_PUBLIC_INTERNET_ZONE_CONTROL_UNAVAILABLE' }
+
+    $exactUrl = 'https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/9a15ee0347cd3f45ef5c5996383cf575bdffd14b/eop062-actor-inert.exe'
+    $exactHash = 'F63C534A2F18EDC7CAE544E62C23F0757ADE9325157CF3799FC1DEDED06693D5'
+    $exactTarget = Join-Path $stdDir 'eop062-actor-https.exe'
+    $exactNodeOut = Join-Path $lab 'exact-node-out.txt'
+    $exactNodeErr = Join-Path $lab 'exact-node-err.txt'
+    $exactRun = Start-Process -FilePath $nodeExe -Credential $stdCredential -LoadUserProfile -ArgumentList @($publicNodeSource, $stdProfile, $exactTarget, $exactUrl) -RedirectStandardOutput $exactNodeOut -RedirectStandardError $exactNodeErr -PassThru -Wait
+    Write-Host "EXACT_EDGE_EXIT=$($exactRun.ExitCode) NODE_OUT=$(([IO.File]::ReadAllText($exactNodeOut)).Trim()) NODE_ERR=$(([IO.File]::ReadAllText($exactNodeErr)).Trim())"
+    if ($exactRun.ExitCode -eq 0 -and (Test-Path $exactTarget)) {
+        $actualExactHash = (Get-FileHash $exactTarget -Algorithm SHA256).Hash
+        Write-Host "EXACT_BINARY_HASH=$actualExactHash EXPECTED=$exactHash"
+        if ($actualExactHash -ne $exactHash) { throw 'Exact public actor hash mismatch' }
+        Write-Host "EXACT_FILE_ACL=$((& icacls.exe $exactTarget) -join ';')"
+        $exactStreams = @(Get-Item -LiteralPath $exactTarget -Stream * | ForEach-Object Stream)
+        Write-Host "EXACT_FILE_STREAMS=$($exactStreams -join ',')"
+        if ($exactStreams -contains 'Zone.Identifier') {
+            Write-Host "EXACT_FILE_ZONE=$((Get-Content -LiteralPath $exactTarget -Stream Zone.Identifier) -join ';')"
+        }
+        [IO.File]::WriteAllText($protected, 'original')
+        $exactPipe = 'eop062-https-' + [guid]::NewGuid().ToString('N')
+        $exactActorOut = Join-Path $lab 'exact-actor-out.txt'
+        $exactActorErr = Join-Path $lab 'exact-actor-err.txt'
+        $exactHostJob = Start-Job -ArgumentList $exactPipe -ScriptBlock {
+            param($name)
+            try {
+                $client = [IO.Pipes.NamedPipeClientStream]::new('.', $name, [IO.Pipes.PipeDirection]::InOut)
+                $client.Connect(10000)
+                Start-Sleep -Milliseconds 1000
+                $client.Dispose()
+                'HOST_CONNECT=YES'
+            } catch { 'HOST_CONNECT=NO TYPE=' + $_.Exception.GetType().Name }
+        }
+        try {
+            $exactActor = Start-Process -FilePath $exactTarget -Credential $stdCredential -LoadUserProfile -ArgumentList @($protected, $exactPipe) -RedirectStandardOutput $exactActorOut -RedirectStandardError $exactActorErr -PassThru -Wait
+            $exactHost = Receive-Job $exactHostJob -Wait
+            $exactText = ([IO.File]::ReadAllText($exactActorOut)).Trim() -replace "`r?`n", ';'
+            $exactErrorText = ([IO.File]::ReadAllText($exactActorErr)).Trim() -replace "`r?`n", ';'
+            Write-Host "EXACT_CASE EXIT=$($exactActor.ExitCode) ACTOR=$exactText STDERR=$exactErrorText HOST=$exactHost SENTINEL=$([IO.File]::ReadAllText($protected))"
+            if ($exactActor.ExitCode -ne 0) { throw 'Exact public actor failed' }
+            if ($exactHost -ne 'HOST_CONNECT=YES') { throw 'Exact public actor pipe invisible' }
+            if ($exactText -match 'IL_RID=4096.*PROTECTED_WRITE=DENIED.*PIPE_HOST_CONNECT=YES') { Write-Host 'EOP062_EXACT_HTTPS_LOW_ACTOR_CANDIDATE' }
+            elseif ($exactText -match 'IL_RID=8192.*PROTECTED_WRITE=ALLOWED.*PIPE_HOST_CONNECT=YES') { Write-Host 'EOP062_EXACT_HTTPS_MEDIUM_ACTOR_CONFIRMED' }
+            else { throw 'Exact public actor token/write result unexpected' }
+        } finally { Remove-Job $exactHostJob -Force -ErrorAction SilentlyContinue }
+    } else { Write-Host 'EOP062_EXACT_HTTPS_ACTOR_UNAVAILABLE' }
 } finally {
     & net.exe user $stdName /delete | Out-Null
 }
