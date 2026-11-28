@@ -221,7 +221,7 @@ jobs:
             fi
           }
 
-          make_request allowed allowed.test allowed.test Approved
+          
           if [ "$AUTOAPPROVAL" = true ]; then
             for n in $(seq 1 24); do make_request "attack-$n" forbidden.test '' CreatedOnly; done
             for poll in $(seq 1 12); do
@@ -238,11 +238,14 @@ jobs:
             test -s attack-issued.pem
             openssl x509 -in attack-issued.pem -noout -subject -fingerprint -sha256
             echo 'A31_POLICY_ISSUED_attack'
+            kubectl -n a31-tenant get certificaterequests -o json | python3 -c 'import json,sys; r=json.load(sys.stdin)["items"]; a=[x for x in r if x["metadata"]["name"].startswith("a31-attack-")]; issued=sum(bool(x.get("status",{}).get("certificate")) for x in a); denied=sum(any(c.get("type")=="Denied" and c.get("status")=="True" for c in x.get("status",{}).get("conditions",[])) for x in a); print(f"A31_BURST_TOTAL={len(a)} ISSUED={issued} DENIED={denied} PENDING={len(a)-issued-denied}")'
+            make_request allowed allowed.test allowed.test Approved
             openssl req -new -sha256 -key actor-leaf.key -subj '/CN=forbidden.test' -addext 'subjectAltName=DNS:forbidden.test' -out denied.csr; openssl x509 -req -sha256 -in denied.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out denied-issued.pem -extfile <(echo 'basicConstraints=critical,CA:FALSE'; echo 'keyUsage=critical,digitalSignature'; echo 'extendedKeyUsage=serverAuth'; echo 'subjectAltName=DNS:forbidden.test'); echo 'A31_ADMIN_SIGNED_FORBIDDEN_SAN_TLS_NEGATIVE'
 
           else
             make_request attack forbidden.test '' Denied
             make_request denied forbidden.test forbidden.test Denied
+            make_request allowed allowed.test allowed.test Approved
             echo 'A31_STRICT_POLICY_DEFAULT_APPROVER_OFF_DENIAL_PASS'
           fi
 
