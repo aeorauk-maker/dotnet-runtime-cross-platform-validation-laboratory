@@ -131,8 +131,18 @@ jobs:
               };
               policy.CustomTrustStore.Add(root);
               if (intermediate is not null) policy.ExtraStore.Add(intermediate);
+              string? tlsPolicyErrors = null;
+              string[]? tlsChainStatuses = null;
+              string[]? tlsChainSubjects = null;
               using var handler = new SocketsHttpHandler();
               handler.SslOptions.CertificateChainPolicy = policy;
+              handler.SslOptions.RemoteCertificateValidationCallback = (_, _, actualChain, errors) => {
+                  tlsPolicyErrors = errors.ToString();
+                  tlsChainStatuses = actualChain?.ChainStatus.Select(x => x.Status.ToString()).ToArray();
+                  tlsChainSubjects = actualChain?.ChainElements.Cast<X509ChainElement>()
+                      .Select(x => x.Certificate.Subject).ToArray();
+                  return errors == SslPolicyErrors.None;
+              };
               handler.ConnectCallback = async (context, cancellation) => {
                   var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                   try {
@@ -156,7 +166,8 @@ jobs:
               listener.Stop();
               bool received = await server.WaitAsync(TimeSpan.FromSeconds(12));
               Console.WriteLine(JsonSerializer.Serialize(new {
-                  label, chainBuilt, statuses, hostname, httpStatus = status, credentialReceived = received, error, serverError
+                  label, chainBuilt, statuses, hostname, httpStatus = status, credentialReceived = received,
+                  error, serverError, tlsPolicyErrors, tlsChainStatuses, tlsChainSubjects
               }));
           }
           '@ | Set-Content -Path A31Matrix/Program.cs -Encoding utf8
