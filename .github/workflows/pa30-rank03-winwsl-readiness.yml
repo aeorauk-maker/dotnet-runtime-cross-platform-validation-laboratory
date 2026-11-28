@@ -39,3 +39,105 @@ jobs:
             $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
             Write-Host "LOOPBACK_PORT_${port}=$ok"
           }
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Test released Windows Kerberos LDAP bind to live Samba DC
+        shell: pwsh
+        run: |
+          dotnet new console -n bindprobe -f net10.0 -o bindprobe --no-restore
+          dotnet add bindprobe/bindprobe.csproj package System.DirectoryServices.Protocols --version 10.0.15
+          @'
+          using System;
+          using System.DirectoryServices.Protocols;
+          using System.IO;
+          using System.Net;
+          using System.Net.Sockets;
+          using System.Text;
+          using System.Threading;
+          using System.Threading.Tasks;
+
+          string host = Environment.GetEnvironmentVariable("PA30_DC_HOST")!;
+          string password = Environment.GetEnvironmentVariable("PA30_BIND_PASS")!;
+          using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+          using var dns = new UdpClient(new IPEndPoint(IPAddress.Loopback, 53));
+          var server = Task.Run(async () => {
+              try {
+                  while (!stop.IsCancellationRequested) {
+                      var query = await dns.ReceiveAsync(stop.Token);
+                      byte[] answer = Reply(query.Buffer, host);
+                      if (answer.Length != 0) await dns.SendAsync(answer, query.RemoteEndPoint, stop.Token);
+                  }
+              } catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
+          });
+          foreach (var variant in new[]{("UPN", new NetworkCredential("Administrator@LAB.EXAMPLE", password)), ("NETBIOS", new NetworkCredential("Administrator", password, "LAB"))}) {
+              using var ldap = new LdapConnection(new LdapDirectoryIdentifier(host, true, false), variant.Item2, AuthType.Kerberos);
+              ldap.SessionOptions.ProtocolVersion = 3;
+              ldap.Timeout = TimeSpan.FromSeconds(10);
+              try {
+                  ldap.Bind();
+                  Console.WriteLine($"WINDOWS_KERBEROS_BIND_{variant.Item1}=SUCCESS");
+              } catch (LdapException ex) {
+                  Console.WriteLine($"WINDOWS_KERBEROS_BIND_{variant.Item1}=LDAP_ERROR_{ex.ErrorCode}");
+              } catch (Exception ex) {
+                  Console.WriteLine($"WINDOWS_KERBEROS_BIND_{variant.Item1}=CLASS_{ex.GetType().Name}");
+              }
+              try { Console.WriteLine($"WINDOWS_LDAP_HOST_{variant.Item1}={ldap.SessionOptions.HostName}"); } catch { }
+          }
+          stop.Cancel();
+          try { await server; } catch { }
+
+          static byte[] Name(string n) {
+              using var m = new MemoryStream();
+              foreach (string label in n.Split('.')) { var b = Encoding.ASCII.GetBytes(label); m.WriteByte((byte)b.Length); m.Write(b); }
+              m.WriteByte(0); return m.ToArray();
+          }
+          static void W16(Stream s, int n) { s.WriteByte((byte)(n >> 8)); s.WriteByte((byte)n); }
+          static void W32(Stream s, int n) { W16(s, n >> 16); W16(s, n); }
+          static byte[] Reply(byte[] q, string host) {
+              if (q.Length < 17) return Array.Empty<byte>();
+              int p = 12; var labels = new System.Collections.Generic.List<string>();
+              while (p < q.Length && q[p] != 0) {
+                  int len = q[p++]; if (len > 63 || p + len >= q.Length) return Array.Empty<byte>();
+                  labels.Add(Encoding.ASCII.GetString(q, p, len)); p += len;
+              }
+              if (p + 5 > q.Length) return Array.Empty<byte>();
+              string name = string.Join('.', labels).ToLowerInvariant();
+              int type = (q[p+1] << 8) | q[p+2], end = p+5;
+              if (name.EndsWith("lab.example")) Console.WriteLine($"WINDOWS_DNS_QUERY={name} TYPE={type}");
+              bool a = type == 1 && (name == host || name == "lab.example");
+              bool srv = type == 33 && (name == "_kerberos._tcp.lab.example" || name == "_kerberos._udp.lab.example" || name == "_kerberos._tcp.dc._msdcs.lab.example" || name == "_ldap._tcp.lab.example");
+              using var m = new MemoryStream();
+              m.Write(q, 0, 2); W16(m, 0x8180); W16(m, 1); W16(m, a || srv ? 1 : 0); W16(m, 0); W16(m, 0);
+              m.Write(q, 12, end-12);
+              if (a) {
+                  m.WriteByte(0xC0); m.WriteByte(0x0C); W16(m, 1); W16(m, 1); W32(m, 5); W16(m, 4); m.Write(new byte[]{127,0,0,1});
+              }
+              if (srv) {
+                  byte[] target = Name(host);
+                  m.WriteByte(0xC0); m.WriteByte(0x0C); W16(m, 33); W16(m, 1); W32(m, 5); W16(m, 6+target.Length);
+                  W16(m, 0); W16(m, 0); W16(m, name.StartsWith("_ldap") ? 389 : 88); m.Write(target);
+              }
+              return m.ToArray();
+          }
+          '@ | Set-Content -Path bindprobe/Program.cs -Encoding utf8
+          dotnet build bindprobe/bindprobe.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dcName = (& wsl.exe --distribution Ubuntu-24.04 --user root --exec hostname).Trim().ToLowerInvariant() + '.lab.example'
+          $pass = (& wsl.exe --distribution Ubuntu-24.04 --user root --exec cat /root/.rank03-admin-pass).Trim()
+          Write-Host "::add-mask::$pass"
+          $env:PA30_DC_HOST = $dcName
+          $env:PA30_BIND_PASS = $pass
+          Write-Host "WINDOWS_DC_HOST=$dcName"
+          $client = @(Get-DnsClientServerAddress -AddressFamily IPv4) | Where-Object { $_.ServerAddresses.Count -gt 0 -and $_.InterfaceAlias -notmatch 'Loopback' } | Select-Object -First 1
+          if ($null -eq $client) { Write-Host 'WINDOWS_DNS_FIXTURE=NO_CLIENT'; exit 2 }
+          $saved = @($client.ServerAddresses)
+          try {
+            Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses @('127.0.0.1')
+            ipconfig /flushdns | Out-Null
+            & './bindprobe/bin/Release/net10.0/bindprobe.exe'
+          } finally {
+            if ($saved.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ServerAddresses $saved }
+            else { Set-DnsClientServerAddress -InterfaceIndex $client.InterfaceIndex -ResetServerAddresses }
+            Remove-Item Env:PA30_BIND_PASS -ErrorAction SilentlyContinue
+          }
