@@ -1,0 +1,26 @@
+name: PA100 Identity cookie publish
+on:
+  push:
+    branches:
+      - pa100-identity-cookie-20261128-7d14c3
+    paths:
+      - .github/workflows/pa100-identity-cookie-20261128.yml
+      - runner_identity_cookie_publish.py
+      - runner_identity_state_deploy.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cookie_publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.100'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests==2.32.3
+      - run: python runner_identity_cookie_publish.py
