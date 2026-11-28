@@ -447,7 +447,7 @@ try {
     $compilerDir = Join-Path $sdkRoot 'Roslyn\bincore'
     if (-not (Test-Path (Join-Path $compilerDir 'csc.dll'))) { throw "Missing installed csc.dll: $compilerDir" }
     $testUser = 'eop062' + [guid]::NewGuid().ToString('N').Substring(0,8)
-    $testPassword = 'Aa1!' + [guid]::NewGuid().ToString('N')
+    $testPassword = 'Aa1!' + [guid]::NewGuid().ToString('N').Substring(0,8)
     $testAccount = "$env:COMPUTERNAME\$testUser"
     & net.exe user $testUser $testPassword /add /expires:never /passwordchg:no | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Could not create isolated standard Windows account' }
