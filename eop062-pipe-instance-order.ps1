@@ -123,7 +123,7 @@ if ($Mode -ne 'main') {
 }
 
 $testUser = 'eop062i' + [guid]::NewGuid().ToString('N').Substring(0,8)
-$testPassword = 'Aa1!' + [guid]::NewGuid().ToString('N').Substring(0,12)
+$testPassword = 'Aa1!' + [guid]::NewGuid().ToString('N').Substring(0,8)
 $testAccount = "$env:COMPUTERNAME\$testUser"
 $pipeName = 'eop062-instance-' + [guid]::NewGuid().ToString('N')
 $pwshExe = (Get-Command pwsh).Source
