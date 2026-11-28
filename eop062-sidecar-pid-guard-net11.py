@@ -40,7 +40,8 @@ def run(args, *, check=True, capture=True):
     r = subprocess.run(args, text=True, stdout=subprocess.PIPE if capture else None,
                        stderr=subprocess.STDOUT if capture else None, check=False)
     if check and r.returncode:
-        raise RuntimeError(f"command failed rc={r.returncode}: {args}\n{(r.stdout or '')[-2500:]}")
+        safe_args = [str(a).replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>") for a in args]
+        raise RuntimeError(f"command failed rc={r.returncode}: {safe_args}\n{(r.stdout or '')[-2500:]}")
     return r
 
 def docker_exec(script, *, check=True):
