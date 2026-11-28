@@ -1,0 +1,35 @@
+name: Windows IPv6 route survey
+on:
+  push:
+    branches: [rank-19-a34-winroute-20261128]
+permissions:
+  contents: read
+jobs:
+  survey:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Probe native link-local routing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $links = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' })
+          Write-Output ('LINK_LOCAL_COUNT=' + $links.Count)
+          Write-Output ('UP_NIC_COUNT=' + @(Get-NetAdapter | Where-Object Status -eq 'Up').Count)
+          if ($links.Count -eq 0) { Write-Output 'UNSCOPED_LOCAL_PROBE=NO_LINK_LOCAL'; exit 0 }
+          $entry = $links[0]
+          $raw = ($entry.IPAddress -split '%')[0]
+          $scoped = [System.Net.IPAddress]::Parse($raw + '%' + $entry.InterfaceIndex)
+          $listener = [System.Net.Sockets.TcpListener]::new($scoped, 0)
+          try {
+            $listener.Start()
+            $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+            $client = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetworkV6)
+            try {
+              $task = $client.ConnectAsync([System.Net.IPAddress]::Parse($raw), $port)
+              if (-not $task.Wait(3000)) { Write-Output 'UNSCOPED_LOCAL_PROBE=TIMEOUT' }
+              else { $task.GetAwaiter().GetResult(); Write-Output 'UNSCOPED_LOCAL_PROBE=CONNECTED' }
+            } catch { Write-Output ('UNSCOPED_LOCAL_PROBE=ERROR_' + $_.Exception.GetType().Name) }
+            finally { $client.Dispose() }
+          } catch { Write-Output ('LISTEN_PROBE=ERROR_' + $_.Exception.GetType().Name) }
+          finally { $listener.Stop() }
