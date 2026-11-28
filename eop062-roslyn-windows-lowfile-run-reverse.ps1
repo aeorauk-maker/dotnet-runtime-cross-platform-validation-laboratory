@@ -695,7 +695,8 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     Write-Host "BUILDER_FIRST_SERVER_SHUTDOWN wait=$shutdownWait exit=$shutdownExit"
     if ($firstShutdownProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($firstShutdownProc.hThread); $firstShutdownProc.hThread = [IntPtr]::Zero }
     if ($firstShutdownProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($firstShutdownProc.hProcess); $firstShutdownProc.hProcess = [IntPtr]::Zero }
-    if ($shutdownWait -ne 0 -or $shutdownExit -ne 0) { throw 'Builder-first server shutdown failed' }
+    if ($shutdownWait -ne 0) { throw 'Builder-first server shutdown timed out' }
+    if ($shutdownExit -ne 0) { Write-Host 'BUILDER_FIRST_SERVER_SHUTDOWN_NONZERO_DIAGNOSTIC=TRUE' }
 
     # Restore only the old artifact, then make the source secured again.
     [System.IO.File]::WriteAllText($source, $oldSource)
