@@ -1,0 +1,129 @@
+name: Rank03 one-realm actor key and PTR diagnostic
+on:
+  push:
+    branches: [pa30-rank03-actor-key-20261128]
+jobs:
+  actor_key_ptr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Join actor service key and low-user PTR in disposable Samba AD
+        shell: bash
+        run: |
+          sudo bash -s <<'ROOT'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq >/tmp/rank03-apt-update.log 2>&1
+          apt-get install -y -qq samba-ad-dc winbind krb5-user bind9-dnsutils >/tmp/rank03-apt-install.log 2>&1
+          systemctl stop samba-ad-dc smbd nmbd winbind >/dev/null 2>&1 || true
+          dc_ip=$(hostname -I | awk '{print $1}')
+          test -n "$dc_ip"
+          dc_iface=$(ip -o -4 addr show | awk -v ip="$dc_ip" '{split($4,a,"/"); if (a[1] == ip) {print $2; exit}}')
+          test -n "$dc_iface"
+          printf 'DC_IP=%s\n' "$dc_ip"
+          printf 'DC_INTERFACE=%s\n' "$dc_iface"
+          pass="Aa1!$(openssl rand -hex 20)"
+          printf '%s' "$pass" >/tmp/rank03-admin-pass
+          chmod 600 /tmp/rank03-admin-pass
+          rm -f /etc/samba/smb.conf
+          if samba-tool domain provision --realm=LAB.EXAMPLE --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --host-ip="$dc_ip" --adminpass="$pass" >/tmp/rank03-provision.log 2>&1; then
+            echo PROVISION=OK
+          else
+            echo PROVISION=FAILED
+            grep -Ei 'error|exception|failed' /tmp/rank03-provision.log | tail -8 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
+            exit 2
+          fi
+          sed -i "/^\[global\]/a interfaces = $dc_iface" /etc/samba/smb.conf
+          sed -i '/^\[global\]/a bind interfaces only = yes' /etc/samba/smb.conf
+          sed -i '/^\[global\]/a server services = -s3fs, -winbindd' /etc/samba/smb.conf
+          printf '[libdefaults]\n default_realm = LAB.EXAMPLE\n dns_lookup_kdc = false\n[realms]\n LAB.EXAMPLE = {\n  kdc = %s\n }\n' "$dc_ip" >/tmp/rank03-krb5.conf
+          export KRB5_CONFIG=/tmp/rank03-krb5.conf
+          nohup samba -i -d 1 >/tmp/rank03-samba.log 2>&1 </dev/null &
+          samba_pid=$!
+          sleep 12
+          if kill -0 "$samba_pid" 2>/dev/null; then echo SAMBA_PROC=LIVE; else echo SAMBA_PROC=EXITED; tail -20 /tmp/rank03-samba.log; exit 3; fi
+          ip -4 -brief addr
+          testparm -s 2>/dev/null | grep -E 'interfaces|bind interfaces only|server role|server services' | head -8 || true
+          ss -lntup | grep -E ':(53|88|389) ' | head -18 || true
+          grep -Ei 'error|failed|unable|bind|listen' /tmp/rank03-samba.log | tail -12 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
+          if printf '%s\n' "$pass" | kinit Administrator@LAB.EXAMPLE >/tmp/rank03-admin-kinit.log 2>&1; then
+            echo ADMIN_KINIT=OK
+          else
+            echo ADMIN_KINIT=FAILED
+            sed -n '1,8p' /tmp/rank03-admin-kinit.log | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g'
+            exit 4
+          fi
+          export PASSWD="$pass"
+          zone='113.0.203.in-addr.arpa'
+          samba-tool dns zonecreate "$dc_ip" "$zone" -U Administrator >/tmp/rank03-zone.log 2>&1
+          echo REVERSE_ZONE=CREATED
+          samba-tool computer add ACTOR -U Administrator >/tmp/rank03-computer.log 2>&1
+          echo ACTOR_MACHINE=CREATED
+          machine_pass="Cc3!$(openssl rand -hex 20)"
+          if samba-tool user setpassword --filter='sAMAccountName=ACTOR$' --newpassword="$machine_pass" >/tmp/rank03-machine-pass.log 2>&1; then
+            echo ACTOR_MACHINE_PASSWORD=SET
+          else
+            echo ACTOR_MACHINE_PASSWORD=FAILED
+            grep -Ei 'error|failed|invalid' /tmp/rank03-machine-pass.log | tail -4 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
+          fi
+          unset machine_pass
+          if samba-tool spn add ldap/actor.lab.example 'ACTOR$' -U Administrator >/tmp/rank03-spn.log 2>&1; then
+            echo ACTOR_LDAP_SPN=ADDED
+          else
+            echo ACTOR_LDAP_SPN=FAILED
+            grep -Ei 'error|failed|invalid' /tmp/rank03-spn.log | tail -4 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
+          fi
+          samba-tool domain exportkeytab /tmp/rank03-actor.keytab --principal='ACTOR$@LAB.EXAMPLE' >/tmp/rank03-export.log 2>&1 || true
+          machine_ready=0
+          if test -s /tmp/rank03-actor.keytab; then
+            chmod 600 /tmp/rank03-actor.keytab
+            if KRB5CCNAME=FILE:/tmp/rank03-actor.ccache kinit -k -t /tmp/rank03-actor.keytab 'ACTOR$@LAB.EXAMPLE' >/tmp/rank03-actor-kinit.log 2>&1; then machine_ready=1; fi
+          fi
+          printf 'MACHINE_KEY_READY=%s\n' "$machine_ready"
+          if samba-tool domain exportkeytab /tmp/rank03-service.keytab --principal='ldap/actor.lab.example' >/tmp/rank03-service-export.log 2>&1 && test -s /tmp/rank03-service.keytab; then
+            chmod 600 /tmp/rank03-service.keytab
+            service_entries=$(klist -kte /tmp/rank03-service.keytab 2>/dev/null | grep -c 'ldap/actor.lab.example' || true)
+          else
+            service_entries=0
+            echo ACTOR_SERVICE_EXPORT=FAILED
+            grep -Ei 'error|failed|invalid' /tmp/rank03-service-export.log | tail -4 | sed -E 's/[[:xdigit:]]{32,}/[redacted]/g' || true
+          fi
+          printf 'ACTOR_SERVICE_KEY_ENTRIES=%s\n' "$service_entries"
+          actor_user_pass="Bb2!$(openssl rand -hex 20)"
+          samba-tool user create lowptr "$actor_user_pass" >/tmp/rank03-user.log 2>&1
+          printf '%s\n' "$actor_user_pass" | KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache kinit lowptr@LAB.EXAMPLE >/tmp/rank03-lowptr-kinit.log 2>&1
+          unset actor_user_pass
+          echo LOW_USER_KINIT=OK
+          service_ticket_validated=0
+          if [ "$service_entries" -gt 0 ] && KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache kvno -k /tmp/rank03-service.keytab ldap/actor.lab.example >/tmp/rank03-kvno.log 2>&1; then
+            service_ticket_validated=1
+          fi
+          printf 'HONEST_KDC_ACTOR_TICKET_DECRYPTS=%s\n' "$service_ticket_validated"
+          samba-tool dns add "$dc_ip" "$zone" 21 PTR dc.lab.example -U Administrator >/tmp/rank03-control-add.log 2>&1
+          echo EXISTING_PTR=ADMIN_CREATED
+          unset PASSWD
+          if [ "$machine_ready" -eq 1 ]; then
+            printf 'server %s\nzone %s.\nupdate add 20.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" >/tmp/rank03-actor-ptr.nsupdate
+            KRB5CCNAME=FILE:/tmp/rank03-actor.ccache nsupdate -g /tmp/rank03-actor-ptr.nsupdate >/tmp/rank03-actor-ptr.out 2>&1 || true
+            actor_ptr=$(dig +short @"$dc_ip" -x 203.0.113.20 PTR | tr -d '\r' | head -1)
+            if [ "$actor_ptr" = 'actor.lab.example.' ]; then echo MACHINE_PTR=OWNED_UPDATE_OK; else echo MACHINE_PTR=NOT_CREATED; fi
+          fi
+          printf 'server %s\nzone %s.\nupdate add 22.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" >/tmp/rank03-lowptr.nsupdate
+          KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache nsupdate -g /tmp/rank03-lowptr.nsupdate >/tmp/rank03-lowptr.out 2>&1 || true
+          lowptr=$(dig +short @"$dc_ip" -x 203.0.113.22 PTR | tr -d '\r' | head -1)
+          if [ "$lowptr" = 'actor.lab.example.' ]; then echo LOW_USER_PTR=OWNED_UPDATE_OK; else echo LOW_USER_PTR=NOT_CREATED; fi
+          printf 'server %s\nzone %s.\nupdate delete 21.%s. PTR\nupdate add 21.%s. 60 PTR actor.lab.example.\nsend\n' "$dc_ip" "$zone" "$zone" "$zone" >/tmp/rank03-control-ptr.nsupdate
+          KRB5CCNAME=FILE:/tmp/rank03-lowptr.ccache nsupdate -g /tmp/rank03-control-ptr.nsupdate >/tmp/rank03-control-ptr.out 2>&1 || true
+          control_ptr=$(dig +short @"$dc_ip" -x 203.0.113.21 PTR | tr -d '\r' | head -1)
+          printf 'EXISTING_PTR_AFTER_ACTOR=%s\n' "${control_ptr:-none}"
+          printf 'LOW_USER_UPDATE_ERROR_LINES=%s\n' "$(grep -Eic 'update failed|REFUSED|NOTAUTH|TSIG' /tmp/rank03-lowptr.out || true)"
+          printf 'CONTROL_UPDATE_ERROR_LINES=%s\n' "$(grep -Eic 'update failed|REFUSED|NOTAUTH|TSIG' /tmp/rank03-control-ptr.out || true)"
+          test "$lowptr" = 'actor.lab.example.'
+          if [ "$machine_ready" -eq 1 ]; then test "$actor_ptr" = 'actor.lab.example.'; fi
+          test "$control_ptr" = 'dc.lab.example.'
+          echo PTR_MATRIX=PASS
+          test "$service_ticket_validated" -eq 1
+          echo SAME_REALM_PTR_AND_ACTOR_KEY=PASS
+          ROOT
