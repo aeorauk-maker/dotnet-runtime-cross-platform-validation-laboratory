@@ -22,9 +22,9 @@ ROOT = FIXTURES / "root.der"
 OUT = HERE / "a31-run"
 NUPKG = HERE / "a31-feed/Owned.TestPkg.1.0.0.nupkg"
 CASES = (
-    ("attack_1", "attack_no_san_forbidden_cn"),
     ("denied_san", "denied_forbidden_san"),
     ("valid", "valid_direct_root"),
+    ("attack_1", "attack_no_san_forbidden_cn"),
     ("attack_repeat", "attack_no_san_forbidden_cn"),
 )
 DOTNET = "dotnet"
@@ -229,7 +229,7 @@ def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_has
                         first_auth = capture_path.read_text()
                         if hashlib.sha256(first_auth.encode()).hexdigest() != expected_hash:
                             raise RuntimeError("captured authorization differs from configured credential")
-                        if captured_auth is None:
+                        if captured_auth is None and case == "attack_no_san_forbidden_cn":
                             captured_auth = first_auth
                     capture_path.unlink(missing_ok=True)
                     all_rows.append(dict(label=label, case=case, build_exit=result.returncode,
@@ -254,8 +254,8 @@ def perform_cases(run_cases, trustrow, marker, expected_hash, canary, canary_has
         if protocol_only:
             assert all_rows[0]["build_exit"] == 0 and receipt_counts == [1] and captured_auth
         else:
-            assert [r["build_exit"] == 0 for r in all_rows] == [True, False, True, True]
-            assert receipt_counts == [1, 1, 2, 3] and captured_auth
+            assert [r["build_exit"] == 0 for r in all_rows] == [False, True, True, True]
+            assert receipt_counts == [0, 1, 2, 3] and captured_auth
         protected_port = port()
         protected_log = OUT / "protected.jsonl"
         protected_log.unlink(missing_ok=True)
