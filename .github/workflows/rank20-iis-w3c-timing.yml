@@ -17,7 +17,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $features = @(Get-WindowsFeature -Name Web-Server,Web-Scripting-Tools)
+          $features = @(Get-WindowsFeature -Name Web-Server,Web-Scripting-Tools,Web-Http-Logging)
           $missing = @($features | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name })
           if ($missing.Count -gt 0) {
             $install = Install-WindowsFeature -Name $missing -IncludeManagementTools
@@ -25,6 +25,7 @@ jobs:
               throw "IIS feature installation did not complete without restart"
             }
           }
+          Write-Host "http_logging_role_installed=$((Get-WindowsFeature -Name Web-Http-Logging).Installed)"
           Import-Module WebAdministration
           $siteName = 'Rank20IisW3cTiming'
           $port = 38421
