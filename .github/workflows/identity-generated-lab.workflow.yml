@@ -1,0 +1,57 @@
+name: Identity generated page lab build
+on:
+  push:
+    branches:
+      - pa30-rank30-identity-token-order-20261128
+    paths:
+      - .github/workflows/identity-generated-lab.workflow.yml
+
+jobs:
+  generated-identity-lab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install released SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+      - name: Build stock generated app with local file mail sender
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet new blazor -au Individual -int Server -n IdentityGeneratedLab -o IdentityGeneratedLab --no-restore
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('IdentityGeneratedLab/Program.cs')
+          s=p.read_text()
+          old='builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();'
+          assert s.count(old)==1
+          p.write_text(s.replace(old,'builder.Services.AddSingleton<IEmailSender<ApplicationUser>, LabFileEmailSender>();'))
+          PY
+          cat > IdentityGeneratedLab/Components/Account/LabFileEmailSender.cs <<'CS'
+          using Microsoft.AspNetCore.Identity;
+          using IdentityGeneratedLab.Data;
+          namespace IdentityGeneratedLab.Components.Account;
+          internal sealed class LabFileEmailSender : IEmailSender<ApplicationUser>
+          {
+              private static Task SaveAsync(string email, string kind, string value)
+              {
+                  var path = Environment.GetEnvironmentVariable("LAB_MAIL_LOG") ?? Path.Combine(AppContext.BaseDirectory, "captured-email.txt");
+                  return File.AppendAllTextAsync(path, string.Concat(DateTimeOffset.UtcNow.ToString("O"), "\t", email, "\t", kind, "\t", value, Environment.NewLine));
+              }
+              public Task SendConfirmationLinkAsync(ApplicationUser user, string email, string confirmationLink)
+                  => SaveAsync(email, "confirm", confirmationLink);
+              public Task SendPasswordResetLinkAsync(ApplicationUser user, string email, string resetLink)
+                  => SaveAsync(email, "reset-link", resetLink);
+              public Task SendPasswordResetCodeAsync(ApplicationUser user, string email, string resetCode)
+                  => SaveAsync(email, "reset-code", resetCode);
+          }
+          CS
+          dotnet publish IdentityGeneratedLab/IdentityGeneratedLab.csproj -c Release -o identity-generated-publish
+          test -f identity-generated-publish/IdentityGeneratedLab.dll
+          echo "PASS stock-template-published-with-file-mail-sender"
+      - name: Store portable lab build
+        uses: actions/upload-artifact@v4
+        with:
+          name: identity-generated-page-lab
+          path: identity-generated-publish/
+          retention-days: 1
