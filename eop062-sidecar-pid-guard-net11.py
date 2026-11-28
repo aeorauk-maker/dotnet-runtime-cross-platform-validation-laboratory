@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Inert EOP02-EOP-062 controlled sidecar proof, on an owned public runner only."""
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -55,6 +56,16 @@ def assert_eq(label, got, want):
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def compiler_server_live():
+    # Query the released SDK's exact default pipe without asking it to shut
+    # down. Closing this short probe only resets the ordinary idle interval.
+    pipe_input = "app.False./usr/share/dotnet/sdk/11.0.100/roslyn/bincore"
+    pipe_name = base64.b64encode(hashlib.sha256(pipe_input.encode()).digest()).decode().replace("/", "_").rstrip("=")
+    script = ("perl -MIO::Socket::UNIX -MSocket=SOCK_STREAM -e "
+              f"'my $s=IO::Socket::UNIX->new(Type=>SOCK_STREAM,Peer=>q{{/tmp/{pipe_name}}},Timeout=>2); "
+              "print $s ? q{LIVE} : q{ABSENT};'")
+    return docker_exec(script).stdout.strip()
 
 def http(path, token=None, owner=False):
     headers = {}
@@ -200,17 +211,18 @@ try:
     # compiler response, hiding the effect.
     write_source(False)
     time.sleep(1.2)
-    docker_exec("cd /src/admin && dotnet build -c Release -p:UseSharedCompilation=false")
+    docker_exec("cd /src/admin && dotnet build -c Release")
     obj_dll = SRC / "obj/Release/net11.0/AdminApp.dll"
     assert_eq("PUBLIC_RESIDUAL_BIN", sha(dll), old_hash)
     assert_eq("PUBLIC_RESIDUAL_OBJ", sha(obj_dll), old_hash)
+    assert_eq("REAL_ROSLYN_SERVER_LIVE", compiler_server_live(), "LIVE")
     time.sleep(1.2)
     write_source(True)
     assert_eq("SECURED_SOURCE_WITH_RESIDUAL_BIN", sha(dll), old_hash)
     assert_eq("SECURED_SOURCE_WITH_RESIDUAL_OBJ", sha(obj_dll), old_hash)
-
-    # Real Roslyn was started for the original build; shut it down before precise preclaim.
-    docker_exec("dotnet build-server shutdown", check=False)
+    print("NATURAL_IDLE_WAIT_START seconds=675 no-shutdown-command=True", flush=True)
+    time.sleep(675)
+    assert_eq("REAL_ROSLYN_SERVER_AFTER_IDLE", compiler_server_live(), "ABSENT")
     actor_probe = """set -eu
 test ! -e /src/admin/Program.cs
 test ! -e /proc/1/root/src/admin/Program.cs
