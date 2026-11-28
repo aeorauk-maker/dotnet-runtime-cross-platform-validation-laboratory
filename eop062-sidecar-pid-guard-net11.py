@@ -174,6 +174,7 @@ try:
          IMAGE, "bash", "-lc", "sleep infinity"])
     assert_eq("RELEASED_SDK", docker_exec("dotnet --version").stdout.strip(), "11.0.100")
     print(f"RUNTIME={docker_exec('dotnet --list-runtimes').stdout.strip()}", flush=True)
+    print("VICTIM_ID=" + docker_exec("id; id -un 2>&1", check=False).stdout.strip(), flush=True)
     docker_exec("cd /src/admin && dotnet build -c Release -p:UseSharedCompilation=false")
     dll = SRC / "bin/Release/net11.0/AdminApp.dll"
     old_hash = sha(dll)
@@ -265,6 +266,18 @@ readlink /proc/1/ns/net
         assert_eq("MALFORMED_ROLE_ABSENT", ROLE.exists(), False)
         assert_eq("MALFORMED_MARKER_ABSENT", MARKER.exists(), False)
     print(f"RESULT=PASS MODE={MODE}", flush=True)
+except Exception:
+    # Diagnostic only: preserve the causal fork when a runner fails. The two
+    # generated credentials are never published in logs.
+    if (ROOT / "actor.log").exists():
+        data = (ROOT / "actor.log").read_text()[-3500:]
+        print("ACTOR_LOG_TAIL=" + data.replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>"), flush=True)
+    if LOG.exists():
+        data = LOG.read_text()[-3500:]
+        print("RUN_LOG_TAIL=" + data.replace(OWNER, "<redacted-owner>").replace(LOW, "<redacted-low>"), flush=True)
+    if (SRC / "bin/Release/net11.0/AdminApp.dll").exists():
+        print("FAILURE_DLL_SHA256=" + sha(SRC / "bin/Release/net11.0/AdminApp.dll"), flush=True)
+    raise
 finally:
     stop_app()
     if actor_proc and actor_proc.poll() is None:
