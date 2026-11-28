@@ -131,10 +131,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $q = 'access_token=' + ('A' * 284)
           $found = $false
-          $fs = @(Get-ChildItem -Path 'C:\inetpub\logs\LogFiles' -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue)
+          $isAdmin = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Output "actor_is_admin=$isAdmin"
+          Write-Output "actor_log_dir_exists=$(Test-Path 'C:\inetpub\logs\LogFiles')"
+          $fs = @()
+          try { $fs = @(Get-ChildItem -Path 'C:\inetpub\logs\LogFiles' -Recurse -Filter '*.log' -File -ErrorAction Stop) }
+          catch { Write-Output "actor_enum_error_type=$($_.Exception.GetType().Name)" }
+          Write-Output "actor_file_count=$($fs.Count)"
           foreach ($f in $fs) {
-            $ls = @(Get-Content -Path $f.FullName -ErrorAction SilentlyContinue)
-            if ($ls -match [regex]::Escape($q)) { $found = $true; break }
+            try {
+              $ls = @(Get-Content -Path $f.FullName -ErrorAction Stop)
+              if ($ls -match [regex]::Escape($q)) { $found = $true; break }
+            } catch { Write-Output "actor_read_error_type=$($_.Exception.GetType().Name)" }
           }
           Write-Output "actor_full_query_visible=$found"
           '@ | Set-Content -Path $actorScript
@@ -143,7 +151,7 @@ jobs:
                 Write-Host "actor_exit_code=$($actor.ExitCode)"
                 $actorLines = @(Get-Content -Path $actorOutput -ErrorAction SilentlyContinue)
                 foreach ($line in $actorLines) {
-                  if ($line -match '^actor_full_query_visible=(True|False)$') { Write-Host $line }
+                  if ($line -match '^actor_(is_admin|log_dir_exists|file_count|enum_error_type|read_error_type|full_query_visible)=') { Write-Host $line }
                 }
               } catch { Write-Host "actor_start_error_type=$($_.Exception.GetType().Name)" }
             }
