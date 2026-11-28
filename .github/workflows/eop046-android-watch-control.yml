@@ -607,9 +607,11 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           set +o pipefail
-          yes | "$SDKMANAGER" --install 'system-images;android-35;google_apis;x86_64' 'platforms;android-37.0' 'build-tools;37.0.0'
+          yes | "$SDKMANAGER" --install 'system-images;android-35;google_apis;x86_64' 'platforms;android-37.0' 'build-tools;37.0.0' 'platform-tools'
           set -o pipefail
           test -d "$ANDROID_HOME/system-images/android-35/google_apis/x86_64"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           dotnet build android/android046.csproj -c Debug --nologo
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n eop046_android35 -k 'system-images;android-35;google_apis;x86_64' --force
       - name: Boot owned Android 35 emulator
