@@ -620,11 +620,18 @@ try {
     [System.IO.File]::WriteAllText($actorScript, $actorContent)
     $actorCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$actorScript`"")
     $roslynActorProc = [MicNative+ProcessInfo]::new()
-    if (-not [MicNative]::CreateProcessAsUserW($standardLow, $pwshExe, $actorCommand,
+    $actorLaunched = [MicNative]::CreateProcessAsUserW($standardLow, $pwshExe, $actorCommand,
         [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero,
-        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)) {
-        throw "Low Roslyn actor launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-    }
+        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)
+    if (-not $actorLaunched) {
+        $asUserError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        Write-Host "STANDARD_LOW_CREATE_AS_USER_ERROR=$asUserError"
+        $actorCommand = [System.Text.StringBuilder]::new("`"$pwshExe`" -NoProfile -NonInteractive -File `"$actorScript`"")
+        $actorLaunched = [MicNative]::CreateProcessWithTokenW($standardLow, 0, $pwshExe, $actorCommand,
+            0, [IntPtr]::Zero, (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$roslynActorProc)
+        if (-not $actorLaunched) { throw "Standard low actor launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+        Write-Host 'STANDARD_LOW_LAUNCH=CreateProcessWithTokenW'
+    } else { Write-Host 'STANDARD_LOW_LAUNCH=CreateProcessAsUserW' }
     $actorReady = $false
     for ($attempt = 0; $attempt -lt 150; $attempt++) {
         $actorState = [System.IO.File]::ReadAllText($actorResult)
