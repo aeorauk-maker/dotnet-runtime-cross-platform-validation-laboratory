@@ -1,0 +1,73 @@
+name: Rank03 Windows HTTP identity boundary
+on:
+  push:
+    branches: [pa30-rank03-winwsl-20261128]
+jobs:
+  identity:
+    runs-on: windows-2025
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Test released Negotiate identity and Admin-only guard
+        shell: pwsh
+        run: |
+          $lowPassword = 'Aa1!' + ([guid]::NewGuid().ToString('N').Substring(0,20))
+          Write-Host "::add-mask::$lowPassword"
+          New-LocalUser -Name 'rank03low' -Password (ConvertTo-SecureString $lowPassword -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          dotnet new web -n roleprobe -f net10.0 -o roleprobe --no-restore
+          dotnet add roleprobe/roleprobe.csproj package Microsoft.AspNetCore.Authentication.Negotiate --version 10.0.15
+          @'
+          using Microsoft.AspNetCore.Authentication.Negotiate;
+          using Microsoft.AspNetCore.Authorization;
+          using System.Net;
+          using System.Security.Principal;
+
+          var builder = WebApplication.CreateBuilder(args);
+          builder.WebHost.UseUrls("http://127.0.0.1:50891");
+          builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme).AddNegotiate();
+          builder.Services.AddAuthorization();
+          var app = builder.Build();
+          app.UseAuthentication();
+          app.UseAuthorization();
+          int writes = 0;
+          app.MapGet("/who", (HttpContext c) => {
+              var identity = c.User.Identity;
+              Console.WriteLine($"HTTP_IDENTITY_WINDOWS={identity is WindowsIdentity}");
+              Console.WriteLine($"HTTP_IDENTITY_NAME_HAS_AT={identity?.Name?.Contains('@')}");
+              Console.WriteLine($"HTTP_IDENTITY_NAME_HAS_BACKSLASH={identity?.Name?.Contains('\\')}");
+              return Results.Ok();
+          }).RequireAuthorization();
+          app.MapPost("/admin", () => {
+              int n = Interlocked.Increment(ref writes);
+              File.WriteAllText(Path.Combine(Path.GetTempPath(), "rank03-win-admin-marker.txt"), n.ToString());
+              return Results.Ok();
+          }).RequireAuthorization(new AuthorizeAttribute { Roles = "Administrators" });
+          await app.StartAsync();
+          using var anon = new HttpClient();
+          using var lowHandler = new HttpClientHandler { Credentials = new NetworkCredential("rank03low", Environment.GetEnvironmentVariable("PA30_LOW_PASS")!, Environment.MachineName) };
+          using var low = new HttpClient(lowHandler);
+          using var adminHandler = new HttpClientHandler { Credentials = CredentialCache.DefaultCredentials };
+          using var admin = new HttpClient(adminHandler);
+          const string root = "http://127.0.0.1:50891";
+          Console.WriteLine($"HTTP_ANON_WHO={(int)(await anon.GetAsync(root+"/who")).StatusCode}");
+          Console.WriteLine($"HTTP_LOW_WHO={(int)(await low.GetAsync(root+"/who")).StatusCode}");
+          Console.WriteLine($"HTTP_LOW_ADMIN={(int)(await low.PostAsync(root+"/admin", new StringContent(""))).StatusCode}");
+          Console.WriteLine($"HTTP_MARKER_AFTER_LOW={writes}");
+          Console.WriteLine($"HTTP_VALID_ADMIN={(int)(await admin.PostAsync(root+"/admin", new StringContent(""))).StatusCode}");
+          Console.WriteLine($"HTTP_MARKER_AFTER_VALID={writes}");
+          Console.WriteLine($"HTTP_LOW_ADMIN_REVERSE={(int)(await low.PostAsync(root+"/admin", new StringContent(""))).StatusCode}");
+          Console.WriteLine($"HTTP_MARKER_AFTER_REVERSE={writes}");
+          await app.StopAsync();
+          '@ | Set-Content -Path roleprobe/Program.cs -Encoding utf8
+          dotnet build roleprobe/roleprobe.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PA30_LOW_PASS = $lowPassword
+          try { & './roleprobe/bin/Release/net10.0/roleprobe.exe' }
+          finally {
+            Remove-Item Env:PA30_LOW_PASS -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name 'rank03low' -ErrorAction SilentlyContinue
+          }
