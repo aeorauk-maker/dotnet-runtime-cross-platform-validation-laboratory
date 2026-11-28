@@ -840,14 +840,15 @@ try {
     $forgedExists = Test-Path $outputDll
     $forgedHash = if ($forgedExists) { (Get-FileHash $outputDll -Algorithm SHA256).Hash } else { '<absent>' }
     Write-Host "FORGED_RUN state=$runState exit=$runExit dll=$forgedExists hash=$forgedHash old=$oldHash"
-    $runLogText = if (Test-Path $runLog) { [System.IO.File]::ReadAllText($runLog) } else { '<absent>' }
-    Write-Host "FORGED_RUN_LOG_BEGIN`n$runLogText`nFORGED_RUN_LOG_END"
     $forgedMarkerExists = Test-Path $markerPath
     $forgedMarkerText = if ($forgedMarkerExists) { [System.IO.File]::ReadAllText($markerPath) } else { '<absent>' }
     Write-Host "FORGED_AUTH actor-wait=$actorWait marker=$forgedMarkerExists text=$forgedMarkerText"
     Write-Host "ROSLYN_LOW_LOG_BEGIN`n$actorText`nROSLYN_LOW_LOG_END"
     if ($runState -eq 258) { & taskkill.exe /PID $appProc.dwProcessId /T /F | Out-Host }
     [void][MicNative]::WaitForSingleObject($appProc.hProcess, 5000)
+    $runLogText = '<absent-or-locked>'
+    if (Test-Path $runLog) { try { $runLogText = [System.IO.File]::ReadAllText($runLog) } catch { $runLogText = "<locked: $($_.Exception.Message)>" } }
+    Write-Host "FORGED_RUN_LOG_BEGIN`n$runLogText`nFORGED_RUN_LOG_END"
     if ($appProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($appProc.hThread); $appProc.hThread = [IntPtr]::Zero }
     if ($appProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($appProc.hProcess); $appProc.hProcess = [IntPtr]::Zero }
     if ($forgedMarkerExists) { [System.IO.File]::Delete($markerPath) }
