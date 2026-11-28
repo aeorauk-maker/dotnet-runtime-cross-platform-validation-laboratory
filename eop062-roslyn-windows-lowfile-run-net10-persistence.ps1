@@ -499,13 +499,17 @@ try {
     $source = Join-Path $labRoot 'Program.cs'
     $markerPath = Join-Path $labRoot 'protected-marker.txt'
     $rolePath = Join-Path $labRoot 'protected-roles.txt'
-    $ownerToken = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    $ownerSigner = [Security.Cryptography.ECDsa]::Create()
+    $ownerPublicKey = [Convert]::ToBase64String($ownerSigner.ExportSubjectPublicKeyInfo())
+    $ownerSignature = [Convert]::ToBase64String($ownerSigner.SignData([Text.Encoding]::UTF8.GetBytes('EOP062_OWNER_PROOF'), [Security.Cryptography.HashAlgorithmName]::SHA256))
     $lowToken = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
     [System.IO.File]::WriteAllText($rolePath, '')
     $baseUrl = 'http://127.0.0.1:50562'
     [System.IO.File]::WriteAllText($project, '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><UseAppHost>false</UseAppHost></PropertyGroup></Project>')
     $oldSource = @'
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
@@ -543,9 +547,21 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     {
         var authorization = Request.Headers.TryGetValue("Authorization", out var header)
             ? header.ToString() : string.Empty;
-        var owner = Environment.GetEnvironmentVariable("EOP062_OWNER_TOKEN")!;
         var low = Environment.GetEnvironmentVariable("EOP062_LOW_TOKEN")!;
-        if (authorization == "Bearer " + owner)
+        var ownerVerified = false;
+        if (authorization.StartsWith("Owner ", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var verifier = ECDsa.Create();
+                verifier.ImportSubjectPublicKeyInfo(Convert.FromBase64String("__OWNER_PUBLIC_KEY__"), out _);
+                ownerVerified = verifier.VerifyData(Encoding.UTF8.GetBytes("EOP062_OWNER_PROOF"),
+                    Convert.FromBase64String(authorization[6..]), HashAlgorithmName.SHA256);
+            }
+            catch (FormatException) { }
+            catch (CryptographicException) { }
+        }
+        if (ownerVerified)
         {
             var identity = new ClaimsIdentity(new[] {
                 new Claim(ClaimTypes.Name, "owner"), new Claim(ClaimTypes.Role, "Owner"),
@@ -568,6 +584,7 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     }
 }
 '@
+    $oldSource = $oldSource.Replace('__OWNER_PUBLIC_KEY__', $ownerPublicKey)
     $secureSource = $oldSource.Replace('}); // OLD_PUBLIC_GRANT_062', '}).RequireAuthorization("Owner"); // NEW_PROTECTED_GRANT_062')
     if ($secureSource -eq $oldSource) { throw 'Secure source transition failed' }
     [System.IO.File]::WriteAllText($source, $oldSource)
@@ -578,7 +595,6 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
         "DOTNET_ROOT=$dotnetRoot",
         "EOP062_MARKER=$markerPath",
         "EOP062_ROLES=$rolePath",
-        "EOP062_OWNER_TOKEN=$ownerToken",
         "EOP062_LOW_TOKEN=$lowToken",
         "PATH=$dotnetRoot;$env:SystemRoot\System32",
         "SystemRoot=$env:SystemRoot",
@@ -687,22 +703,26 @@ sealed class LabAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
         [void]$preLowAdminRequest.Headers.TryAddWithoutValidation('Authorization', "Bearer $lowToken")
         $preLowAdmin = $preClient.SendAsync($preLowAdminRequest).GetAwaiter().GetResult()
         $preAnonGrant = $preClient.PostAsync("$baseUrl/grant", [System.Net.Http.StringContent]::new('')).GetAwaiter().GetResult()
+        $preFakeOwnerRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$baseUrl/grant")
+        [void]$preFakeOwnerRequest.Headers.TryAddWithoutValidation('Authorization', "Owner $lowToken")
+        $preFakeOwner = $preClient.SendAsync($preFakeOwnerRequest).GetAwaiter().GetResult()
         $preOwnerAdminRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$baseUrl/admin")
-        [void]$preOwnerAdminRequest.Headers.TryAddWithoutValidation('Authorization', "Bearer $ownerToken")
+        [void]$preOwnerAdminRequest.Headers.TryAddWithoutValidation('Authorization', "Owner $ownerSignature")
         $preOwnerAdmin = $preClient.SendAsync($preOwnerAdminRequest).GetAwaiter().GetResult()
         $preLowGrantStatus = [int]$preLowGrant.StatusCode
         $preLowAdminStatus = [int]$preLowAdmin.StatusCode
         $preAnonGrantStatus = [int]$preAnonGrant.StatusCode
+        $preFakeOwnerStatus = [int]$preFakeOwner.StatusCode
         $preOwnerAdminStatus = [int]$preOwnerAdmin.StatusCode
         $preRole = [System.IO.File]::ReadAllText($rolePath)
         $preMarker = Test-Path $markerPath
-        Write-Host "PREATTACK_SECURE_GUARD low-grant=$preLowGrantStatus low-admin=$preLowAdminStatus anon-grant=$preAnonGrantStatus owner-admin=$preOwnerAdminStatus role-empty=$($preRole -eq '') marker-after-owner=$preMarker"
+        Write-Host "PREATTACK_SECURE_GUARD low-grant=$preLowGrantStatus low-admin=$preLowAdminStatus anon-grant=$preAnonGrantStatus fake-owner-grant=$preFakeOwnerStatus owner-admin=$preOwnerAdminStatus role-empty=$($preRole -eq '') marker-after-owner=$preMarker"
         $preClient.Dispose()
         [void][MicNative]::TerminateProcess($prevalidAppProc.hProcess, 0)
         [void][MicNative]::WaitForSingleObject($prevalidAppProc.hProcess, 5000)
         if ($prevalidAppProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($prevalidAppProc.hThread); $prevalidAppProc.hThread = [IntPtr]::Zero }
         if ($prevalidAppProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($prevalidAppProc.hProcess); $prevalidAppProc.hProcess = [IntPtr]::Zero }
-        if ($preLowGrantStatus -ne 403 -or $preLowAdminStatus -ne 403 -or $preAnonGrantStatus -ne 401 -or $preOwnerAdminStatus -ne 200 -or $preRole -ne '' -or -not $preMarker) {
+        if ($preLowGrantStatus -ne 403 -or $preLowAdminStatus -ne 403 -or $preAnonGrantStatus -ne 401 -or $preFakeOwnerStatus -ne 401 -or $preOwnerAdminStatus -ne 200 -or $preRole -ne '' -or -not $preMarker) {
             throw 'Preattack secured authorization guard failed'
         }
         [System.IO.File]::Delete($markerPath)
@@ -840,13 +860,6 @@ try {
     } catch [System.UnauthorizedAccessException] {
         Record 'LOW_ROLE_WRITE=DENIED'
     }
-    try {
-        [void][System.IO.File]::ReadAllText('__RUNLAUNCHER__')
-        Record 'LOW_OWNER_LAUNCHER_READ=ALLOWED'
-        throw 'Low actor unexpectedly read protected owner credential launcher'
-    } catch [System.UnauthorizedAccessException] {
-        Record 'LOW_OWNER_LAUNCHER_READ=DENIED'
-    }
     $server = [System.IO.Pipes.NamedPipeServerStream]::new('__PIPE__', [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::None)
     Record 'ROSLYN_PIPE_READY'
     $server.WaitForConnection()
@@ -894,13 +907,11 @@ try {
     exit 3
 }
 '@
-    $actorContent = $actorContent.Replace('__LOG__', $actorResult).Replace('__SOURCE__', $source).Replace('__PROJECT_PROBE__', (Join-Path $labRoot 'low-probe.txt')).Replace('__MARKER__', $markerPath).Replace('__ROLES__', $rolePath).Replace('__RUNLAUNCHER__', (Join-Path $labRoot 'forged-run.cmd')).Replace('__LOWTOKEN__', $lowToken).Replace('__URL__', $baseUrl).Replace('__PIPE__', $compilerPipe)
+    $actorContent = $actorContent.Replace('__LOG__', $actorResult).Replace('__SOURCE__', $source).Replace('__PROJECT_PROBE__', (Join-Path $labRoot 'low-probe.txt')).Replace('__MARKER__', $markerPath).Replace('__ROLES__', $rolePath).Replace('__LOWTOKEN__', $lowToken).Replace('__URL__', $baseUrl).Replace('__PIPE__', $compilerPipe)
     [System.IO.File]::WriteAllText($actorScript, $actorContent)
     $runLog = Join-Path $labRoot 'forged-run.log'
     $runLauncher = Join-Path $labRoot 'forged-run.cmd'
-    [System.IO.File]::WriteAllText($runLauncher, "@echo off`r`nset `"ASPNETCORE_URLS=$baseUrl`"`r`nset `"EOP062_MARKER=$markerPath`"`r`nset `"EOP062_ROLES=$rolePath`"`r`nset `"EOP062_OWNER_TOKEN=$ownerToken`"`r`nset `"EOP062_LOW_TOKEN=$lowToken`"`r`nset `"DOTNET_CLI_HOME=$labRoot`"`r`n`"$dotnetExe`" run --project `"$project`" --no-restore --no-launch-profile -c Debug > `"$runLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n")
-    & icacls.exe $runLauncher /setintegritylevel 'M:(NW,NR)' | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw 'Could not give owner-token launcher no-read-up label' }
+    [System.IO.File]::WriteAllText($runLauncher, "@echo off`r`nset `"ASPNETCORE_URLS=$baseUrl`"`r`nset `"EOP062_MARKER=$markerPath`"`r`nset `"EOP062_ROLES=$rolePath`"`r`nset `"EOP062_LOW_TOKEN=$lowToken`"`r`nset `"DOTNET_CLI_HOME=$labRoot`"`r`n`"$dotnetExe`" run --project `"$project`" --no-restore --no-launch-profile -c Debug > `"$runLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n")
     $lowCmdExe = Join-Path $labRoot 'low-actor-cmd.exe'
     [System.IO.File]::Copy($cmdExe, $lowCmdExe)
     & icacls.exe $lowCmdExe /setintegritylevel L | Out-Host
@@ -991,7 +1002,7 @@ try {
     $lowGrantResponse = $client.SendAsync($lowGrantRequest).GetAwaiter().GetResult()
     $lowGrantStatus = [int]$lowGrantResponse.StatusCode
     $ownerRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$baseUrl/admin")
-    [void]$ownerRequest.Headers.TryAddWithoutValidation('Authorization', "Bearer $ownerToken")
+    [void]$ownerRequest.Headers.TryAddWithoutValidation('Authorization', "Owner $ownerSignature")
     $ownerResponse = $client.SendAsync($ownerRequest).GetAwaiter().GetResult()
     $ownerStatus = [int]$ownerResponse.StatusCode
     $markerAfterOwner = Test-Path $markerPath
@@ -1001,10 +1012,11 @@ try {
     [void][MicNative]::WaitForSingleObject($validAppProc.hProcess, 5000)
     if ($validAppProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($validAppProc.hThread); $validAppProc.hThread = [IntPtr]::Zero }
     if ($validAppProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($validAppProc.hProcess); $validAppProc.hProcess = [IntPtr]::Zero }
-    if ($prevalidExit -ne 0 -or $prevalidHash -eq $oldHash -or $runState -ne 258 -or -not $forgedExists -or $forgedHash -ne $oldHash -or $markerBeforeRun -or $actorWait -ne 0 -or -not $actorText.Contains('LOW_PAYLOAD_CHILD_IL=VERIFIED') -or -not $actorText.Contains('LOW_SOURCE_WRITE=DENIED') -or -not $actorText.Contains('LOW_PROJECT_WRITE=DENIED') -or -not $actorText.Contains('LOW_MARKER_WRITE=DENIED') -or -not $actorText.Contains('LOW_ROLE_WRITE=DENIED') -or -not $actorText.Contains('LOW_OWNER_LAUNCHER_READ=DENIED') -or -not $actorText.Contains('TARGET=True') -or -not $actorText.Contains('SENT_COMPLETED_ZERO') -or -not $actorText.Contains('LOW_BEFORE_GRANT_ADMIN_STATUS=403') -or -not $actorText.Contains('LOW_GRANT_STATUS=200') -or -not $actorText.Contains('LOW_AFTER_GRANT_ADMIN_STATUS=200') -or -not $forgedMarkerExists -or $forgedMarkerText -ne 'PROTECTED_INERT_MARKER_062' -or $forgedRoleText -ne 'low=Admin' -or $validExit -ne 0 -or -not $validExists -or $validHash -eq $oldHash -or $roleAfterRebuild -ne 'low=Admin' -or $anonStatus -ne 401 -or $markerAfterAnon -or $lowAdminStatus -ne 200 -or -not $markerAfterLow -or $lowGrantStatus -ne 403 -or $ownerStatus -ne 200 -or -not $markerAfterOwner) {
+    if ($prevalidExit -ne 0 -or $prevalidHash -eq $oldHash -or $runState -ne 258 -or -not $forgedExists -or $forgedHash -ne $oldHash -or $markerBeforeRun -or $actorWait -ne 0 -or -not $actorText.Contains('LOW_PAYLOAD_CHILD_IL=VERIFIED') -or -not $actorText.Contains('LOW_SOURCE_WRITE=DENIED') -or -not $actorText.Contains('LOW_PROJECT_WRITE=DENIED') -or -not $actorText.Contains('LOW_MARKER_WRITE=DENIED') -or -not $actorText.Contains('LOW_ROLE_WRITE=DENIED') -or -not $actorText.Contains('TARGET=True') -or -not $actorText.Contains('SENT_COMPLETED_ZERO') -or -not $actorText.Contains('LOW_BEFORE_GRANT_ADMIN_STATUS=403') -or -not $actorText.Contains('LOW_GRANT_STATUS=200') -or -not $actorText.Contains('LOW_AFTER_GRANT_ADMIN_STATUS=200') -or -not $forgedMarkerExists -or $forgedMarkerText -ne 'PROTECTED_INERT_MARKER_062' -or $forgedRoleText -ne 'low=Admin' -or $validExit -ne 0 -or -not $validExists -or $validHash -eq $oldHash -or $roleAfterRebuild -ne 'low=Admin' -or $anonStatus -ne 401 -or $markerAfterAnon -or $lowAdminStatus -ne 200 -or -not $markerAfterLow -or $lowGrantStatus -ne 403 -or $ownerStatus -ne 200 -or -not $markerAfterOwner) {
         throw 'Released Roslyn Windows authorization rollback discriminator did not pass'
     }
 } finally {
+    if ($null -ne $ownerSigner) { $ownerSigner.Dispose() }
     if ($appEnvironmentPtr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($appEnvironmentPtr) }
     if ($prevalidAppProc.hProcess -ne [IntPtr]::Zero) { [void][MicNative]::TerminateProcess($prevalidAppProc.hProcess, 0); [void][MicNative]::CloseHandle($prevalidAppProc.hProcess) }
     if ($prevalidAppProc.hThread -ne [IntPtr]::Zero) { [void][MicNative]::CloseHandle($prevalidAppProc.hThread) }
