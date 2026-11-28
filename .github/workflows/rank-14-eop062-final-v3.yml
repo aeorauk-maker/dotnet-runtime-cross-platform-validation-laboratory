@@ -1,0 +1,37 @@
+name: rank-14-eop062-final-v3
+on:
+  push:
+    branches: [rank-14-eop062-pa30-20261128]
+    paths:
+      - '.github/workflows/rank-14-eop062-final-v3.yml'
+  workflow_dispatch:
+jobs:
+  exact-archive-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rank-14-eop062-pa30-20261128
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Clean extract and run final EOP062 archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' 'db361168c5e685cb7b72b950333739f4023ce32c65e7e1874010abe5dddbea49' MSRC_EOP02-EOP-062_PoC_v3.zip | sha256sum --check
+          printf '%s  %s\n' '7260a2c2c6002ea324d1852558cf63b1c7bf5167d17aad73f62ea89f2f13a714' MSRC_EOP02-EOP-062_reverse_control_v2.zip | sha256sum --check
+          unzip -t MSRC_EOP02-EOP-062_PoC_v3.zip
+          unzip -t MSRC_EOP02-EOP-062_reverse_control_v2.zip
+          mkdir "$RUNNER_TEMP/eop062-final-main-$GITHUB_RUN_ID" "$RUNNER_TEMP/eop062-final-reverse-$GITHUB_RUN_ID"
+          unzip -q MSRC_EOP02-EOP-062_PoC_v3.zip -d "$RUNNER_TEMP/eop062-final-main-$GITHUB_RUN_ID"
+          unzip -q MSRC_EOP02-EOP-062_reverse_control_v2.zip -d "$RUNNER_TEMP/eop062-final-reverse-$GITHUB_RUN_ID"
+          dotnet --version
+          cd "$RUNNER_TEMP/eop062-final-main-$GITHUB_RUN_ID"
+          ./run.sh completed
+          ./run.sh malformed
+          ./run.sh completed
+          cd "$RUNNER_TEMP/eop062-final-reverse-$GITHUB_RUN_ID"
+          EOP062_REVERSE=1 ./run.sh completed
+          echo FINAL_ZIP_REPLAY=PASS
