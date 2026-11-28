@@ -57,12 +57,10 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 def compiler_server_live():
-    # Query the released SDK's exact default pipe without asking it to shut
-    # down. Closing this short probe only resets the ordinary idle interval.
+    # Observe the exact default socket without connecting. A raw connect that
+    # closes before sending a request may itself terminate the real server.
     pipe_name = base64.b64encode(hashlib.sha256(PIPE_INPUT.encode()).digest()).decode().replace("/", "_").rstrip("=")
-    script = ("perl -MIO::Socket::UNIX -MSocket=SOCK_STREAM -e "
-              f"'my $s=IO::Socket::UNIX->new(Type=>SOCK_STREAM,Peer=>q{{/tmp/{pipe_name}}},Timeout=>2); "
-              "print $s ? q{LIVE} : q{ABSENT};'")
+    script = f"test -S '/tmp/{pipe_name}' && printf LIVE || printf ABSENT"
     return victim_exec(script).stdout.strip()
 
 def http(path, token=None, owner=False):
@@ -252,6 +250,7 @@ try:
     write_source(True)
     assert_eq("SECURED_SOURCE_WITH_RESIDUAL_BIN", sha(dll), old_hash)
     assert_eq("SECURED_SOURCE_WITH_RESIDUAL_OBJ", sha(obj_dll), old_hash)
+    assert_eq("REAL_ROSLYN_SERVER_AFTER_SOURCE_EDIT", compiler_server_live(), "LIVE")
     # Prove the live server occupies the exact global name. A full fake-server
     # launch can block inside a connect probe of the live compiler endpoint.
     pipe_name = base64.b64encode(hashlib.sha256(PIPE_INPUT.encode()).digest()).decode().replace("/", "_").rstrip("=")
