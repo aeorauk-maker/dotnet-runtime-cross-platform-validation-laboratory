@@ -3,7 +3,7 @@ name: G09-L012 CSR-carried AIA applicant denial v39
 on:
   push:
     branches:
-      - pa30-rank11-g09l012-applicantdenial-20261128
+      - pa30-rank11-g09l012-csraia-20261128-1651
   workflow_dispatch:
 
 permissions:
