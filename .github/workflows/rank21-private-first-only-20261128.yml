@@ -1,0 +1,68 @@
+name: Rank 21 isolated .NET validation
+
+on:
+  push:
+    branches:
+      - pa30-rank21-l054-fd-capacity-20261128
+    paths:
+      - .github/workflows/rank21-private-first-only-20261128.yml
+      - rank21-lab-v5-first-only-20261128.enc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Restore isolated fixture
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_KEY"
+          mkdir -p "$RUNNER_TEMP/pa30-r21"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v5-first-only-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' 'e12e5e3c49ae30fccca89fa474707cafbbe30874c571d1ef8df1b7631cac89a9' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
+
+      - name: Build and run isolated validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pa30-r21"
+          python3 private_entry.py
+
+      - name: Seal detailed evidence
+        if: always()
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PA30_R21_LAB_KEY }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pa30-r21"
+          tar -czf private-evidence.tar.gz --ignore-failed-read status.txt build.log run.stdout socket_evidence evidence 2>/dev/null || true
+          test -s private-evidence.tar.gz
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in private-evidence.tar.gz -out "$GITHUB_WORKSPACE/pa30-r21-evidence.enc" -pass env:PRIVATE_KEY
+          rm -f private-evidence.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pa30-r21-sealed-evidence
+          path: pa30-r21-evidence.enc
+          retention-days: 1
+
+      - name: Check validation result
+        if: always()
+        shell: bash
+        run: |
+          test "$(cat "$RUNNER_TEMP/pa30-r21/status.txt")" = pass
