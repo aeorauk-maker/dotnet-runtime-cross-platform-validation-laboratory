@@ -29,7 +29,7 @@ jobs:
           import zipfile
           import json
 
-          expected = 'e13291a18afa75ec05ccbbabdd8adbd347a583bdde02dd49f997139fcd1eb723'
+          expected = 'c65b302e34ff9878c42117b5af0982b312ea00166b23961aab1a31b9b008b291'
           raw = (Path(os.environ['GITHUB_WORKSPACE']) / 'MSRC_G09-L016_PoC.zip').read_bytes()
           digest = hashlib.sha256(raw).hexdigest()
           assert digest == expected, 'exact archive digest mismatch'
@@ -62,7 +62,7 @@ jobs:
                   if generated and not result.stdout:
                       safe = [line[:200] for line in result.stderr.splitlines()
                               if any(term in line.lower() for term in
-                                     ('error', 'unknown option', 'invalid', 'unable',
+                                     ('a31_generator_verify', 'error', 'unknown option', 'invalid', 'unable',
                                       'verification failed', 'no such file', 'usage:'))]
                       print('A31_GENERATOR_SAFE_ERROR=' + repr(safe[:8]))
                   raise SystemExit(1)
