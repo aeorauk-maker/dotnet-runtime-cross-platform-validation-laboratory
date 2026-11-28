@@ -3,7 +3,7 @@ on:
   push:
     branches: [rank-21-l105-prebind-20261127]
     paths:
-      - .github/workflows/l105-iis-postbind-net10.yml
+      - .github/workflows/l105-iis-distinct-account-control-net10.yml
 permissions:
   contents: read
 jobs:
