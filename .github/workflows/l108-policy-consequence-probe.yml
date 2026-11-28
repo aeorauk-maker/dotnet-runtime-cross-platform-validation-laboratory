@@ -191,6 +191,8 @@ jobs:
 
           lower_events = pathlib.Path("/tmp") / ("l108-events-" + suffix + ".jsonl")
           retained_event = pathlib.Path("/tmp") / ("l108-retained-" + suffix + ".json")
+          after_removal_event = pathlib.Path("/tmp") / ("l108-after-removal-" + suffix + ".json")
+          after_token_revoke_event = pathlib.Path("/tmp") / ("l108-after-token-revoke-" + suffix + ".json")
           project_token_file = pathlib.Path("/tmp") / ("l108-project-token-" + suffix)
           lower_port = pathlib.Path("/tmp") / ("l108-port-" + suffix)
           lower_server = pathlib.Path("/tmp") / ("l108-server-" + suffix + ".py")
@@ -201,6 +203,8 @@ jobs:
               PROJECT = {a["id"]!r}
               EVENTS = pathlib.Path({str(lower_events)!r})
               RETAINED_EVENT = pathlib.Path({str(retained_event)!r})
+              AFTER_REMOVAL_EVENT = pathlib.Path({str(after_removal_event)!r})
+              AFTER_TOKEN_REVOKE_EVENT = pathlib.Path({str(after_token_revoke_event)!r})
               PROJECT_TOKEN_FILE = pathlib.Path({str(project_token_file)!r})
               PORT = pathlib.Path({str(lower_port)!r})
               SUFFIX = {suffix!r}
@@ -262,14 +266,26 @@ jobs:
                       self.send_response(204)
                       self.end_headers()
                   def do_GET(self):
-                      if self.path != "/retained" or not PROJECT_TOKEN_FILE.exists():
+                      if self.path not in ("/retained", "/after-member-removal",
+                                           "/after-project-token-revoke") or not PROJECT_TOKEN_FILE.exists():
                           self.send_response(404)
                           self.end_headers()
                           return
                       project_token = PROJECT_TOKEN_FILE.read_text()
-                      path = "owned-l108-retained-" + SUFFIX + ".txt"
+                      if self.path == "/retained":
+                          path = "owned-l108-retained-" + SUFFIX + ".txt"
+                          content = "INERT_L108_RETAINED_AFTER_REVOKE"
+                          event_path = RETAINED_EVENT
+                      elif self.path == "/after-member-removal":
+                          path = "owned-l108-after-member-removal-" + SUFFIX + ".txt"
+                          content = "INERT_L108_AFTER_MEMBER_REMOVAL"
+                          event_path = AFTER_REMOVAL_EVENT
+                      else:
+                          path = "owned-l108-after-token-revoke-" + SUFFIX + ".txt"
+                          content = "INERT_L108_AFTER_TOKEN_REVOKE_DENIED"
+                          event_path = AFTER_TOKEN_REVOKE_EVENT
                       payload = json.dumps({{
-                          "branch": "main", "content": "INERT_L108_RETAINED_AFTER_REVOKE",
+                          "branch": "main", "content": content,
                           "commit_message": "Owned L108 retained-token control"
                       }}).encode()
                       request = urllib.request.Request(
@@ -283,7 +299,7 @@ jobs:
                               status = response.status
                       except urllib.error.HTTPError as error:
                           status = error.code
-                      RETAINED_EVENT.write_text(json.dumps({{
+                      event_path.write_text(json.dumps({{
                           "uid": os.getuid(), "project_token_sha256": hashlib.sha256(
                               project_token.encode()).hexdigest(),
                           "gitlab_write_http": status, "path": path
@@ -775,6 +791,77 @@ jobs:
                   "expected_sha256": hashlib.sha256(expected_retained.encode()).hexdigest()})
               if retained_code != 200 or retained_content != expected_retained:
                   raise RuntimeError("Retained project token A write readback mismatch")
+              removed_code, _ = request(
+                  "DELETE", f"/api/v4/projects/{a['id']}/members/{users['victim']['id']}",
+                  token=root_token)
+              summary["controls"].append({"case": "victim_direct_a_membership_removed",
+                                          "http": removed_code})
+              if removed_code != 204:
+                  raise RuntimeError("Victim A membership removal failed")
+              member_code, _ = request(
+                  "GET", f"/api/v4/projects/{a['id']}/members/{users['victim']['id']}",
+                  token=root_token)
+              summary["controls"].append({"case": "victim_a_membership_absent",
+                                          "http": member_code})
+              if member_code != 404:
+                  raise RuntimeError("Victim A membership remained after removal")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/after-member-removal", timeout=60) as response:
+                  after_removal_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_after_member_removal_trigger",
+                  "http": after_removal_trigger_http})
+              if after_removal_trigger_http != 204 or not after_removal_event.exists():
+                  raise RuntimeError("After-member-removal lower action did not run")
+              after_removal = json.loads(after_removal_event.read_text())
+              summary["after_member_removal_event"] = after_removal
+              if (after_removal["uid"] != 65534 or
+                      after_removal["project_token_sha256"] !=
+                      events[-1]["project_token_sha256"] or
+                      after_removal["gitlab_write_http"] != 201):
+                  raise RuntimeError("Retained token failed after victim membership removal")
+              after_code, after_content = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  after_removal["path"] + "/raw?ref=main", token=root_token)
+              expected_after = "INERT_L108_AFTER_MEMBER_REMOVAL"
+              summary["controls"].append({
+                  "case": "trusted_a_written_after_victim_membership_removed",
+                  "http": after_code,
+                  "content_sha256": hashlib.sha256(str(after_content).encode()).hexdigest(),
+                  "expected_sha256": hashlib.sha256(expected_after.encode()).hexdigest()})
+              if after_code != 200 or after_content != expected_after:
+                  raise RuntimeError("Post-removal A write readback mismatch")
+              project_revoke_code, _ = request(
+                  "DELETE", f"/api/v4/projects/{a['id']}/access_tokens/" +
+                  str(events[-1]["project_token_id"]), token=root_token)
+              summary["controls"].append({"case": "retained_project_token_revoked",
+                                          "http": project_revoke_code})
+              if project_revoke_code != 204:
+                  raise RuntimeError("Project token revocation failed")
+              with urllib.request.urlopen(
+                      "http://127.0.0.1:" + lower_port.read_text().strip() +
+                      "/after-project-token-revoke", timeout=60) as response:
+                  revoked_trigger_http = response.status
+              summary["controls"].append({
+                  "case": "lower_after_project_token_revoke_trigger",
+                  "http": revoked_trigger_http})
+              if revoked_trigger_http != 204 or not after_token_revoke_event.exists():
+                  raise RuntimeError("Post-token-revocation lower action did not run")
+              after_revoke = json.loads(after_token_revoke_event.read_text())
+              summary["after_project_token_revoke_event"] = after_revoke
+              if (after_revoke["uid"] != 65534 or
+                      after_revoke["project_token_sha256"] !=
+                      events[-1]["project_token_sha256"] or
+                      after_revoke["gitlab_write_http"] not in (401, 403)):
+                  raise RuntimeError("Revoked project token unexpectedly wrote A")
+              absent_code, _ = request(
+                  "GET", f"/api/v4/projects/{a['id']}/repository/files/" +
+                  after_revoke["path"] + "/raw?ref=main", token=root_token)
+              summary["controls"].append({
+                  "case": "revoked_token_write_absent_from_a", "http": absent_code})
+              if absent_code != 404:
+                  raise RuntimeError("Revoked project token file unexpectedly exists")
           except Exception as error:
               redacted = str(error)
               for secret in [root_token, *tokens.values()]:
