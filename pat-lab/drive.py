@@ -143,6 +143,8 @@ def main():
             readonly_status, readonly, _ = new_token(5291, cookie, "read-only", False)
             assert readonly_status == 200, (readonly_status, readonly)
             readonly_token = readonly["data"]["token"]
+            readonly_check_status, readonly_check, _ = req(5291, "GET", "/operator/check-pat", bearer=readonly_token)
+            assert readonly_check_status == 200 and readonly_check["accepted"] and not readonly_check["canWrite"]
             foreign_cookie_status, _, _ = new_token(5292, cookie, "foreign-denied")
             invalidation_status, invalidation, _ = req(5291, "POST", "/operator/invalidate-local")
             after_invalidation_status, _, _ = new_token(5291, cookie, "local-invalidation-denied")
@@ -173,6 +175,10 @@ def main():
             place_args = {"name": "inert-C2-L077-place", "lat": 51.5, "lon": -0.1}
             no_bearer_status, _ = mcp_tool(5291, None, "atlas_create_place", place_args)
             readonly_mcp_status, readonly_mcp = mcp_tool(5291, readonly_token, "atlas_create_place", place_args)
+            readonly_scope_denied = (readonly_mcp_status == 200 and
+                readonly_mcp.get("result", {}).get("isError") is True and
+                "read-only" in json.dumps(readonly_mcp).lower())
+            assert readonly_scope_denied, (readonly_mcp_status, readonly_mcp)
             write_mcp_status, write_mcp = mcp_tool(5291, post_token, "atlas_create_place", place_args)
             assert tool_ok(write_mcp_status, write_mcp), (write_mcp_status, write_mcp)
             # The tool result is an actual AtlasPlace. Keep content in the lab,
@@ -182,6 +188,10 @@ def main():
             place_id = place_data.get("id") or place_data.get("Id")
             assert place_id, write_mcp
             read_mcp_status, read_mcp = mcp_tool(5291, post_token, "atlas_get_place", {"id": place_id})
+            assert tool_ok(read_mcp_status, read_mcp), (read_mcp_status, read_mcp)
+            delete_mcp_status, delete_mcp = mcp_tool(5291, post_token, "atlas_delete_place", {"id": place_id})
+            assert tool_ok(delete_mcp_status, delete_mcp), (delete_mcp_status, delete_mcp)
+            deleted_read_status, deleted_read = mcp_tool(5291, post_token, "atlas_get_place", {"id": place_id})
             new_issue, _, new_cookie = req(5291, "POST", "/operator/issue")
             fresh_revoke, _, _ = req(5291, "DELETE", "/api/atlas/tokens/" + post_id,
                                      cookie=new_cookie, csrf=True)
@@ -192,9 +202,12 @@ def main():
                 "fresh_bearer_accepted": bearer_status == 200 and bearer_result["accepted"],
                 "fresh_bearer_write": bearer_result["canWrite"],
                 "mcp_anonymous_status": no_bearer_status,
-                "mcp_readonly_write_denied": not tool_ok(readonly_mcp_status, readonly_mcp),
+                "mcp_readonly_accepted_without_write_scope": readonly_check["accepted"] and not readonly_check["canWrite"],
+                "mcp_readonly_scope_denied": readonly_scope_denied,
                 "mcp_place_created": tool_ok(write_mcp_status, write_mcp),
                 "mcp_place_read_back": tool_ok(read_mcp_status, read_mcp),
+                "mcp_place_deleted": tool_ok(delete_mcp_status, delete_mcp),
+                "mcp_deleted_place_not_readable": not tool_ok(deleted_read_status, deleted_read),
                 "fresh_owner_issue_status": new_issue,
                 "fresh_owner_revoke_status": fresh_revoke,
                 "final_bearer_denied": not final_result["accepted"],
