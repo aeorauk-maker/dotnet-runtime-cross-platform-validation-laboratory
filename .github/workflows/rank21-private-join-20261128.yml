@@ -6,7 +6,7 @@ on:
       - pa30-rank21-l054-fd-capacity-20261128
     paths:
       - .github/workflows/rank21-private-join-20261128.yml
-      - rank21-lab-v2-20261128.enc
+      - rank21-lab-v3-20261128.enc
   workflow_dispatch:
 
 permissions:
@@ -30,8 +30,8 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_KEY"
           mkdir -p "$RUNNER_TEMP/pa30-r21"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v2-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
-          printf '%s  %s\n' '2bc98642c9b2e651d075dfc35a0b9d8fd108016b56e556e807e6cd2417f07f0a' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v3-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' 'd3abd46bf1e5cb23549caced6945b2dafde17027023b2ab99c41d246e8191614' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
           unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
 
       - name: Build and run isolated validation
