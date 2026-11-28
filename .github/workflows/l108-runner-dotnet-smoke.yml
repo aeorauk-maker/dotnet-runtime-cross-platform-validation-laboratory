@@ -1,0 +1,44 @@
+name: Owned L108 GitLab runner .NET prerequisite smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - pa30-rank23-l108-scheduled-ci-20261128
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.100
+      - name: Inspect official disposable runner image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --user root --entrypoint /bin/bash \
+            --volume "$DOTNET_ROOT:/usr/share/dotnet:ro" \
+            --env DOTNET_ROOT=/usr/share/dotnet \
+            gitlab/gitlab-runner:ubuntu-v19.6.1 -c '
+              set -u
+              cat /etc/os-release | head -5
+              /usr/share/dotnet/dotnet --version >/tmp/before.out 2>&1
+              before=$?
+              echo "BEFORE_EXIT=$before"
+              sed -n "1,24p" /tmp/before.out
+              apt-get update -qq
+              apt-get install -y -qq libicu-dev >/tmp/apt.out 2>&1
+              apt=$?
+              echo "APT_EXIT=$apt"
+              if [ "$apt" -ne 0 ]; then tail -24 /tmp/apt.out; exit 1; fi
+              /usr/share/dotnet/dotnet --version >/tmp/after.out 2>&1
+              after=$?
+              echo "AFTER_EXIT=$after"
+              sed -n "1,24p" /tmp/after.out
+              exit "$after"
+            '
