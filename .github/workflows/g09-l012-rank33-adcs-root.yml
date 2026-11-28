@@ -35,7 +35,9 @@ jobs:
             $installed = Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
             $meta.installSuccess = [bool]$installed.Success
             if (-not $installed.Success) { throw 'AD CS role installation failed' }
+            Write-Host 'R33 ROLE_INSTALLED'
             Install-AdcsCertificationAuthority -CAType StandaloneRootCA -CACommonName 'Rank33 Root Issuer' -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' -KeyLength 2048 -HashAlgorithmName SHA256 -Force -Verbose *>&1 | Out-String | Set-Content lab/install.txt
+            Write-Host 'R33 CA_CONFIGURED'
             Start-Service CertSvc
             $config = "$env:COMPUTERNAME\Rank33 Root Issuer"
             $meta.caConfig = $config
@@ -43,16 +45,20 @@ jobs:
             foreach ($name in @('allowed', 'forbidden', 'duplicate')) {
               $case = [ordered]@{ name=$name; submitExit=$null; submitText=$null; requestId=$null; resubmitExit=$null; retrieveExit=$null; issued=$false; sanExtensionCount=$null; derSha256=$null; error=$null }
               try {
-                $submit = certreq.exe -submit -binary -config $config "lab/$name.csr.der" "lab/$name.der" 2>&1
+                Write-Host "R33 SUBMIT $name"
+                $submit = certreq.exe -submit -q -binary -config $config "lab/$name.csr.der" "lab/$name.der" 2>&1
+                Write-Host "R33 SUBMIT_RETURNED $name $LASTEXITCODE"
                 $case.submitExit = $LASTEXITCODE
                 $case.submitText = ($submit | Out-String)
                 $m = [regex]::Match($case.submitText, 'RequestId:\s*(\d+)', 'IgnoreCase')
                 if ($m.Success) { $case.requestId = [int]$m.Groups[1].Value }
                 if (-not (Test-Path "lab/$name.der") -and $case.requestId) {
+                  Write-Host "R33 APPROVE $name $($case.requestId)"
                   $resubmit = certutil.exe -config $config -resubmit $case.requestId 2>&1
                   $case.resubmitExit = $LASTEXITCODE
                   ($resubmit | Out-String) | Set-Content "lab/$name.resubmit.txt"
-                  $retrieve = certreq.exe -retrieve -binary -config $config $case.requestId "lab/$name.der" 2>&1
+                  $retrieve = certreq.exe -retrieve -q -binary -config $config $case.requestId "lab/$name.der" 2>&1
+                  Write-Host "R33 RETRIEVE_RETURNED $name $LASTEXITCODE"
                   $case.retrieveExit = $LASTEXITCODE
                   ($retrieve | Out-String) | Set-Content "lab/$name.retrieve.txt"
                 }
