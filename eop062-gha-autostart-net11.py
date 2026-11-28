@@ -312,7 +312,7 @@ readlink /proc/self/ns/net
     else:
         raise TimeoutError("service actor not ready: " + log[-2500:])
     assert "SERVICE_ENTRY_CODE_READY" in log and "ACTOR_CLOSED_INCOMPLETE_REQUEST" in log and "ACTOR_SERVER_WITHDRAWN" in log
-    assert_eq("REAL_ROSLYN_SERVER_AFTER_ENTRY_WITHDRAWAL", compiler_server_live(), "ABSENT")
+    assert_eq("FAKE_PIPE_TARGET_AFTER_ENTRY", os.readlink(f"/tmp/{pipe_name}"), f"/tmp/eop062-rank20-sidecar/{pipe_name}")
     print("AUTOSTART_ACTOR_READY", flush=True)
     launch_app("single-dotnet-run-with-preclaimed-pipe")
     for _ in range(120):
