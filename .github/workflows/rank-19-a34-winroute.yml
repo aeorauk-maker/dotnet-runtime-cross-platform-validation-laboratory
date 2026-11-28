@@ -36,3 +36,45 @@ jobs:
             finally { $client.Dispose() }
           } catch { Write-Output ('LISTEN_PROBE=ERROR_' + $_.Exception.GetType().Name) }
           finally { $listener.Stop() }
+      - name: Probe two scoped listeners
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ids = @(Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.IPAddress -match '^fe80:' -and $_.AddressState -eq 'Preferred' } | Select-Object -ExpandProperty InterfaceIndex -Unique)
+          if ($ids.Count -lt 2) { Write-Output 'DUAL_PROBE=ONE_INTERFACE'; exit 0 }
+          $ip = 'fe80::c0de:34'
+          $added = @()
+          $la = $null; $lb = $null
+          try {
+            foreach ($id in @($ids[0], $ids[1])) {
+              New-NetIPAddress -InterfaceIndex $id -IPAddress $ip -PrefixLength 64 -SkipAsSource $true -ErrorAction Stop | Out-Null
+              $added += $id
+            }
+            $a = [System.Net.IPAddress]::Parse($ip + '%' + $ids[0])
+            $b = [System.Net.IPAddress]::Parse($ip + '%' + $ids[1])
+            $la = [System.Net.Sockets.TcpListener]::new($a, 0)
+            $la.Start()
+            $port = ([System.Net.IPEndPoint]$la.LocalEndpoint).Port
+            $lb = [System.Net.Sockets.TcpListener]::new($b, $port)
+            $lb.Start()
+            function Probe($target, $label) {
+              $c = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetworkV6)
+              try {
+                $t = $c.ConnectAsync($target, $port)
+                if (-not $t.Wait(3000)) { Write-Output ($label + '=TIMEOUT'); return }
+                $t.GetAwaiter().GetResult() | Out-Null
+                if ($la.Pending()) { $peer = $la.AcceptTcpClient(); $peer.Dispose(); Write-Output ($label + '=A') }
+                elseif ($lb.Pending()) { $peer = $lb.AcceptTcpClient(); $peer.Dispose(); Write-Output ($label + '=B') }
+                else { Write-Output ($label + '=NO_LISTENER') }
+              } catch { Write-Output ($label + '=ERROR_' + $_.Exception.GetType().Name) }
+              finally { $c.Dispose() }
+            }
+            Probe $a 'EXPLICIT_A'
+            Probe $b 'EXPLICIT_B'
+            Probe ([System.Net.IPAddress]::Parse($ip)) 'UNSCOPED'
+          } catch { Write-Output ('DUAL_PROBE=SETUP_ERROR_' + $_.Exception.GetType().Name) }
+          finally {
+            if ($la) { $la.Stop() }
+            if ($lb) { $lb.Stop() }
+            foreach ($id in $added) { Remove-NetIPAddress -InterfaceIndex $id -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue }
+          }
