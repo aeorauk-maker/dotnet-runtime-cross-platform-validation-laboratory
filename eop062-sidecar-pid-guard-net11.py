@@ -181,7 +181,6 @@ try:
     docker_exec("cd /src/admin && dotnet build -c Release -p:UseSharedCompilation=false")
     dll = SRC / "bin/Release/net11.0/AdminApp.dll"
     old_hash = sha(dll)
-    shutil.copy2(dll, SRC / "old-public.dll")
     write_source(True)
     docker_exec("cd /src/admin && dotnet build -c Release -p:UseSharedCompilation=false")
     secure_hash = sha(dll)
@@ -195,10 +194,20 @@ try:
     MARKER.unlink()
     assert not ROLE.exists()
     stop_app()
-    docker_exec("cp /src/admin/old-public.dll /src/admin/bin/Release/net11.0/AdminApp.dll")
-    assert_eq("RESEEDED_PUBLIC_DLL", sha(dll), old_hash)
+
+    # Leave ordinary public build output in both obj and bin. The prior run
+    # copied only bin; its secure obj DLL was then copied back after the forged
+    # compiler response, hiding the effect.
+    write_source(False)
     time.sleep(1.2)
-    PROGRAM.touch()
+    docker_exec("cd /src/admin && dotnet build -c Release -p:UseSharedCompilation=false")
+    obj_dll = SRC / "obj/Release/net11.0/AdminApp.dll"
+    assert_eq("PUBLIC_RESIDUAL_BIN", sha(dll), old_hash)
+    assert_eq("PUBLIC_RESIDUAL_OBJ", sha(obj_dll), old_hash)
+    time.sleep(1.2)
+    write_source(True)
+    assert_eq("SECURED_SOURCE_WITH_RESIDUAL_BIN", sha(dll), old_hash)
+    assert_eq("SECURED_SOURCE_WITH_RESIDUAL_OBJ", sha(obj_dll), old_hash)
 
     # Real Roslyn was started for the original build; shut it down before precise preclaim.
     docker_exec("dotnet build-server shutdown", check=False)
