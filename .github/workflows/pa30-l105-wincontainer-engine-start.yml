@@ -1,0 +1,37 @@
+name: PA30 L105 Windows process-isolated container start check
+on:
+  push:
+    branches: [pa30-rank01-l105-scm-20261128]
+    paths:
+      - .github/workflows/pa30-l105-wincontainer-engine-start.yml
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - name: Start preinstalled Docker and test process isolation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "HOST_OS=$([Environment]::OSVersion.VersionString)"
+          $service = Get-Service docker -ErrorAction SilentlyContinue
+          Write-Host "DOCKER_SERVICE_PRESENT=$([bool]$service) STATUS_BEFORE=$($service.Status)"
+          if (-not $service) { Write-Host 'PROCESS_ISOLATED_CONTAINER_AVAILABLE=False REASON=no-service'; exit 0 }
+          if ($service.Status -ne 'Running') {
+            try { Start-Service docker -ErrorAction Stop; Write-Host 'DOCKER_START_REQUESTED=True' }
+            catch { Write-Host "DOCKER_START_ERROR=$($_.Exception.Message)"; Write-Host 'PROCESS_ISOLATED_CONTAINER_AVAILABLE=False REASON=service-start-failed'; exit 0 }
+          }
+          $ready = $false
+          for ($i = 0; $i -lt 20; $i++) {
+            docker info --format 'SERVER_OS={{.OSType}} SERVER_VERSION={{.ServerVersion}}' 2>&1 | Out-Host
+            if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          Write-Host "DOCKER_DAEMON_READY=$ready STATUS_AFTER=$((Get-Service docker).Status)"
+          if (-not $ready) { Write-Host 'PROCESS_ISOLATED_CONTAINER_AVAILABLE=False REASON=daemon-unavailable'; exit 0 }
+          docker run --rm --isolation=process mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd /c ver 2>&1 | Out-Host
+          $runExit = $LASTEXITCODE
+          Write-Host "NANOSERVER_PROCESS_ISOLATED_RUN_EXIT=$runExit"
+          Write-Host "PROCESS_ISOLATED_CONTAINER_AVAILABLE=$($runExit -eq 0)"
