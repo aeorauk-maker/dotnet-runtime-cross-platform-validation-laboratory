@@ -26,10 +26,39 @@ jobs:
           result=$?
           tail -n 70 consumer-build.log
           exit "$result"
+      - name: Boot maintained file-store host
+        env:
+          ASPNETCORE_URLS: http://127.0.0.1:5860
+          DisableHttps: 'true'
+          RedisConfigurationOptions__ConnectionString: ''
+          DataProtectionOptions__StorageKind: FileSystem
+          DataProtectionOptions__StorageConnectionString: /tmp/r21-keys
+          IdentityServerOptions__MutualTls__Enabled: 'false'
+        run: |
+          set -u
+          mkdir -p /tmp/r21-keys
+          (cd consumer/src/Aguacongas.TheIdServer.Duende && dotnet bin/Release/net10.0/Aguacongas.TheIdServer.Duende.dll) > host-startup.log 2>&1 &
+          host_pid=$!
+          trap 'kill "$host_pid" 2>/dev/null || true' EXIT
+          code=000
+          for i in $(seq 1 30); do
+            if ! kill -0 "$host_pid" 2>/dev/null; then break; fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:5860/healthz || true)
+            if [ "$code" != 000 ]; then break; fi
+            sleep 1
+          done
+          echo "health_http=$code"
+          dotnet --list-runtimes | grep 'Microsoft.AspNetCore.App 10.0.15'
+          if [ "$code" = 000 ]; then exit 1; fi
+          login_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:5860/identity/account/login || true)
+          echo "login_http=$login_code"
+          test "$login_code" != 000
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: net10-maintained-consumer-build-log
-          path: consumer-build.log
+          name: net10-maintained-consumer-boot-log
+          path: |
+            consumer-build.log
+            host-startup.log
           if-no-files-found: ignore
           retention-days: 1
