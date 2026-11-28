@@ -253,7 +253,7 @@ try {
     # EOP-062 prerequisite: a same-user low-integrity server must be accepted
     # by an ordinary medium-integrity CurrentUserOnly client. No Roslyn bytes
     # or project data are used in this generic transport discriminator.
-    if (-not [MicNative]::CreateRestrictedToken($medium, 0, 0, [IntPtr]::Zero,
+    if (-not [MicNative]::CreateRestrictedToken($token, 0, 1, $disabledSids,
         0, [IntPtr]::Zero, 0, [IntPtr]::Zero, [ref]$low)) {
         throw "Low CreateRestrictedToken failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
@@ -318,10 +318,20 @@ try {
     & icacls.exe $lowScript /grant:r "${runnerUser}:(R)" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Could not grant low script read' }
     $lowCmdLine = [System.Text.StringBuilder]::new("`"$cmdExe`" /D /C echo LOW_CMD_READY > `"$lowResult`"")
-    if (-not [MicNative]::CreateProcessWithTokenW($low, 0, $cmdExe,
-        $lowCmdLine, 0, [IntPtr]::Zero,
-        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowCmdProc)) {
-        throw "Low cmd preflight launch failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    $lowCmdLaunched = [MicNative]::CreateProcessAsUserW($low, $cmdExe, $lowCmdLine,
+        [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero,
+        (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowCmdProc)
+    if (-not $lowCmdLaunched) {
+        $lowCmdAsUserError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        Write-Host "low-cmd-CreateProcessAsUserW-error=$lowCmdAsUserError"
+        if ($lowCmdAsUserError -ne 1314) { throw "Low cmd launch failed: $lowCmdAsUserError" }
+        $lowCmdLine = [System.Text.StringBuilder]::new("`"$cmdExe`" /D /C echo LOW_CMD_READY > `"$lowResult`"")
+        $lowCmdLaunched = [MicNative]::CreateProcessWithTokenW($low, 0, $cmdExe,
+            $lowCmdLine, 0, [IntPtr]::Zero,
+            (Join-Path $env:SystemRoot 'System32'), [ref]$startup, [ref]$lowCmdProc)
+        if (-not $lowCmdLaunched) {
+            throw "Low cmd CreateProcessWithTokenW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+        }
     }
     $lowCmdWait = [MicNative]::WaitForSingleObject($lowCmdProc.hProcess, 10000)
     $lowCmdExit = [uint32]0
