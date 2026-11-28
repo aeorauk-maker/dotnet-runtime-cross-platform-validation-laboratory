@@ -1,0 +1,87 @@
+name: Rank03 Windows LDAP target trace
+on:
+  push:
+    branches: [pa30-rank03-wldap-etw-20261128]
+jobs:
+  target-trace:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.404'
+      - name: Build exact released LDAP client probe
+        shell: pwsh
+        run: |
+          dotnet new console -n probe -f net10.0 -o probe --no-restore
+          dotnet add probe/probe.csproj package System.DirectoryServices.Protocols --version 10.0.15
+          @'
+          using System;
+          using System.DirectoryServices.Protocols;
+          using System.Net;
+          using System.Net.Sockets;
+          using System.Threading;
+          using System.Threading.Tasks;
+
+          var listener = new TcpListener(IPAddress.Loopback, 389);
+          listener.Start();
+          using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+          var accept = Task.Run(async () => {
+              try {
+                  using var peer = await listener.AcceptTcpClientAsync(deadline.Token);
+                  Console.WriteLine("LOOPBACK_TCP_ACCEPTED=YES");
+                  using var stream = peer.GetStream();
+                  var packet = new byte[8192];
+                  var count = await stream.ReadAsync(packet, deadline.Token);
+                  Console.WriteLine($"LDAP_FIRST_PACKET_BYTES={count}");
+                  // A synthetic LDAP invalid-credentials response; no directory data or credentials.
+                  byte[] invalidBind = { 0x30, 0x0C, 0x02, 0x01, 0x01, 0x61, 0x07, 0x0A, 0x01, 0x31, 0x04, 0x00, 0x04, 0x00 };
+                  await stream.WriteAsync(invalidBind, deadline.Token);
+              } catch (Exception ex) {
+                  Console.WriteLine($"LOOPBACK_SERVER_CLASS={ex.GetType().Name}");
+              }
+          });
+          var identifier = new LdapDirectoryIdentifier("lab.example", true, false);
+          using var connection = new LdapConnection(identifier);
+          connection.SessionOptions.ProtocolVersion = 3;
+          connection.Timeout = TimeSpan.FromSeconds(10);
+          try { Console.WriteLine($"DNS_DOMAIN_OPTION={connection.SessionOptions.DomainName ?? "<null>"}"); }
+          catch (Exception ex) { Console.WriteLine($"DNS_DOMAIN_OPTION_CLASS={ex.GetType().Name}"); }
+          try { connection.Bind(); Console.WriteLine("BIND=SUCCESS"); }
+          catch (Exception ex) { Console.WriteLine($"BIND_CLASS={ex.GetType().Name}"); }
+          try { Console.WriteLine($"LDAP_HOST_OPTION={connection.SessionOptions.HostName}"); }
+          catch (Exception ex) { Console.WriteLine($"LDAP_HOST_OPTION_CLASS={ex.GetType().Name}"); }
+          listener.Stop();
+          deadline.Cancel();
+          try { await accept; } catch { }
+          '@ | Set-Content -Path probe/Program.cs -Encoding utf8
+          dotnet build probe/probe.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'RELEASED_PACKAGE=System.DirectoryServices.Protocols/10.0.15'
+      - name: Trace Wldap32 bind target in isolated synthetic lab
+        shell: pwsh
+        run: |
+          $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+          Add-Content -Path $hosts -Value "`n127.0.0.1 lab.example`n"
+          $traceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\ldap\Tracing\probe.exe'
+          New-Item -Path $traceKey -Force | Out-Null
+          $etl = Join-Path $env:RUNNER_TEMP 'eop090-wldap.etl'
+          $txt = Join-Path $env:RUNNER_TEMP 'eop090-wldap.txt'
+          logman create trace eop090-ldap -ow -o $etl -p 'Microsoft-Windows-LDAP-Client' 0x18180380 0xff -ets | Out-Null
+          try {
+            & './probe/bin/Release/net10.0/probe.exe'
+          } finally {
+            logman stop eop090-ldap -ets | Out-Null
+            Remove-Item -Path $traceKey -Force -ErrorAction SilentlyContinue
+          }
+          netsh trace convert "input=$etl" "output=$txt" | Out-Null
+          if (Test-Path $txt) {
+            $matches = Select-String -Path $txt -Pattern 'lab\.example|ldap/|SPN|service principal|Bind|Connect' | Select-Object -First 40
+            foreach ($match in $matches) {
+              $safe = $match.Line -replace '[A-Fa-f0-9]{32,}', '[redacted]'
+              Write-Host "LDAP_TRACE=$safe"
+            }
+            Write-Host "LDAP_TRACE_MATCH_COUNT=$($matches.Count)"
+          } else { Write-Host 'LDAP_TRACE_CONVERT=MISSING' }
