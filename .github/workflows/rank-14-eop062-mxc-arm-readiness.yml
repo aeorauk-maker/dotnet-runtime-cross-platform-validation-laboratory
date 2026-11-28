@@ -1,0 +1,46 @@
+name: Rank 14 EOP062 Windows sandbox actor readiness
+
+on:
+  push:
+    branches:
+      - rank-14-eop062-pa30-20261128
+    paths:
+      - .github/workflows/rank-14-eop062-mxc-arm-readiness.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-mxc-actor-readiness:
+    runs-on: windows-11-arm
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe released MXC BaseContainer support
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "OS=$([Environment]::OSVersion.Version) ARCH=$env:PROCESSOR_ARCHITECTURE"
+          $lab = Join-Path $env:RUNNER_TEMP 'eop062-mxc-readiness'
+          New-Item -ItemType Directory -Path $lab -Force | Out-Null
+          Set-Location $lab
+          npm init -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'npm init failed' }
+          npm install --no-audit --no-fund @microsoft/mxc-sdk@1.0.1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'MXC package install failed' }
+          $exe = Join-Path $lab 'node_modules\@microsoft\mxc-sdk\bin\arm64\wxc-exec.exe'
+          if (-not (Test-Path $exe)) { throw 'Released ARM64 executor absent' }
+          & $exe --probe | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "MXC host probe failed: $LASTEXITCODE" }
+          $request = @{
+            version = '1.0.0'
+            containment = 'processcontainer'
+            process = @{ commandLine = 'cmd.exe /D /C echo EOP062_MXC_CHILD_OK'; cwd = $lab; timeout = 60000 }
+            filesystem = @{ readwritePaths = @($lab) }
+            network = @{ egress = @{ default = 'deny' } }
+          }
+          $request | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $lab 'request.json')
+          & $exe (Join-Path $lab 'request.json') | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "MXC contained command failed: $LASTEXITCODE" }
+          Write-Host 'EOP062_MXC_READINESS_PASS'
