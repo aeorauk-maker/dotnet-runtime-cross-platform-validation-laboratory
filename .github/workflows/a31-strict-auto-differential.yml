@@ -201,7 +201,7 @@ jobs:
               - digital signature
               - server auth
           EOF
-            actor_kubectl -n a31-tenant create -f "$label-request.yaml"
+            actor_kubectl -n a31-tenant create -f "$label-request.yaml"; if [ "$expect" = CreatedOnly ]; then return 0; fi
             if [ "$expect" = Denied ]; then
               kubectl -n a31-tenant wait --for=condition=Denied \
                 "certificaterequest/a31-$label" --timeout=180s
@@ -223,7 +223,21 @@ jobs:
 
           make_request allowed allowed.test allowed.test Approved
           if [ "$AUTOAPPROVAL" = true ]; then
-            make_request attack forbidden.test '' Approved
+            for n in $(seq 1 24); do make_request "attack-$n" forbidden.test '' CreatedOnly; done
+            for poll in $(seq 1 12); do
+              for n in $(seq 1 24); do
+                cert_b64="$(actor_kubectl -n a31-tenant get certificaterequest "a31-attack-$n" -o jsonpath='{.status.certificate}')"
+                if [ -n "$cert_b64" ]; then
+                  printf '%s' "$cert_b64" | base64 -d > attack-issued.pem
+                  echo "A31_AUTO_APPROVED_ATTACK_INDEX=$n"
+                  break 2
+                fi
+              done
+              sleep 1
+            done
+            test -s attack-issued.pem
+            openssl x509 -in attack-issued.pem -noout -subject -fingerprint -sha256
+            echo 'A31_POLICY_ISSUED_attack'
             openssl req -new -sha256 -key actor-leaf.key -subj '/CN=forbidden.test' -addext 'subjectAltName=DNS:forbidden.test' -out denied.csr; openssl x509 -req -sha256 -in denied.csr -CA issuer.pem -CAkey issuer.key -CAcreateserial -days 2 -out denied-issued.pem -extfile <(echo 'basicConstraints=critical,CA:FALSE'; echo 'keyUsage=critical,digitalSignature'; echo 'extendedKeyUsage=serverAuth'; echo 'subjectAltName=DNS:forbidden.test'); echo 'A31_ADMIN_SIGNED_FORBIDDEN_SAN_TLS_NEGATIVE'
 
           else
