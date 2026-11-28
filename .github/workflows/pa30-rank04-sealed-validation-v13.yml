@@ -1,0 +1,132 @@
+name: PA30 rank04 isolated sealed validation v13
+
+on:
+  push:
+    branches:
+      - pa30-rank04-g01l010-sealed-20261128-k8
+    paths:
+      - .github/workflows/pa30-rank04-sealed-validation-v13.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sealed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.404
+      - name: Publish one-run receiver certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl req -x509 -newkey rsa:3072 -keyout "$RUNNER_TEMP/receiver-key.pem" -out "$RUNNER_TEMP/receiver-cert.pem" -days 1 -nodes -subj /CN=PA30-Rank04-Receiver >/dev/null 2>&1
+          echo '=== BEGIN RECEIVER CERT ==='
+          cat "$RUNNER_TEMP/receiver-cert.pem"
+          echo '=== END RECEIVER CERT ==='
+      - name: Run sealed fixture and seal evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage=starting
+          mkdir -p "$RUNNER_TEMP/evidence" work
+          cat > "$RUNNER_TEMP/researcher-cert.pem" <<'CERT'
+          -----BEGIN CERTIFICATE-----
+          MIIDvjCCAiYCCQCpUAtBITZPDDANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZQ
+          QTMwLVJhbmswNC1SZXNlYXJjaGVyMB4XDTI2MTEyODExMTY0MVoXDTI2MTEzMDEx
+          MTY0MVowITEfMB0GA1UEAwwWUEEzMC1SYW5rMDQtUmVzZWFyY2hlcjCCAaIwDQYJ
+          KoZIhvcNAQEBBQADggGPADCCAYoCggGBAL15lcXIl1i7lXvMjZ2YnnkHEKG45KY9
+          VQUh+3LdWkrmWktuwyfw3kwKp1wshg3uEbOz568qsueT+j52DmZc+hwLvHWfvDBx
+          rRXAsPsLZ8PysErOSxBnxibzrIP5GXD4+Z8TxBr66UFAoGPeRzZ0L0WmQduxMvrZ
+          DHBgWeGq+gtWTDEbzrrRmUBBhOTrgQGFXK1Ow2MhubXsZpkKV2q8iji9oiURW+CZ
+          0mPYuALY2pFTaApnd/k3mOUVOx/W1uqQILY92fkOLVNXh43U1B0QApxpYvuFBotA
+          9j3HebHeaUVWhliP0qgXzCEtah9My7/sRrZE6xAe1gWwcfxxbxYgjJ29fXU9IXFh
+          FKKAZ4MxN7Rw1F/rPZTnFMrNj9UpU6XLwSKVxkwbM5luqRNFpKGEamaKfjowr3pO
+          9jtpn12f445+JJ+jURXyrrK6TYjAkmmaOVZmaBeMUsdfMZ+LBiZNHuxKOh1leAKj
+          DNjlUenMIspWFhCWrmDDOKbU9timU32JkwIDAQABMA0GCSqGSIb3DQEBCwUAA4IB
+          gQBW18IJdBr+4s+VkPaGDCajpw2mtmD2IPfCjX0nAYdXJ64lGcoezKVyeHZelSPS
+          VQOHqs2xINBMzmV2q06ZZP7dZa91y6VI+VwtjN3prtfwCnUyyUpNSZ+7Nn6PCq0Y
+          VTP0RGtQlbOyxinSKBGjF07OCBkBNKsr1KfiavIzYhCxf5SnFbF3HEipgcRKecdp
+          0VwlfRC74EsqZwJqcmvNp7lUtjGbbZZV5B3zsSZvuzRRoZFX+5YcuP1foZLsE6kn
+          wccec9xvIjRuWqTfHJc/US388ACf26kPhBbSHOllc0de5Xz8H5wHIwORZLjQn3+d
+          6cN6CS/DC9hnKoIh1wnGh5PjIiW12Qrkb+ddo1W/iel45Che5aDEfgKoQw5lYSTU
+          HIlUoZc8zI1ErHmpmSemUqWTY5YYIghZJotlc9d6T91OtRR4egLKKf7BRDvYpeGz
+          /BGfG9zwMLNBqN8Qdk+20seF0JXtcNOKSGfs4WS3pUiOhI2P4GU9kdYKihW8YzrK
+          MKY=
+          -----END CERTIFICATE-----
+          CERT
+          seal() {
+            status="$1"
+            trap - EXIT
+            set +e
+            find work -maxdepth 1 -type f \( -name '*.log' -o -name '*.sqlite*' -o -name '*.json' \) -exec cp -p '{}' "$RUNNER_TEMP/evidence/" \;
+            if ! tar -czf "$RUNNER_TEMP/results.tgz" -C "$RUNNER_TEMP/evidence" .; then
+              echo "stage=$stage evidence=archive_failed" >&2
+              exit 70
+            fi
+            if ! openssl cms -encrypt -binary -aes256 -in "$RUNNER_TEMP/results.tgz" -out "$GITHUB_WORKSPACE/pa30-rank04-results-v13.cms" -outform DER "$RUNNER_TEMP/researcher-cert.pem"; then
+              echo "stage=$stage evidence=encryption_failed" >&2
+              exit 71
+            fi
+            if [ ! -s "$GITHUB_WORKSPACE/pa30-rank04-results-v13.cms" ]; then
+              echo "stage=$stage evidence=missing" >&2
+              exit 72
+            fi
+            echo "stage=$stage exit=$status evidence=encrypted"
+            exit "$status"
+          }
+          trap 'seal "$?"' EXIT
+          stage=waiting_for_encrypted_input
+          found=0
+          for i in $(seq 1 240); do
+            if curl -fsSL --max-time 15 "https://raw.githubusercontent.com/aeorauk-maker/dotnet-runtime-cross-platform-validation-laboratory/pa30-rank04-g01l010-sealed-20261128-k8/pa30-rank04-input-v13.cms?poll=$i" -o "$RUNNER_TEMP/input.cms" 2>/dev/null; then
+              found=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$found" -ne 1 ]; then
+            echo 'Encrypted input did not arrive'
+            exit 1
+          fi
+          stage=decrypting
+          openssl cms -decrypt -binary -inform DER -in "$RUNNER_TEMP/input.cms" -recip "$RUNNER_TEMP/receiver-cert.pem" -inkey "$RUNNER_TEMP/receiver-key.pem" -out "$RUNNER_TEMP/input.tgz" >/dev/null 2>&1
+          tar -xzf "$RUNNER_TEMP/input.tgz" -C work
+          stage=cloning_pinned_source
+          git clone --depth 1 https://github.com/Aguafrommars/TheIdServer.git work/theidserver > "$RUNNER_TEMP/evidence/clone.log" 2>&1
+          test "$(git -C work/theidserver rev-parse HEAD)" = c33395d5f0354b7efed9d664c8c62de27312306d
+          stage=building
+          dotnet --list-runtimes > "$RUNNER_TEMP/evidence/runtimes.txt"
+          dotnet build work/theidserver/src/Aguacongas.TheIdServer.Duende/Aguacongas.TheIdServer.Duende.csproj -c Debug --nologo -v quiet > "$RUNNER_TEMP/evidence/build.log" 2>&1
+          stage=python_dependencies
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip -q install requests beautifulsoup4 > "$RUNNER_TEMP/evidence/pip.log" 2>&1
+          export PA30_DOTNET_CMD="$(command -v dotnet)"
+          stage=ordinary_user_trial_1
+          ordinary1_status=0
+          "$RUNNER_TEMP/venv/bin/python" work/theidserver_trial.py sqlite_ordinary_email_change > "$RUNNER_TEMP/evidence/ordinary-user-1.log" 2>&1 || ordinary1_status=$?
+          stage=ordinary_prior_use
+          prior_status=0
+          "$RUNNER_TEMP/venv/bin/python" work/theidserver_trial.py sqlite_ordinary_prior_use > "$RUNNER_TEMP/evidence/ordinary-prior-use.log" 2>&1 || prior_status=$?
+          stage=ordinary_oidc_first
+          oidc_status=0
+          "$RUNNER_TEMP/venv/bin/python" work/theidserver_trial.py sqlite_ordinary_oidc_first > "$RUNNER_TEMP/evidence/ordinary-oidc-first.log" 2>&1 || oidc_status=$?
+          stage=auditing
+          for db in work/theidserver-*.sqlite; do
+            [ -f "$db" ] || continue
+            run_id="${db#work/theidserver-}"
+            run_id="${run_id%.sqlite}"
+            "$RUNNER_TEMP/venv/bin/python" work/sqlite_audit.py "$db" "$run_id" > "$RUNNER_TEMP/evidence/audit-$run_id.json" 2> "$RUNNER_TEMP/evidence/audit-$run_id.err" || true
+          done
+          echo "ordinary1_exit=$ordinary1_status prior_use_exit=$prior_status oidc_exit=$oidc_status" > "$RUNNER_TEMP/evidence/exit-status.txt"
+          stage=finished
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pa30-rank04-sealed-evidence-v13
+          path: pa30-rank04-results-v13.cms
+          if-no-files-found: ignore
+          retention-days: 1
