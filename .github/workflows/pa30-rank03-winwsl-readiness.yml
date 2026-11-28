@@ -28,7 +28,7 @@ jobs:
       - name: Diagnose Samba startup separately
         shell: pwsh
         run: |
-          $start = 'samba -D -d 2 >/tmp/rank03-samba-start.log 2>&1; rc=$?; sleep 4; echo "START_RC=$rc"; pgrep -a samba | head -5 || true; ss -lnt | grep -E ":(88|389|53)[[:space:]]" || true; grep -Ei "error|failed|unable|bind|listen" /tmp/rank03-samba-start.log | tail -12 | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g" || true'
+          $start = 'timeout 8s samba -i -d 2 >/tmp/rank03-samba-start.log 2>&1; rc=$?; echo "START_RC=$rc"; ip -4 -brief addr; testparm -s 2>/dev/null | grep -E "interfaces|bind interfaces only|server role" | head -8 || true; ss -lnt | grep -E ":(88|389|53)[[:space:]]" || true; grep -Ei "error|failed|unable|bind|listen" /tmp/rank03-samba-start.log | tail -12 | sed -E "s/[[:xdigit:]]{32,}/[redacted]/g" || true'
           wsl.exe --distribution Ubuntu-24.04 --user root --exec bash -lc $start
       - name: Measure Windows to WSL service reachability
         shell: pwsh
