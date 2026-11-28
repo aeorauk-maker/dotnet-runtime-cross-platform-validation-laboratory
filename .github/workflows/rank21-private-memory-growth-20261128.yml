@@ -1,4 +1,4 @@
-name: Rank 21 trigger-before-snapshot join
+name: Rank 21 completed-connection join
 on:
   push:
     branches:
@@ -25,8 +25,8 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_KEY"
           mkdir -p "$RUNNER_TEMP/pa30-r21"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v14-trigger-before-lsof-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
-          printf '%s  %s\n' 'b0f0bfc3e6da3524f1edb079fa9457dd302270405b53cf3b42da6af3e6340933' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$GITHUB_WORKSPACE/rank21-lab-v15b-completed-keepalive-20261128.enc" -out "$RUNNER_TEMP/pa30-r21/lab.zip" -pass env:PRIVATE_KEY
+          printf '%s  %s\n' '94bc3492e7f6338389c83057fcef06bdd4ada513fd0d548d278c9d41cb7cb5f4' "$RUNNER_TEMP/pa30-r21/lab.zip" | sha256sum -c - >/dev/null
           unzip -q "$RUNNER_TEMP/pa30-r21/lab.zip" -d "$RUNNER_TEMP/pa30-r21"
       - name: Measure stock server during external socket schedule
         shell: bash
